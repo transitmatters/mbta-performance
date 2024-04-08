@@ -1,0 +1,36 @@
+{
+  "Parameters": {
+    "DDApiKey": {
+      "Type": "String",
+      "Description": "Datadog API key."
+    },
+    "DDTags": {
+      "Type": "String",
+      "Description": "Additional Datadog Tags"
+    },
+    "GitVersion": {
+      "Type": "String",
+      "Description": "Current Git Id"
+    }
+  },
+  "Resources": {
+    "ProcessDailyLamp": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Environment": {
+          "Variables": {
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "version": "2.0",
+  "app_name": "mbta-performance",
+  "automatic_layer": true,
+  "stages": {
+    "prod": {
+      "api_gateway_stage": "api",
+      "autogen_policy": false,
+      "environment_variables": {
+        "DD_SITE": "datadoghq.com",
+        "DD_ENV": "prod",
+        "DD_SERVICE": "mbta-performance",
+        "DD_TRACE_ENABLED": "true"
+      },
+      "tags": {
+        "service": "mbta-performance",
+        "env": "prod"
+      },
+      "lambda_functions": {
+        "process_daily_lamp": {
+          "iam_policy_file": "policy-lamp-ingest.json",
+          "lambda_timeout": 900,
+          "lambda_memory_size": 2048
+        }
+      }
+    }
+  }
+}
