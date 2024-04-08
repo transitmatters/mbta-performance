@@ -25,7 +25,7 @@ jobs:
           poetry install
       - name: Lint code with Flake8
         run: |
-          poetry run flake8 ingestor
+          poetry run flake8 mbta-performance
       - name: Check code format with Black
         run: |
-          poetry run black --check ingestor
+          poetry run black --check mbta-performance
