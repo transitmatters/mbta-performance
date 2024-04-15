@@ -4,7 +4,7 @@ from typing import Tuple
 import requests
 import pandas as pd
 
-from .utils import format_dateint, get_current_service_date
+from .date import format_dateint, get_current_service_date
 from .. import parallel
 from .. import s3
 
@@ -108,6 +108,10 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     # TODO(check if file exists in index, throw if it doesn't)
     url = RAPID_DAILY_URL_TEMPLATE.format(YYYY_MM_DD=service_date.strftime("%Y-%m-%d"))
     result = requests.get(url)
+
+    if result.status_code != 200:
+        raise ValueError(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
+
     return pd.read_parquet(io.BytesIO(result.content), columns=INPUT_COLUMNS, engine="pyarrow")
 
 
@@ -135,10 +139,15 @@ def upload_to_s3(stop_id_and_events: Tuple[str, pd.DataFrame], service_date: dat
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 
-def ingest_lamp_data():
+def ingest_today_lamp_data():
     """Ingest and upload today's LAMP data."""
     service_date = get_current_service_date()
-    pq_df = fetch_pq_file_from_remote(service_date)
+    try:
+        pq_df = fetch_pq_file_from_remote(service_date)
+    except ValueError as e:
+        # If we can't fetch the file, we can't process it
+        print(e)
+        return
     processed_daily_events = ingest_pq_file(pq_df)
 
     # split daily events by stop_id and parallel upload to s3
@@ -147,4 +156,4 @@ def ingest_lamp_data():
 
 
 if __name__ == "__main__":
-    ingest_lamp_data()
+    ingest_today_lamp_data()

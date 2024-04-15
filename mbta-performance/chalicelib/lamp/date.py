@@ -5,6 +5,9 @@ EASTERN_TIME = ZoneInfo("US/Eastern")
 
 
 def service_date(ts: datetime) -> date:
+    """
+    Return the service date for a given timestamp in Eastern time.
+    """
     # In practice a None TZ is UTC, but we want to be explicit
     # In many places we have an implied eastern
     ts = ts.replace(tzinfo=EASTERN_TIME)
@@ -17,6 +20,9 @@ def service_date(ts: datetime) -> date:
 
 
 def get_current_service_date() -> date:
+    """
+    Returns the current service date in Eastern time.
+    """
     return service_date(datetime.now(EASTERN_TIME))
 
 
