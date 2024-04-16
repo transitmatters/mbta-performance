@@ -2,6 +2,8 @@ from datetime import date
 import unittest
 from unittest import mock
 
+import pandas as pd
+
 from .. import ingest
 
 
