@@ -28,7 +28,20 @@ INPUT_COLUMNS = [
     "vehicle_label",
     "move_timestamp",  # departure time from the previous station
     "stop_timestamp",  # arrival time at the current station
+    # BENCHMARKING COLUMNS
+    "travel_time_seconds",
+    "dwell_time_seconds",
+    "headway_trunk_seconds",
+    "headway_branch_seconds",
+    "scheduled_travel_time",
+    "scheduled_headway_trunk",
+    "scheduled_headway_branch",
 ]
+
+COLUMN_RENAME_MAP = {
+    "headway_trunk_seconds": "headway_seconds",
+    "scheduled_headway_trunk": "scheduled_headway",
+}
 
 # columns that should be output to s3 events.csv
 OUTPUT_COLUMNS = [
@@ -42,6 +55,13 @@ OUTPUT_COLUMNS = [
     "vehicle_label",
     "event_type",
     "event_time",
+    "travel_time_seconds",
+    "dwell_time_seconds",
+    "headway_seconds",
+    "headway_branch_seconds",
+    "scheduled_travel_time",
+    "scheduled_headway",
+    "scheduled_headway_branch",
 ]
 
 
@@ -77,6 +97,7 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     """
     pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert("US/Eastern")
     pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert("US/Eastern")
+    pq_df = pq_df.sort_values(by=["stop_sequence"])
 
     # explode departure and arrival times
     arr_df = pq_df[pq_df["arr_time"].notna()]
@@ -84,31 +105,42 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     arr_df = arr_df[OUTPUT_COLUMNS]
 
     dep_df = pq_df[pq_df["dep_time"].notna()]
-    dep_df = dep_df.assign(event_type="DEP").rename(columns={"dep_time": "event_time"}).drop(columns=["arr_time"])
+    dep_df = dep_df.assign(event_type="DEP").rename(columns={"dep_time": "event_time"})
 
     # these departures are from the the previous stop! so set them to the previous stop id
     # find the stop id for the departure whose sequence number precences the recorded one
     # stop sequences don't necessarily increment by 1 or with a reliable pattern
-    dep_df = dep_df.sort_values(by=["stop_sequence"])
     dep_df = pd.merge_asof(
         dep_df,
-        dep_df,
+        arr_df,
         on=["stop_sequence"],
         by=[
-            "service_date",  # comment for faster performance
+            "service_date",  # comment out for faster performance
             "route_id",
             "trip_id",
             "vehicle_id",
-            "vehicle_label",  # comment for faster performance
             "direction_id",
-            "event_type",  # comment for faster performance
         ],
         direction="backward",
         suffixes=("_curr", "_prev"),
         allow_exact_matches=False,  # don't want to match on itself
     )
-    # use CURRENT time, but PREVIOUS stop id
-    dep_df = dep_df.rename(columns={"event_time_curr": "event_time", "stop_id_prev": "stop_id"})[OUTPUT_COLUMNS]
+    dep_df = dep_df.rename(
+        columns={
+            "event_time_curr": "event_time",  # use CURRENT time...
+            "stop_id_prev": "stop_id",  # ...but PREVIOUS stop id...
+            "event_type_curr": "event_type",  # keep DEPARTURE label...
+            "vehicle_label_curr": "vehicle_label",
+            # Keep all current benchmarking data...
+            "travel_time_seconds_curr": "travel_time_seconds",
+            "dwell_time_seconds_curr": "dwell_time_seconds",
+            "headway_seconds_curr": "headway_seconds",
+            "headway_branch_seconds_curr": "headway_branch_seconds",
+            "scheduled_travel_time_curr": "scheduled_travel_time",
+            "scheduled_headway_curr": "scheduled_headway",
+            "scheduled_headway_branch_curr": "scheduled_headway_branch",
+        }
+    )[OUTPUT_COLUMNS]
 
     # stitch together arrivals and departures
     return pd.concat([arr_df, dep_df])
@@ -139,6 +171,9 @@ def ingest_pq_file(pq_df: pd.DataFrame) -> pd.DataFrame:
     """Process and tranform columns for the full day's events."""
     pq_df["direction_id"] = pq_df["direction_id"].astype("int16")
     pq_df["service_date"] = pq_df["service_date"].apply(format_dateint)
+    # use trunk headway metrics as default, and add branch metrics when it makes sense.
+    # TODO: verify and recalculate headway metrics if necessary!
+    pq_df = pq_df.rename(columns=COLUMN_RENAME_MAP)
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
     return processed_daily_events.sort_values(by=["event_time"])
