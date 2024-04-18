@@ -1,4 +1,5 @@
 from datetime import date
+import io
 import unittest
 from unittest import mock
 
@@ -6,7 +7,8 @@ import pandas as pd
 
 from .. import ingest
 
-
+# The sample file attached here is all events from Feb 7th, 2024.
+# There are 40810 rows, which contain real-world inconsistencies in their data!
 DATA_PATH = "mbta-performance/chalicelib/lamp/tests/sample_data/2024-02-07-subway-on-time-performance-v1.parquet"
 
 
@@ -27,7 +29,22 @@ class TestIngest(unittest.TestCase):
             dtype_backend="numpy_nullable",
         )
 
-        ingest._process_arrival_departure_times(pq_df)
+        pq_df_after = ingest._process_arrival_departure_times(pq_df_before)
+        arrivals = pq_df_after[pq_df_after.event_type == "ARR"]
+        departures = pq_df_after[pq_df_after.event_type == "DEP"]
+        collated_events = arrivals.merge(
+            departures,
+            suffixes=("_ARR", "_DEP"),
+            on=["service_date", "route_id", "trip_id", "stop_id", "direction_id", "vehicle_id"],
+        )
+        # ensure that stop sequences only go up
+        backtracking_sequences = collated_events[
+            collated_events["stop_sequence_ARR"] > collated_events["stop_sequence_DEP"]
+        ]
+        self.assertEqual(len(backtracking_sequences), 0)
+        # test that departures at a stop occur after the arrival, but dont overwrite data that exists to say otherwise
+        bad_late_arrivals = collated_events[collated_events["event_time_ARR"] > collated_events["event_time_DEP"]]
+        self.assertEqual(len(bad_late_arrivals), 59)
 
     def test_fetch_pq_file_from_remote(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
@@ -46,6 +63,13 @@ class TestIngest(unittest.TestCase):
                     "string[python]",  # vehicle_label
                     pd.Int64Dtype(),  # move_timestamp
                     pd.Int64Dtype(),  # stop_timestamp
+                    pd.Int64Dtype(),
+                    pd.Int64Dtype(),
+                    pd.Int64Dtype(),
+                    pd.Int64Dtype(),
+                    pd.Int64Dtype(),
+                    pd.Int64Dtype(),
+                    pd.Int64Dtype(),
                 ],
             )
 
