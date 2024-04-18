@@ -27,7 +27,7 @@ class TestIngest(unittest.TestCase):
             columns=ingest.INPUT_COLUMNS,
             engine="pyarrow",
             dtype_backend="numpy_nullable",
-        )
+        ).rename(columns=ingest.COLUMN_RENAME_MAP)
 
         pq_df_after = ingest._process_arrival_departure_times(pq_df_before)
         arrivals = pq_df_after[pq_df_after.event_type == "ARR"]

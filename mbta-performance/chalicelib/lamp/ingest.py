@@ -55,6 +55,13 @@ OUTPUT_COLUMNS = [
     "vehicle_label",
     "event_type",
     "event_time",
+    "travel_time_seconds",
+    "dwell_time_seconds",
+    "headway_seconds",
+    "headway_branch_seconds",
+    "scheduled_travel_time",
+    "scheduled_headway",
+    "scheduled_headway_branch",
 ]
 
 
@@ -112,8 +119,6 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
             "route_id",
             "trip_id",
             "vehicle_id",
-            # just merge by vehicle_id, because human-readable label can be inconsistent
-            # "vehicle_label",
             "direction_id",
         ],
         direction="backward",
@@ -125,7 +130,15 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
             "event_time_curr": "event_time",  # use CURRENT time...
             "stop_id_prev": "stop_id",  # ...but PREVIOUS stop id...
             "event_type_curr": "event_type",  # keep DEPARTURE label...
-            "vehicle_label_curr": "vehicle_label",  # using the inital label WLOG
+            "vehicle_label_curr": "vehicle_label",
+            # Keep all current benchmarking data...
+            "travel_time_seconds_curr": "travel_time_seconds",
+            "dwell_time_seconds_curr": "dwell_time_seconds",
+            "headway_seconds_curr": "headway_seconds",
+            "headway_branch_seconds_curr": "headway_branch_seconds",
+            "scheduled_travel_time_curr": "scheduled_travel_time",
+            "scheduled_headway_curr": "scheduled_headway",
+            "scheduled_headway_branch_curr": "scheduled_headway_branch",
         }
     )[OUTPUT_COLUMNS]
 
