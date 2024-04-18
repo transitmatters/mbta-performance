@@ -20,7 +20,14 @@ class TestIngest(unittest.TestCase):
         pass
 
     def test__process_arrival_departure_times(self):
-        pass
+        pq_df_before = pd.read_parquet(
+            io.BytesIO(self.data),
+            columns=ingest.INPUT_COLUMNS,
+            engine="pyarrow",
+            dtype_backend="numpy_nullable",
+        )
+
+        ingest._process_arrival_departure_times(pq_df)
 
     def test_fetch_pq_file_from_remote(self):
         mock_response = mock.Mock(status_code=200, content=self.data)

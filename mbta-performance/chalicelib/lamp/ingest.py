@@ -81,18 +81,18 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     # explode departure and arrival times
     arr_df = pq_df[pq_df["arr_time"].notna()]
     arr_df = arr_df.assign(event_type="ARR").rename(columns={"arr_time": "event_time"})
-    arr_df = arr_df[OUTPUT_COLUMNS]
+    arr_df = arr_df.sort_values(by=["stop_sequence"])
 
     dep_df = pq_df[pq_df["dep_time"].notna()]
     dep_df = dep_df.assign(event_type="DEP").rename(columns={"dep_time": "event_time"}).drop(columns=["arr_time"])
+    dep_df = dep_df.sort_values(by=["stop_sequence"])
 
     # these departures are from the the previous stop! so set them to the previous stop id
     # find the stop id for the departure whose sequence number precences the recorded one
     # stop sequences don't necessarily increment by 1 or with a reliable pattern
-    dep_df = dep_df.sort_values(by=["stop_sequence"])
     dep_df = pd.merge_asof(
         dep_df,
-        dep_df,
+        arr_df,
         on=["stop_sequence"],
         by=[
             "service_date",  # comment for faster performance
@@ -101,7 +101,6 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
             "vehicle_id",
             "vehicle_label",  # comment for faster performance
             "direction_id",
-            "event_type",  # comment for faster performance
         ],
         direction="backward",
         suffixes=("_curr", "_prev"),
@@ -111,7 +110,7 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     dep_df = dep_df.rename(columns={"event_time_curr": "event_time", "stop_id_prev": "stop_id"})[OUTPUT_COLUMNS]
 
     # stitch together arrivals and departures
-    return pd.concat([arr_df, dep_df])
+    return pd.concat([arr_df[OUTPUT_COLUMNS], dep_df[OUTPUT_COLUMNS]])
 
 
 def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
