@@ -4,7 +4,7 @@ from typing import Tuple
 import requests
 import pandas as pd
 
-from .date import format_dateint, get_current_service_date
+from ..date import format_dateint, get_current_service_date
 from .. import parallel
 from .. import s3
 
