@@ -1,24 +1,12 @@
 import pandas as pd
 import pathlib
+from .constants import HISTORIC_COLUMNS
 
 
 def process_events(input_csv: str, outdir: str, nozip: bool = False):
-    columns = [
-        "service_date",
-        "route_id",
-        "trip_id",
-        "direction_id",
-        "stop_id",
-        "stop_sequence",
-        "vehicle_id",
-        "vehicle_label",
-        "event_type",
-        "event_time_sec",
-    ]
-
     df = pd.read_csv(
         input_csv,
-        usecols=columns,
+        usecols=HISTORIC_COLUMNS,
         parse_dates=["service_date"],
         dtype={
             "route_id": "str",

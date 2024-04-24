@@ -9,3 +9,17 @@ ARCGIS_IDS = {
     "2023": "9a7f5634db72459ab731b6a9b274a1d4",
     "2024": "4adbec39db40498a8530496d8c63a924",
 }
+
+
+HISTORIC_COLUMNS = [
+    "service_date",
+    "route_id",
+    "trip_id",
+    "direction_id",
+    "stop_id",
+    "stop_sequence",
+    "vehicle_id",
+    "vehicle_label",
+    "event_type",
+    "event_time_sec",
+]
