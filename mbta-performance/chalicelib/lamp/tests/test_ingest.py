@@ -6,6 +6,7 @@ from unittest import mock
 import pandas as pd
 
 from .. import ingest
+from .. import constants
 
 # The sample file attached here is all events from Feb 7th, 2024.
 # There are 40810 rows, which contain real-world inconsistencies in their data!
@@ -24,7 +25,7 @@ class TestIngest(unittest.TestCase):
     def test__process_arrival_departure_times(self):
         pq_df_before = pd.read_parquet(
             io.BytesIO(self.data),
-            columns=ingest.INPUT_COLUMNS,
+            columns=constants.LAMP_COLUMNS,
             engine="pyarrow",
             dtype_backend="numpy_nullable",
         ).rename(columns=ingest.COLUMN_RENAME_MAP)
@@ -74,7 +75,20 @@ class TestIngest(unittest.TestCase):
             )
 
     def test_ingest_pq_file(self):
-        pass
+        pq_df_before = pd.read_parquet(
+            io.BytesIO(self.data),
+            columns=constants.LAMP_COLUMNS,
+            engine="pyarrow",
+            dtype_backend="numpy_nullable",
+        )
+
+        pq_df_after = ingest.ingest_pq_file(pq_df_before)
+        nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
+        added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
+        self.assertTrue(nonrev.empty)
+        self.assertTrue(added.empty)
+        self.assertEqual(pq_df_after.shape, (65394, 17))
+        self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test_upload_to_s3(self):
         pass
