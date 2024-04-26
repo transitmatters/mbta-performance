@@ -4,6 +4,7 @@ from typing import Tuple
 import requests
 import pandas as pd
 
+from .constants import LAMP_COLUMNS, S3_COLUMNS
 from ..date import format_dateint, get_current_service_date
 from .. import parallel
 from .. import s3
@@ -15,54 +16,15 @@ S3_BUCKET = "tm-mbta-performance"
 # month and day are not zero-padded
 S3_KEY_TEMPLATE = "Events-lamp/daily-data/{stop_id}/Year={YYYY}/Month={_M}/Day={_D}/events.csv"
 
-
-# LAMP columns to fetch from parquet files
-INPUT_COLUMNS = [
-    "service_date",
-    "route_id",
-    "trip_id",
-    "stop_id",
-    "direction_id",
-    "stop_sequence",
-    "vehicle_id",
-    "vehicle_label",
-    "move_timestamp",  # departure time from the previous station
-    "stop_timestamp",  # arrival time at the current station
-    # BENCHMARKING COLUMNS
-    "travel_time_seconds",
-    "dwell_time_seconds",
-    "headway_trunk_seconds",
-    "headway_branch_seconds",
-    "scheduled_travel_time",
-    "scheduled_headway_trunk",
-    "scheduled_headway_branch",
-]
-
 COLUMN_RENAME_MAP = {
     "headway_trunk_seconds": "headway_seconds",
     "scheduled_headway_trunk": "scheduled_headway",
 }
 
-# columns that should be output to s3 events.csv
-OUTPUT_COLUMNS = [
-    "service_date",
-    "route_id",
-    "trip_id",
-    "direction_id",
-    "stop_id",
-    "stop_sequence",
-    "vehicle_id",
-    "vehicle_label",
-    "event_type",
-    "event_time",
-    "travel_time_seconds",
-    "dwell_time_seconds",
-    "headway_seconds",
-    "headway_branch_seconds",
-    "scheduled_travel_time",
-    "scheduled_headway",
-    "scheduled_headway_branch",
-]
+# if a trip_id begins with NONREV-, it is not revenue producing and thus not something we want to benchmark
+# if an event has a trip_id begins with ADDED-, then a downstream process was unable to determine the scheduled trip
+# that the vehicle is currently on (this can be due to AVL glitches, trip diversions, test train trips, etc.)
+TRIP_IDS_TO_DROP = ("NONREV-", "ADDED-")
 
 
 def _local_save(s3_key, stop_events):
@@ -102,7 +64,7 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     # explode departure and arrival times
     arr_df = pq_df[pq_df["arr_time"].notna()]
     arr_df = arr_df.assign(event_type="ARR").rename(columns={"arr_time": "event_time"})
-    arr_df = arr_df[OUTPUT_COLUMNS]
+    arr_df = arr_df[S3_COLUMNS]
 
     dep_df = pq_df[pq_df["dep_time"].notna()]
     dep_df = dep_df.assign(event_type="DEP").rename(columns={"dep_time": "event_time"})
@@ -125,22 +87,12 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
         suffixes=("_curr", "_prev"),
         allow_exact_matches=False,  # don't want to match on itself
     )
-    dep_df = dep_df.rename(
-        columns={
-            "event_time_curr": "event_time",  # use CURRENT time...
-            "stop_id_prev": "stop_id",  # ...but PREVIOUS stop id...
-            "event_type_curr": "event_type",  # keep DEPARTURE label...
-            "vehicle_label_curr": "vehicle_label",
-            # Keep all current benchmarking data...
-            "travel_time_seconds_curr": "travel_time_seconds",
-            "dwell_time_seconds_curr": "dwell_time_seconds",
-            "headway_seconds_curr": "headway_seconds",
-            "headway_branch_seconds_curr": "headway_branch_seconds",
-            "scheduled_travel_time_curr": "scheduled_travel_time",
-            "scheduled_headway_curr": "scheduled_headway",
-            "scheduled_headway_branch_curr": "scheduled_headway_branch",
-        }
-    )[OUTPUT_COLUMNS]
+
+    # use current infomation for almost everything...
+    renamed_cols = {key + "_curr": key for key in S3_COLUMNS if key != "stop_id"}
+    # ...but use the PREVIOUS stop_id
+    renamed_cols["stop_id_prev"] = "stop_id"
+    dep_df = dep_df.rename(columns=renamed_cols)[S3_COLUMNS]
 
     # stitch together arrivals and departures
     return pd.concat([arr_df, dep_df])
@@ -157,7 +109,7 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
 
     return pd.read_parquet(
         io.BytesIO(result.content),
-        columns=INPUT_COLUMNS,
+        columns=LAMP_COLUMNS,
         engine="pyarrow",
         # NB: Even through parquet files are compressed with columnar metadata, pandas will sometimes override them
         # if the columns contain nulls. This is important as the move/stop times are nullable int64 epoch timestamps,
@@ -174,6 +126,8 @@ def ingest_pq_file(pq_df: pd.DataFrame) -> pd.DataFrame:
     # use trunk headway metrics as default, and add branch metrics when it makes sense.
     # TODO: verify and recalculate headway metrics if necessary!
     pq_df = pq_df.rename(columns=COLUMN_RENAME_MAP)
+    # drop non-revenue producing events
+    pq_df = pq_df[~pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)]
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
     return processed_daily_events.sort_values(by=["event_time"])
