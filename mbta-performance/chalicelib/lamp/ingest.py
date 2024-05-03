@@ -6,6 +6,10 @@ import pandas as pd
 
 from .constants import LAMP_COLUMNS, S3_COLUMNS
 from ..date import format_dateint, get_current_service_date
+from mbta_gtfs_sqlite import MbtaGtfsArchive
+from mbta_gtfs_sqlite.models import (
+    StopTime,
+)
 from .. import parallel
 from .. import s3
 
@@ -68,6 +72,16 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
 
     dep_df = pq_df[pq_df["dep_time"].notna()]
     dep_df = dep_df.assign(event_type="DEP").rename(columns={"dep_time": "event_time"})
+
+    # calculate gtfs traveltimes
+    mbta_gtfs = MbtaGtfsArchive()
+    service_date = get_current_service_date()
+    feed = mbta_gtfs.get_feed_for_date(service_date)
+    feed.download_or_build()
+    session = feed.create_sqlite_session()
+    stop_times = session.query(StopTime).filter(StopTime.trip_id == arr_df["trip_id"]).all()
+    trip_start_times = stop_times.arrival_time.transform("min")
+    dep_df["scheduled_tt"] = (stop_times.arrival_time - trip_start_times).dt.seconds
 
     # these departures are from the the previous stop! so set them to the previous stop id
     # find the stop id for the departure whose sequence number precences the recorded one
