@@ -8,9 +8,7 @@ from typing import Iterable, Tuple
 from .constants import LAMP_COLUMNS, S3_COLUMNS
 from ..date import format_dateint, get_current_service_date
 from mbta_gtfs_sqlite import MbtaGtfsArchive
-from mbta_gtfs_sqlite.models import (
-    StopTime,
-)
+from mbta_gtfs_sqlite.models import StopTime, Trip
 from sqlalchemy import or_
 
 from .. import parallel
@@ -35,7 +33,7 @@ TRIP_IDS_TO_DROP = ("NONREV-", "ADDED-")
 
 # information to fetch from GTFS
 TEMP_GTFS_LOCAL_PREFIX = ".temp/gtfs-feeds/"
-MAX_QUERY_DEPTH = 950  # actually 1000
+MAX_QUERY_DEPTH = 900  # actually 1000
 # defining these columns in particular becasue we use them everywhere
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
 
@@ -144,14 +142,14 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
         gtfs_stops.append(
             pd.read_sql(
                 session.query(
-                    StopTime.trip_id,
-                    StopTime.stop_id,
-                    StopTime.arrival_time,
+                    StopTime.trip_id, StopTime.stop_id, StopTime.arrival_time, Trip.route_id, Trip.direction_id
                 )
                 .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))
+                .join(Trip, Trip.trip_id == StopTime.trip_id)
                 .statement,
                 session.bind,
                 dtype_backend="numpy_nullable",
+                dtype={"direction_id": "int16"},
             )
         )
     return pd.concat(gtfs_stops)
@@ -173,27 +171,25 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     route_starts["arrival_time"] = (
         route_starts.event_time - pd.Timestamp(service_date).tz_localize("US/Eastern")
     ).dt.total_seconds()
-    route_starts = route_starts.sort_values(by="arrival_time")
 
+    # import pdb; pdb.set_trace()
     trip_id_map = pd.merge_asof(
-        route_starts,
-        gtfs_stops[["trip_id", "stop_id"] + ["arrival_time"]],
+        route_starts.sort_values(by="arrival_time"),
+        gtfs_stops.sort_values(by="arrival_time"),
         on="arrival_time",
         direction="nearest",
-        by=["trip_id", "stop_id"],
+        by=RTE_DIR_STOP,
         suffixes=["", "_scheduled"],
     )
     trip_id_map = trip_id_map.set_index("trip_id").trip_id_scheduled
 
-    # merged
-    # TODO check, hamima: can one conceivably return to a stop_id multiple times in a trip?
     # use the scheduled trip matching to get the scheduled traveltime
     pq_df["scheduled_trip_id"] = pq_df.trip_id.map(trip_id_map)
     pq_df = pd.merge(
         pq_df,
-        gtfs_stops[["trip_id", "stop_id", "scheduled_tt"]],
+        gtfs_stops[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]],
         how="left",
-        on=["trip_id", "stop_id"],
+        on="stop_id",
         suffixes=["", "_gtfs"],
     )
     return pq_df
