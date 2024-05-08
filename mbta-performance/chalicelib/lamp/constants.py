@@ -36,7 +36,7 @@ S3_COLUMNS = [
     "dwell_time_seconds",
     "headway_seconds",
     "headway_branch_seconds",
-    "scheduled_travel_time",
+    "scheduled_tt",
     "scheduled_headway",
     "scheduled_headway_branch",
 ]

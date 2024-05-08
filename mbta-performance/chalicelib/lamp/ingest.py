@@ -24,6 +24,7 @@ S3_KEY_TEMPLATE = "Events-lamp/daily-data/{stop_id}/Year={YYYY}/Month={_M}/Day={
 COLUMN_RENAME_MAP = {
     "headway_trunk_seconds": "headway_seconds",
     "scheduled_headway_trunk": "scheduled_headway",
+    "scheduled_travel_time": "scheduled_tt",
 }
 
 # if a trip_id begins with NONREV-, it is not revenue producing and thus not something we want to benchmark
@@ -144,7 +145,7 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
                 session.query(
                     StopTime.trip_id, StopTime.stop_id, StopTime.arrival_time, Trip.route_id, Trip.direction_id
                 )
-                .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))
+                .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
                 .join(Trip, Trip.trip_id == StopTime.trip_id)
                 .statement,
                 session.bind,
@@ -152,6 +153,7 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
                 dtype={"direction_id": "int16"},
             )
         )
+    pd.concat(gtfs_stops).to_csv("2024-02-07_gtfs.csv")
     return pd.concat(gtfs_stops)
 
 
@@ -172,7 +174,6 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
         route_starts.event_time - pd.Timestamp(service_date).tz_localize("US/Eastern")
     ).dt.total_seconds()
 
-    # import pdb; pdb.set_trace()
     trip_id_map = pd.merge_asof(
         route_starts.sort_values(by="arrival_time"),
         gtfs_stops.sort_values(by="arrival_time"),
@@ -181,7 +182,7 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
         by=RTE_DIR_STOP,
         suffixes=["", "_scheduled"],
     )
-    trip_id_map = trip_id_map.set_index("trip_id").trip_id_scheduled
+    trip_id_map = trip_id_map.drop_duplicates("trip_id").set_index("trip_id").trip_id_scheduled
 
     # use the scheduled trip matching to get the scheduled traveltime
     pq_df["scheduled_trip_id"] = pq_df.trip_id.map(trip_id_map)
@@ -192,7 +193,9 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
         on="stop_id",
         suffixes=["", "_gtfs"],
     )
-    return pq_df
+    # use the newly recalculated, gtfs-basesd scheduled travel time
+    pq_df = pq_df.rename(columns={"scheduled_tt_gtfs": "scheduled_tt"})
+    return pq_df[S3_COLUMNS]
 
 
 def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
@@ -206,7 +209,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     pq_df = pq_df[~pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)]
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
-    processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
+    # processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
 
@@ -224,8 +227,8 @@ def upload_to_s3(stop_id_and_events: Tuple[str, pd.DataFrame], service_date: dat
 
     # Upload to s3 as csv
     s3_key = S3_KEY_TEMPLATE.format(stop_id=stop_id, YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
-    _local_save(s3_key, stop_events)
-    # s3.upload_df_as_csv(S3_BUCKET, s3_key, stop_events)
+    # _local_save(s3_key, stop_events)
+    s3.upload_df_as_csv(S3_BUCKET, s3_key, stop_events)
     return [stop_id]
 
 

@@ -8,9 +8,9 @@ import pandas as pd
 from .. import ingest
 from .. import constants
 
-# The sample file attached here is all events from Feb 7th, 2024.
-# There are 40810 rows, which contain real-world inconsistencies in their data!
-DATA_PATH = "mbta-performance/chalicelib/lamp/tests/sample_data/2024-02-07-subway-on-time-performance-v1.parquet"
+# The sample file attached here is 10k events sampled from Feb 7th, 2024.
+# These rows contain real-world inconsistencies in their data!
+DATA_PATH = "mbta-performance/chalicelib/lamp/tests/sample_data/2024-02-07-10ksample.parquet"
 
 
 class TestIngest(unittest.TestCase):
@@ -20,6 +20,10 @@ class TestIngest(unittest.TestCase):
 
     def _mock_s3_upload(self):
         # mock upload of s3.upload_df_as_csv() to a fake bucket
+        pass
+
+    def _mock_gtfs_call(self):
+        # mock return value of fetch_stop_times_from_gtfs
         pass
 
     def test__process_arrival_departure_times(self):
@@ -45,7 +49,7 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(len(backtracking_sequences), 0)
         # test that departures at a stop occur after the arrival, but dont overwrite data that exists to say otherwise
         bad_late_arrivals = collated_events[collated_events["event_time_ARR"] > collated_events["event_time_DEP"]]
-        self.assertEqual(len(bad_late_arrivals), 59)
+        self.assertEqual(len(bad_late_arrivals), 8)
 
     def test_fetch_pq_file_from_remote(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
@@ -82,12 +86,12 @@ class TestIngest(unittest.TestCase):
             dtype_backend="numpy_nullable",
         )
 
-        pq_df_after = ingest.ingest_pq_file(pq_df_before)
+        pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024,2,7))
         nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         self.assertTrue(nonrev.empty)
         self.assertTrue(added.empty)
-        self.assertEqual(pq_df_after.shape, (65394, 17))
+        self.assertEqual(pq_df_after.shape, (14801, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test_upload_to_s3(self):
