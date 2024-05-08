@@ -209,7 +209,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     pq_df = pq_df[~pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)]
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
-    # processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
+    processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
 

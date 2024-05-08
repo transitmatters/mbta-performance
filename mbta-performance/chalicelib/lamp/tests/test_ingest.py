@@ -1,5 +1,6 @@
 from datetime import date
 import io
+import os
 import unittest
 from unittest import mock
 
@@ -10,13 +11,17 @@ from .. import constants
 
 # The sample file attached here is 10k events sampled from Feb 7th, 2024.
 # These rows contain real-world inconsistencies in their data!
-DATA_PATH = "mbta-performance/chalicelib/lamp/tests/sample_data/2024-02-07-10ksample.parquet"
+DATA_PREFIX = "mbta-performance/chalicelib/lamp/tests/sample_data/"
+SAMPLE_LAMP_DATA_PATH = os.path.join(DATA_PREFIX, "2024-02-07-10ksample.parquet")
+SAMPLE_GTFS_DATA_PATH = os.path.join(DATA_PREFIX, "2024-02-07_gtfs.csv")
 
 
 class TestIngest(unittest.TestCase):
     def setUp(self):
-        with open(DATA_PATH, "rb") as f:
+        with open(SAMPLE_LAMP_DATA_PATH, "rb") as f:
             self.data = f.read()
+
+        self.mock_gtfs_data = pd.read_csv(SAMPLE_GTFS_DATA_PATH)
 
     def _mock_s3_upload(self):
         # mock upload of s3.upload_df_as_csv() to a fake bucket
@@ -86,12 +91,12 @@ class TestIngest(unittest.TestCase):
             dtype_backend="numpy_nullable",
         )
 
-        pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024,2,7))
+        pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
         nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         self.assertTrue(nonrev.empty)
         self.assertTrue(added.empty)
-        self.assertEqual(pq_df_after.shape, (14801, 17))
+        self.assertEqual(pq_df_after.shape, (14801, 18))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test_upload_to_s3(self):
