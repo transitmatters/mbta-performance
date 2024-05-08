@@ -21,14 +21,15 @@ class TestIngest(unittest.TestCase):
         with open(SAMPLE_LAMP_DATA_PATH, "rb") as f:
             self.data = f.read()
 
-        self.mock_gtfs_data = pd.read_csv(SAMPLE_GTFS_DATA_PATH)
+        self.mock_gtfs_data = pd.read_csv(
+            SAMPLE_GTFS_DATA_PATH,
+            dtype_backend="numpy_nullable",
+            dtype={"direction_id": "int16"},
+        )
+        self.mock_gtfs_data["direction_id"] = self.mock_gtfs_data["direction_id"].astype("int16")
 
     def _mock_s3_upload(self):
         # mock upload of s3.upload_df_as_csv() to a fake bucket
-        pass
-
-    def _mock_gtfs_call(self):
-        # mock return value of fetch_stop_times_from_gtfs
         pass
 
     def test__process_arrival_departure_times(self):
@@ -90,8 +91,10 @@ class TestIngest(unittest.TestCase):
             engine="pyarrow",
             dtype_backend="numpy_nullable",
         )
+        pq_df_before["direction_id"] = pq_df_before["direction_id"].astype("int16")
 
-        pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
+        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
+            pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
         nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         self.assertTrue(nonrev.empty)

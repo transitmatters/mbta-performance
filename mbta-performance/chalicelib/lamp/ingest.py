@@ -153,7 +153,6 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
                 dtype={"direction_id": "int16"},
             )
         )
-    pd.concat(gtfs_stops).to_csv("2024-02-07_gtfs.csv")
     return pd.concat(gtfs_stops)
 
 
@@ -161,7 +160,6 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     """Enrich LAMP data with GTFS data for some schedule information."""
     trip_ids = pq_df["trip_id"].unique()
     gtfs_stops = fetch_stop_times_from_gtfs(trip_ids, service_date)
-
     # we could do this groupby/min/merge in sql, but let's keep our computations in
     # pandas to stay consistent across services
     trip_start_times = gtfs_stops.groupby("trip_id").arrival_time.transform("min")
@@ -190,7 +188,8 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
         pq_df,
         gtfs_stops[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]],
         how="left",
-        on="stop_id",
+        left_on=RTE_DIR_STOP + ["scheduled_trip_id"],
+        right_on=RTE_DIR_STOP + ["trip_id"],
         suffixes=["", "_gtfs"],
     )
     # use the newly recalculated, gtfs-basesd scheduled travel time
@@ -227,8 +226,8 @@ def upload_to_s3(stop_id_and_events: Tuple[str, pd.DataFrame], service_date: dat
 
     # Upload to s3 as csv
     s3_key = S3_KEY_TEMPLATE.format(stop_id=stop_id, YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
-    # _local_save(s3_key, stop_events)
-    s3.upload_df_as_csv(S3_BUCKET, s3_key, stop_events)
+    _local_save(s3_key, stop_events)
+    # s3.upload_df_as_csv(S3_BUCKET, s3_key, stop_events)
     return [stop_id]
 
 
