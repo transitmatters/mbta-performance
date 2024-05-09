@@ -160,6 +160,11 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     """Enrich LAMP data with GTFS data for some schedule information."""
     trip_ids = pq_df["trip_id"].unique()
     gtfs_stops = fetch_stop_times_from_gtfs(trip_ids, service_date)
+    gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
+
+    # remove the reported travel times, because we use a slightly different metric.
+    pq_df = pq_df.drop(columns=["scheduled_tt"])
+
     # we could do this groupby/min/merge in sql, but let's keep our computations in
     # pandas to stay consistent across services
     trip_start_times = gtfs_stops.groupby("trip_id").arrival_time.transform("min")
@@ -174,7 +179,7 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
 
     trip_id_map = pd.merge_asof(
         route_starts.sort_values(by="arrival_time"),
-        gtfs_stops.sort_values(by="arrival_time"),
+        gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]],
         on="arrival_time",
         direction="nearest",
         by=RTE_DIR_STOP,
@@ -192,8 +197,6 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
         right_on=RTE_DIR_STOP + ["trip_id"],
         suffixes=["", "_gtfs"],
     )
-    # use the newly recalculated, gtfs-basesd scheduled travel time
-    pq_df = pq_df.rename(columns={"scheduled_tt_gtfs": "scheduled_tt"})
     return pq_df[S3_COLUMNS]
 
 
@@ -208,6 +211,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     pq_df = pq_df[~pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)]
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
+    processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
     processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
