@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 from typing import Iterable, Tuple
 
-from .constants import LAMP_COLUMNS, S3_COLUMNS
+from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
 from ..date import format_dateint, get_current_service_date
 from mbta_gtfs_sqlite import MbtaGtfsArchive
 from mbta_gtfs_sqlite.models import StopTime, Trip
@@ -207,6 +207,9 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     # use trunk headway metrics as default, and add branch metrics when it makes sense.
     # TODO: verify and recalculate headway metrics if necessary!
     pq_df = pq_df.rename(columns=COLUMN_RENAME_MAP)
+    # Live data will sometimes report an aliased version of stop_id different
+    # from that which GTFS reports in its schedule. Replace for better schedule matching.
+    pq_df["stop_id"] = pq_df["stop_id"].replace(STOP_ID_NUMERIC_MAP)
     # drop non-revenue producing events
     pq_df = pq_df[~pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)]
 
