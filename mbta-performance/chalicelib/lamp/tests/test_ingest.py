@@ -97,9 +97,11 @@ class TestIngest(unittest.TestCase):
             pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
         nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
+        null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
         self.assertTrue(nonrev.empty)
         self.assertTrue(added.empty)
-        self.assertEqual(pq_df_after.shape, (14801, 18))
+        self.assertTrue(null_id_events.empty)
+        self.assertEqual(pq_df_after.shape, (12937, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test_upload_to_s3(self):
