@@ -15,6 +15,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Asia/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Atlantic/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Arctic/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Antarctica/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Australia/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Brazil/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Chile/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Indian/*
@@ -42,6 +44,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/r*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sa*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/se*/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sn*/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sm*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/ss*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/st*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/su*/*
