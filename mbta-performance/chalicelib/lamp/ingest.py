@@ -1,15 +1,12 @@
-from datetime import date
+from datetime import date, timedelta
 import io
-import os
 import pandas as pd
 import requests
-from typing import Iterable, Tuple
+from typing import Tuple
 
 from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
 from ..date import format_dateint, get_current_service_date
-from mbta_gtfs_sqlite import MbtaGtfsArchive
-from mbta_gtfs_sqlite.models import StopTime, Trip
-from sqlalchemy import or_
+from ..gtfs import fetch_stop_times_from_gtfs
 
 from .. import parallel
 from .. import s3
@@ -32,9 +29,6 @@ COLUMN_RENAME_MAP = {
 # that the vehicle is currently on (this can be due to AVL glitches, trip diversions, test train trips, etc.)
 TRIP_IDS_TO_DROP = ("NONREV-",)  # "ADDED-")
 
-# information to fetch from GTFS
-TEMP_GTFS_LOCAL_PREFIX = ".temp/gtfs-feeds/"
-MAX_QUERY_DEPTH = 900  # actually 1000
 # defining these columns in particular becasue we use them everywhere
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
 
@@ -131,33 +125,6 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     )
 
 
-def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
-    """Fetch scheduled stop time information from GTFS."""
-    if not os.path.exists(os.path.dirname(TEMP_GTFS_LOCAL_PREFIX)):
-        os.makedirs(TEMP_GTFS_LOCAL_PREFIX)
-    mbta_gtfs = MbtaGtfsArchive(TEMP_GTFS_LOCAL_PREFIX)
-    feed = mbta_gtfs.get_feed_for_date(service_date)
-    feed.download_or_build()
-    session = feed.create_sqlite_session()
-
-    gtfs_stops = []
-    for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
-        gtfs_stops.append(
-            pd.read_sql(
-                session.query(
-                    StopTime.trip_id, StopTime.stop_id, StopTime.arrival_time, Trip.route_id, Trip.direction_id
-                )
-                .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
-                .join(Trip, Trip.trip_id == StopTime.trip_id)
-                .statement,
-                session.bind,
-                dtype_backend="numpy_nullable",
-                dtype={"direction_id": "int16"},
-            )
-        )
-    return pd.concat(gtfs_stops)
-
-
 def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     """Enrich LAMP data with GTFS data for some schedule information."""
     trip_ids = pq_df["trip_id"].unique()
@@ -202,6 +169,29 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     return pq_df[S3_COLUMNS]
 
 
+def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
+    """Bucket scheduled headways into 30 minute buckets"""
+
+    # 30 minute buckets starting at 5:30am
+    buckets = pd.date_range(service_date, service_date + timedelta(days=2), freq="30min")
+
+    start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day, 4, 30)
+    end_time = pd.Timestamp(service_date.year, service_date.month, service_date.day + 1, 2, 0)
+    buckets = buckets[(buckets >= start_time) & (buckets <= end_time)]
+
+    for bucket in buckets:
+        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize("US/Eastern")
+        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize("US/Eastern")
+        filtered_trips = pq_df[(pq_df["dep_time"] >= bucket_start) & (pq_df["dep_time"] < bucket_end)]
+        filtered_trips = filtered_trips[filtered_trips["scheduled_headway"].notna()]
+
+        # Get the average headway per route
+        average_scheduled_headway = filtered_trips.groupby(["route_id", "direction_id"])["scheduled_headway"].mean()
+        average_scheduled_headway = average_scheduled_headway.round(-1)  # Round to the nearest 10seconds
+
+        # TODO: merge new headways to the correct trips by line and direction
+
+
 def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     """Process and tranform columns for the full day's events."""
     pq_df["direction_id"] = pq_df["direction_id"].astype("int16")
@@ -218,6 +208,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     processed_daily_events = _process_arrival_departure_times(pq_df)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
     processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
+    processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
 
@@ -260,6 +251,4 @@ def ingest_today_lamp_data():
 
 
 if __name__ == "__main__":
-    if not os.path.exists(os.path.dirname(TEMP_GTFS_LOCAL_PREFIX)):
-        os.makedirs(TEMP_GTFS_LOCAL_PREFIX)
     ingest_today_lamp_data()

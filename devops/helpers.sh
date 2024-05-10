@@ -9,6 +9,7 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip '**/NOTICE*'
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy*/tests/**/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas*/tests/**/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow*/tests/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow*/tests/**/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy*/testing/**/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Africa/*
@@ -19,6 +20,7 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Australia/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Brazil/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Chile/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Europe/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Indian/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Mexico/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/examples/*

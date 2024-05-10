@@ -14,13 +14,14 @@ def backfill_all_in_index():
     # Get the dates in the index
     dates = pd.to_datetime(index["service_date"]).dt.date
     # Backfill each date
-    for date_to_backfill in dates:
+    for date_to_backfill in dates.reindex(index=dates.index[::-1]):
         try:
             pq_df = fetch_pq_file_from_remote(date_to_backfill)
         except ValueError as e:
             # If we can't fetch the file, we can't process it
             print(f"Failed to fetch {date_to_backfill}: {e}")
-        processed_daily_events = ingest_pq_file(pq_df)
+        print(f"Processing {date_to_backfill}")
+        processed_daily_events = ingest_pq_file(pq_df, date_to_backfill)
 
         # split daily events by stop_id and parallel upload to s3
         stop_event_groups = processed_daily_events.groupby("stop_id")
