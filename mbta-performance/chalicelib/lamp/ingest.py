@@ -30,7 +30,7 @@ COLUMN_RENAME_MAP = {
 # if a trip_id begins with NONREV-, it is not revenue producing and thus not something we want to benchmark
 # if an event has a trip_id begins with ADDED-, then a downstream process was unable to determine the scheduled trip
 # that the vehicle is currently on (this can be due to AVL glitches, trip diversions, test train trips, etc.)
-TRIP_IDS_TO_DROP = ("NONREV-", "ADDED-")
+TRIP_IDS_TO_DROP = ("NONREV-",)  # "ADDED-")
 
 # information to fetch from GTFS
 TEMP_GTFS_LOCAL_PREFIX = ".temp/gtfs-feeds/"
