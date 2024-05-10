@@ -13,10 +13,11 @@ MAX_QUERY_DEPTH = 900  # actually 1000
 
 def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
     """Fetch scheduled stop time information from GTFS."""
-    mbta_gtfs = MbtaGtfsArchive(TemporaryDirectory(delete=False).name)
+    mbta_gtfs = MbtaGtfsArchive(TemporaryDirectory().name)
     feed = mbta_gtfs.get_feed_for_date(service_date)
+    feed.use_compact_only()
     feed.download_or_build()
-    session = feed.create_sqlite_session()
+    session = feed.create_sqlite_session(compact=True)
 
     gtfs_stops = []
     for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
