@@ -133,6 +133,8 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
 
 def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
     """Fetch scheduled stop time information from GTFS."""
+    if not os.path.exists(os.path.dirname(TEMP_GTFS_LOCAL_PREFIX)):
+        os.makedirs(TEMP_GTFS_LOCAL_PREFIX)
     mbta_gtfs = MbtaGtfsArchive(TEMP_GTFS_LOCAL_PREFIX)
     feed = mbta_gtfs.get_feed_for_date(service_date)
     feed.download_or_build()
