@@ -40,3 +40,19 @@ S3_COLUMNS = [
     "scheduled_headway",
     "scheduled_headway_branch",
 ]
+
+
+# Live data will sometimes report an aliased version of stop_id different
+# from that which GTFS reports in its schedule. These are the known id's.
+STOP_ID_NUMERIC_MAP = {
+    "Alewife-01": "70061",
+    "Alewife-02": "70061",
+    "Forest Hills-01": "70001",
+    "Forest Hills-02": "70001",
+    "Braintree-01": "70105",
+    "Braintree-02": "70105",
+    "Oak Grove-01": "70036",
+    "Oak Grove-02": "70036",
+    "Union Square-01": "70503",
+    "Union Square-02": "70504",
+}
