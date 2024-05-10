@@ -246,7 +246,6 @@ _parallel_upload = parallel.make_parallel(upload_to_s3)
 def ingest_today_lamp_data():
     """Ingest and upload today's LAMP data."""
     service_date = get_current_service_date()
-    service_date = date(2024, 5, 1)
     try:
         pq_df = fetch_pq_file_from_remote(service_date)
     except ValueError as e:
