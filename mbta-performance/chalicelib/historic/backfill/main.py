@@ -1,10 +1,9 @@
-import threading
 from ..constants import ARCGIS_IDS
 from ..download import download_historic_data, list_files_in_dir, prep_local_dir, unzip_historic_data
 from ..process import process_events
 
 
-def single_year_thread(year: str):
+def backfill_single_year(year: str):
     print(f"Backfilling year {year}")
     # download the data
     zip_file = download_historic_data(year)
@@ -21,18 +20,8 @@ def backfill_all_years():
 
     prep_local_dir()
 
-    year_threads: list[threading.Thread] = []
     for year in ARCGIS_IDS.keys():
-        year_thread = threading.Thread(
-            target=single_year_thread,
-            args=(year,),
-            name=year,
-        )
-        year_threads.append(year_thread)
-        year_thread.start()
-
-    for year_thread in year_threads:
-        year_thread.join()
+        backfill_single_year(year)
 
 
 if __name__ == "__main__":
