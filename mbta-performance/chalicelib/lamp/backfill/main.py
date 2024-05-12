@@ -1,6 +1,7 @@
 import pandas as pd
-from ..ingest import LAMP_INDEX_URL, fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
+from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 from ... import parallel
+from datetime import datetime, timedelta
 
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
@@ -9,12 +10,12 @@ _parallel_upload = parallel.make_parallel(upload_to_s3)
 def backfill_all_in_index():
     """Backfill all the dates in the LAMP index."""
 
-    # Load the index
-    index = pd.read_csv(LAMP_INDEX_URL)
-    # Get the dates in the index
-    dates = pd.to_datetime(index["service_date"]).dt.date
-    # Backfill each date
-    for date_to_backfill in dates.reindex(index=dates.index[::-1]):
+    # all dates that LAMP has data for, starting from 2019-09-15
+    dates = pd.date_range(datetime(2019, 9, 15).date(), datetime.today().date() - timedelta(days=1), freq="d")
+
+    # Backfill each date, most recent to oldest
+    for backfill_timestamp in dates[::-1]:
+        date_to_backfill = backfill_timestamp.date()
         try:
             pq_df = fetch_pq_file_from_remote(date_to_backfill)
         except ValueError as e:

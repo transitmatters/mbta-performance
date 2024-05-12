@@ -4,6 +4,11 @@ from zoneinfo import ZoneInfo
 EASTERN_TIME = ZoneInfo("US/Eastern")
 
 
+def to_dateint(date: date):
+    """turn date into 20220615 e.g."""
+    return int(str(date).replace("-", ""))
+
+
 def service_date(ts: datetime) -> date:
     """
     Return the service date for a given timestamp in Eastern time.

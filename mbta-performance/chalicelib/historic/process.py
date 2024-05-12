@@ -1,6 +1,7 @@
 import pandas as pd
 import pathlib
 from .constants import HISTORIC_COLUMNS
+from .gtfs_archive import add_gtfs_headways
 
 
 def process_events(input_csv: str, outdir: str, nozip: bool = False):
@@ -20,6 +21,8 @@ def process_events(input_csv: str, outdir: str, nozip: bool = False):
 
     df["event_time"] = df["service_date"] + pd.to_timedelta(df["event_time_sec"], unit="s")
     df.drop(columns=["event_time_sec"], inplace=True)
+
+    df = add_gtfs_headways(df)
 
     service_date_month = pd.Grouper(key="service_date", freq="1M")
     grouped = df.groupby([service_date_month, "stop_id"])
