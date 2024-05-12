@@ -2,6 +2,7 @@ from datetime import date
 from tempfile import TemporaryDirectory
 import pandas as pd
 from typing import Iterable
+import boto3
 
 from mbta_gtfs_sqlite import MbtaGtfsArchive
 from mbta_gtfs_sqlite.models import StopTime, Trip
@@ -13,11 +14,14 @@ MAX_QUERY_DEPTH = 900  # actually 1000
 
 def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
     """Fetch scheduled stop time information from GTFS."""
-    mbta_gtfs = MbtaGtfsArchive(TemporaryDirectory().name)
+    s3 = boto3.resource("s3")
+    mbta_gtfs = MbtaGtfsArchive(
+        local_archive_path=TemporaryDirectory().name,
+        s3_bucket=s3.Bucket("tm-gtfs"),
+    )
     feed = mbta_gtfs.get_feed_for_date(service_date)
-    feed.use_compact_only()
     feed.download_or_build()
-    session = feed.create_sqlite_session(compact=True)
+    session = feed.create_sqlite_session()
 
     gtfs_stops = []
     for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):

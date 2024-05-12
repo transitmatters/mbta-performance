@@ -182,7 +182,7 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
     for bucket in buckets:
         bucket_start = pd.to_datetime(bucket, unit="s").tz_localize("US/Eastern")
         bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize("US/Eastern")
-        filtered_trips = pq_df[(pq_df["dep_time"] >= bucket_start) & (pq_df["dep_time"] < bucket_end)]
+        filtered_trips = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
         filtered_trips = filtered_trips[filtered_trips["scheduled_headway"].notna()]
 
         # Get the average headway per route
@@ -208,7 +208,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     processed_daily_events = _process_arrival_departure_times(pq_df)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
     processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
-    processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
+    # processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
 
