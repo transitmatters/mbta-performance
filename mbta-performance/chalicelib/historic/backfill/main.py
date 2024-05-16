@@ -20,7 +20,7 @@ def backfill_all_years():
 
     prep_local_dir()
 
-    for year in ARCGIS_IDS.keys():
+    for year in reversed(ARCGIS_IDS.keys()):
         backfill_single_year(year)
 
 

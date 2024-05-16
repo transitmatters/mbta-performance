@@ -22,7 +22,11 @@ def process_events(input_csv: str, outdir: str, nozip: bool = False):
     df["event_time"] = df["service_date"] + pd.to_timedelta(df["event_time_sec"], unit="s")
     df.drop(columns=["event_time_sec"], inplace=True)
 
-    df = add_gtfs_headways(df)
+    try:
+        df = add_gtfs_headways(df)
+    except IndexError:
+        # failure to add gtfs benchmarks
+        pass
 
     service_date_month = pd.Grouper(key="service_date", freq="1M")
     grouped = df.groupby([service_date_month, "stop_id"])
