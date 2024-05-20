@@ -1,11 +1,11 @@
-from datetime import date, timedelta
+from datetime import date
 import io
 import pandas as pd
 import requests
 from typing import Tuple
 
 from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
-from ..date import format_dateint, get_current_service_date
+from ..date import format_dateint, get_current_service_date, EASTERN_TIME
 from ..gtfs import fetch_stop_times_from_gtfs
 
 from .. import parallel
@@ -63,8 +63,8 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
                 370             | place-chhil   | 4:59:36 AM  | 5:00:30 AM
                 380             | place-rsmnl   | (blah)      | (blah)
     """
-    pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert("US/Eastern")
-    pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert("US/Eastern")
+    pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
+    pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
     pq_df = pq_df.sort_values(by=["stop_sequence"])
 
     # explode departure and arrival times
@@ -143,7 +143,7 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     # assign each actual trip a scheduled trip_id, based on when it started the route
     route_starts = pq_df.loc[pq_df.groupby("trip_id").event_time.idxmin()]
     route_starts["arrival_time"] = (
-        route_starts.event_time - pd.Timestamp(service_date).tz_localize("US/Eastern")
+        route_starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
     ).dt.total_seconds()
 
     trip_id_map = pd.merge_asof(
@@ -170,26 +170,31 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
 
 
 def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
-    """Bucket scheduled headways into 30 minute buckets"""
+    """Bucket scheduled headways into 30 minute buckets.
 
-    # 30 minute buckets starting at 5:30am
-    buckets = pd.date_range(service_date, service_date + timedelta(days=2), freq="30min")
+    We do this so as to smooth the benchmark headways for the data dashboard.
+    TODO: do this with branch headways as well
+    """
+    # service date starts at 5:30am, but there are enough very early/late departures that we dont want to be opinionated
+    start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
+    end_time = start_time + pd.Timedelta(hours=48)
+    buckets = pd.date_range(start_time, end_time, freq="30min")
 
-    start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day, 4, 30)
-    end_time = pd.Timestamp(service_date.year, service_date.month, service_date.day + 1, 2, 0)
-    buckets = buckets[(buckets >= start_time) & (buckets <= end_time)]
-
+    _enriched_trips = []
     for bucket in buckets:
-        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize("US/Eastern")
-        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize("US/Eastern")
+        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize(EASTERN_TIME)
+        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize(EASTERN_TIME)
         filtered_trips = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
-        filtered_trips = filtered_trips[filtered_trips["scheduled_headway"].notna()]
 
         # Get the average headway per route
-        average_scheduled_headway = filtered_trips.groupby(["route_id", "direction_id"])["scheduled_headway"].mean()
+        average_scheduled_headway = filtered_trips.groupby(RTE_DIR_STOP)["scheduled_headway"].mean()
         average_scheduled_headway = average_scheduled_headway.round(-1)  # Round to the nearest 10seconds
 
-        # TODO: merge new headways to the correct trips by line and direction
+        enriched_trip = filtered_trips.merge(
+            average_scheduled_headway, how="left", on=RTE_DIR_STOP, suffixes=["_lamp", ""]
+        )
+        _enriched_trips.append(enriched_trip)
+    return pd.concat(_enriched_trips)[S3_COLUMNS]
 
 
 def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
@@ -208,7 +213,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     processed_daily_events = _process_arrival_departure_times(pq_df)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
     processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
-    # processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
+    processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
 
