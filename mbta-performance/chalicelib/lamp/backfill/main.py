@@ -1,17 +1,19 @@
 import pandas as pd
 from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 from ... import parallel
-from datetime import datetime, timedelta
+from datetime import date, timedelta
 
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
+
+EARLIEST_LAMP_DATA = date(2019, 9, 15)
 
 
 def backfill_all_in_index():
     """Backfill all the dates in the LAMP index."""
 
     # all dates that LAMP has data for, starting from 2019-09-15
-    dates = pd.date_range(datetime(2019, 9, 15).date(), datetime.today().date() - timedelta(days=1), freq="d")
+    dates = pd.date_range(EARLIEST_LAMP_DATA, date.today() - timedelta(days=1), freq="d")
 
     # Backfill each date, most recent to oldest
     for backfill_timestamp in dates[::-1]:
