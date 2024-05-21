@@ -174,6 +174,7 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
 
     We do this so as to smooth the benchmark headways for the data dashboard.
     TODO: do this with branch headways as well
+    TODO: group green line branches together in trunk headways
     """
     # service date starts at 5:30am, but there are enough very early/late departures that we dont want to be opinionated
     start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
