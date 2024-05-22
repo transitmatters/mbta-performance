@@ -1,15 +1,12 @@
 from datetime import date
 import io
-import os
 import pandas as pd
 import requests
-from typing import Iterable, Tuple
+from typing import Tuple
 
 from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
-from ..date import format_dateint, get_current_service_date
-from mbta_gtfs_sqlite import MbtaGtfsArchive
-from mbta_gtfs_sqlite.models import StopTime, Trip
-from sqlalchemy import or_
+from ..date import format_dateint, get_current_service_date, EASTERN_TIME
+from ..gtfs import fetch_stop_times_from_gtfs
 
 from .. import parallel
 from .. import s3
@@ -32,9 +29,6 @@ COLUMN_RENAME_MAP = {
 # that the vehicle is currently on (this can be due to AVL glitches, trip diversions, test train trips, etc.)
 TRIP_IDS_TO_DROP = ("NONREV-",)  # "ADDED-")
 
-# information to fetch from GTFS
-TEMP_GTFS_LOCAL_PREFIX = ".temp/gtfs-feeds/"
-MAX_QUERY_DEPTH = 900  # actually 1000
 # defining these columns in particular becasue we use them everywhere
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
 
@@ -69,8 +63,8 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
                 370             | place-chhil   | 4:59:36 AM  | 5:00:30 AM
                 380             | place-rsmnl   | (blah)      | (blah)
     """
-    pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert("US/Eastern")
-    pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert("US/Eastern")
+    pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
+    pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
     pq_df = pq_df.sort_values(by=["stop_sequence"])
 
     # explode departure and arrival times
@@ -131,33 +125,6 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     )
 
 
-def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
-    """Fetch scheduled stop time information from GTFS."""
-    if not os.path.exists(os.path.dirname(TEMP_GTFS_LOCAL_PREFIX)):
-        os.makedirs(TEMP_GTFS_LOCAL_PREFIX)
-    mbta_gtfs = MbtaGtfsArchive(TEMP_GTFS_LOCAL_PREFIX)
-    feed = mbta_gtfs.get_feed_for_date(service_date)
-    feed.download_or_build()
-    session = feed.create_sqlite_session()
-
-    gtfs_stops = []
-    for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
-        gtfs_stops.append(
-            pd.read_sql(
-                session.query(
-                    StopTime.trip_id, StopTime.stop_id, StopTime.arrival_time, Trip.route_id, Trip.direction_id
-                )
-                .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
-                .join(Trip, Trip.trip_id == StopTime.trip_id)
-                .statement,
-                session.bind,
-                dtype_backend="numpy_nullable",
-                dtype={"direction_id": "int16"},
-            )
-        )
-    return pd.concat(gtfs_stops)
-
-
 def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     """Enrich LAMP data with GTFS data for some schedule information."""
     trip_ids = pq_df["trip_id"].unique()
@@ -176,7 +143,7 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     # assign each actual trip a scheduled trip_id, based on when it started the route
     route_starts = pq_df.loc[pq_df.groupby("trip_id").event_time.idxmin()]
     route_starts["arrival_time"] = (
-        route_starts.event_time - pd.Timestamp(service_date).tz_localize("US/Eastern")
+        route_starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
     ).dt.total_seconds()
 
     trip_id_map = pd.merge_asof(
@@ -202,6 +169,35 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     return pq_df[S3_COLUMNS]
 
 
+def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
+    """Bucket scheduled headways into 30 minute buckets.
+
+    We do this so as to smooth the benchmark headways for the data dashboard.
+    TODO: do this with branch headways as well
+    TODO: group green line branches together in trunk headways
+    """
+    # service date starts at 5:30am, but there are enough very early/late departures that we dont want to be opinionated
+    start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
+    end_time = start_time + pd.Timedelta(hours=48)
+    buckets = pd.date_range(start_time, end_time, freq="30min")
+
+    _enriched_trips = []
+    for bucket in buckets:
+        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize(EASTERN_TIME)
+        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize(EASTERN_TIME)
+        filtered_trips = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
+
+        # Get the average headway per route
+        average_scheduled_headway = filtered_trips.groupby(RTE_DIR_STOP)["scheduled_headway"].mean()
+        average_scheduled_headway = average_scheduled_headway.round(-1)  # Round to the nearest 10seconds
+
+        enriched_trip = filtered_trips.merge(
+            average_scheduled_headway, how="left", on=RTE_DIR_STOP, suffixes=["_lamp", ""]
+        )
+        _enriched_trips.append(enriched_trip)
+    return pd.concat(_enriched_trips)[S3_COLUMNS]
+
+
 def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     """Process and tranform columns for the full day's events."""
     pq_df["direction_id"] = pq_df["direction_id"].astype("int16")
@@ -218,6 +214,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     processed_daily_events = _process_arrival_departure_times(pq_df)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
     processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
+    processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
 
     return processed_daily_events.sort_values(by=["event_time"])
 
@@ -260,6 +257,4 @@ def ingest_today_lamp_data():
 
 
 if __name__ == "__main__":
-    if not os.path.exists(os.path.dirname(TEMP_GTFS_LOCAL_PREFIX)):
-        os.makedirs(TEMP_GTFS_LOCAL_PREFIX)
     ingest_today_lamp_data()

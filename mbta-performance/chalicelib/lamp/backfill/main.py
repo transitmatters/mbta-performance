@@ -1,26 +1,30 @@
 import pandas as pd
-from ..ingest import LAMP_INDEX_URL, fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
+from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 from ... import parallel
+from datetime import date, timedelta
 
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
+
+EARLIEST_LAMP_DATA = date(2019, 9, 15)
 
 
 def backfill_all_in_index():
     """Backfill all the dates in the LAMP index."""
 
-    # Load the index
-    index = pd.read_csv(LAMP_INDEX_URL)
-    # Get the dates in the index
-    dates = pd.to_datetime(index["service_date"]).dt.date
-    # Backfill each date
-    for date_to_backfill in dates:
+    # all dates that LAMP has data for, starting from 2019-09-15
+    dates = pd.date_range(EARLIEST_LAMP_DATA, date.today() - timedelta(days=1), freq="d")
+
+    # Backfill each date, most recent to oldest
+    for backfill_timestamp in dates[::-1]:
+        date_to_backfill = backfill_timestamp.date()
         try:
             pq_df = fetch_pq_file_from_remote(date_to_backfill)
         except ValueError as e:
             # If we can't fetch the file, we can't process it
             print(f"Failed to fetch {date_to_backfill}: {e}")
-        processed_daily_events = ingest_pq_file(pq_df)
+        print(f"Processing {date_to_backfill}")
+        processed_daily_events = ingest_pq_file(pq_df, date_to_backfill)
 
         # split daily events by stop_id and parallel upload to s3
         stop_event_groups = processed_daily_events.groupby("stop_id")

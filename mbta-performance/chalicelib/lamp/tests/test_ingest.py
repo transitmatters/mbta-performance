@@ -104,6 +104,72 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(pq_df_after.shape, (16700, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
+    def test__average_scheduled_headways(self):
+        pq_df_before = pd.read_parquet(
+            io.BytesIO(self.data),
+            columns=constants.LAMP_COLUMNS,
+            engine="pyarrow",
+            dtype_backend="numpy_nullable",
+        ).rename(columns=ingest.COLUMN_RENAME_MAP)
+        pq_df_before = ingest._process_arrival_departure_times(pq_df_before)
+        pq_df_before = pq_df_before[pq_df_before["stop_id"].notna()]
+        # ensure that no values are dropped during calculation
+        pq_df_after = ingest._average_scheduled_headways(pq_df_before, date(2024, 2, 7))
+        self.assertEqual(pq_df_before.shape, pq_df_after.shape)
+
+        # that we do not erase any headway info
+        null_headway_events_before = pq_df_before[pq_df_before["scheduled_headway"].isna()]
+        null_headway_events_after = pq_df_after[pq_df_after["scheduled_headway"].isna()]
+        self.assertEqual(null_headway_events_after.shape, (245, 17))
+        self.assertTrue(len(null_headway_events_after) <= len(null_headway_events_before))
+
+        # pick a route/dir and directly compare
+        oak_grove_recalced = pq_df_after[
+            (pq_df_after.route_id == "Orange") & (pq_df_after.direction_id == True) & (pq_df_after.stop_id == "70036")
+        ].scheduled_headway
+        self.assertListEqual(
+            list(oak_grove_recalced),
+            [
+                600.0,
+                540.0,
+                480.0,
+                480.0,
+                450.0,
+                450.0,
+                480.0,
+                540.0,
+                540.0,
+                540.0,
+                540.0,
+                540.0,
+                540.0,
+                540.0,
+                540.0,
+                540.0,
+                480.0,
+                480.0,
+                480.0,
+                480.0,
+                480.0,
+                480.0,
+                480.0,
+                480.0,
+                480.0,
+                510.0,
+                510.0,
+                600.0,
+                600.0,
+                600.0,
+                600.0,
+                600.0,
+                600.0,
+                600.0,
+                630.0,
+                630.0,
+            ],
+        )
+        pass
+
     def test_upload_to_s3(self):
         pass
 

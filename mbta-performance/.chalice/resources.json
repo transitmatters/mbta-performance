@@ -29,6 +29,9 @@
               "Ref": "DDTags"
             }
           }
+        },
+        "EphemeralStorage": {
+          "Size": 2048
         }
       }
     }
