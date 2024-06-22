@@ -31,6 +31,14 @@ def process_events(input_csv: str, outdir: str, nozip: bool = False, columns: li
         # failure to add gtfs benchmarks
         pass
 
+    # Write to disk
+    to_disk(df, outdir, nozip)
+
+
+def to_disk(df: pd.DataFrame, outdir, nozip=False):
+    """
+    For each service_date/stop_id/direction/route group, we write the events to disk.
+    """
     service_date_month = pd.Grouper(key="service_date", freq="1ME")
     grouped = df.groupby([service_date_month, "stop_id"])
 

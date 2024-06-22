@@ -20,7 +20,7 @@
       "lambda_functions": {
         "process_daily_lamp": {
           "iam_policy_file": "policy-lamp-ingest.json",
-          "lambda_timeout": 900,
+          "lambda_timeout": 2000,
           "lambda_memory_size": 2048
         }
       }
