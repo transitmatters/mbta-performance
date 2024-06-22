@@ -7,17 +7,30 @@ ARCGIS_IDS = {
     "2021": "611b8c77f30245a0af0c62e2859e8b49",
     "2022": "99094a0c59e443cdbdaefa071c6df609",
     "2023": "9a7f5634db72459ab731b6a9b274a1d4",
-    "2024": "4adbec39db40498a8530496d8c63a924",
+    "2024": "0711756aa5e1400891e79b984a94b495",
 }
 
 
-HISTORIC_COLUMNS = [
+HISTORIC_COLUMNS_PRE_LAMP = [
     "service_date",
     "route_id",
     "trip_id",
     "direction_id",
     "stop_id",
     "stop_sequence",
+    "vehicle_id",
+    "vehicle_label",
+    "event_type",
+    "event_time_sec",
+]
+
+HISTORIC_COLUMNS_LAMP = [
+    "service_date",
+    "route_id",
+    "trip_id",
+    "direction_id",
+    "stop_id",
+    "sync_stop_sequence",
     "vehicle_id",
     "vehicle_label",
     "event_type",
