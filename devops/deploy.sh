@@ -33,13 +33,14 @@ shrink
 # Check package size before deploying
 maximumsize=79100000
 actualsize=$(wc -c <"cfn/layer-deployment.zip")
+difference=$(expr $actualsize - $maximumsize)
 if [ $actualsize -ge $maximumsize ]; then
     echo ""
-    echo "layer-deployment.zip is over $maximumsize bytes. Shrink the package further to be able to deploy"
+    echo "layer-deployment.zip is over $maximumsize bytes. Shrink the package by $difference bytes to be able to deploy"
     exit 1
 fi
 
-aws cloudformation package --template-file cfn/sam.json --s3-bucket $BUCKET --output-template-file cfn/packaged.yaml
-aws cloudformation deploy --template-file cfn/packaged.yaml --stack-name $STACK_NAME \
-    --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
-    --parameter-overrides DDApiKey=$DD_API_KEY GitVersion=$GIT_VERSION DDTags=$DD_TAGS
+# aws cloudformation package --template-file cfn/sam.json --s3-bucket $BUCKET --output-template-file cfn/packaged.yaml
+# aws cloudformation deploy --template-file cfn/packaged.yaml --stack-name $STACK_NAME \
+#     --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
+#     --parameter-overrides DDApiKey=$DD_API_KEY GitVersion=$GIT_VERSION DDTags=$DD_TAGS

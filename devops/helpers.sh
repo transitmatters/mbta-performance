@@ -26,6 +26,10 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Singapore
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Turkey
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Poland
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Egypt
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Hongkong
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/I*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/J*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/examples/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/a*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/b*/*
@@ -34,6 +38,7 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cu*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clean*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloud9/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clouddirectory/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/d*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/e*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/f*/*
