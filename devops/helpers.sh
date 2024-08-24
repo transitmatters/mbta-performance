@@ -12,23 +12,28 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow*/tests/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow*/tests/**/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy*/testing/**/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Africa/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Asia/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Atlantic/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Arctic/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Antarctica/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Australia/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Brazil/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Chile/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Europe/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Indian/*
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/tzdata/zoneinfo/Mexico/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Africa/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Asia/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Atlantic/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Arctic/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Antarctica/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Australia/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Brazil/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Chile/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Europe/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Indian/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Mexico/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Singapore
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Turkey
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Poland
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/examples/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/a*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/b*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/co*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/ch*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cu*/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clean*/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloud9/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/d*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/e*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/f*/*
@@ -48,6 +53,7 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/se*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sn*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sm*/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sim*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/ss*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/st*/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/su*/*
