@@ -22,6 +22,7 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Chile/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Europe/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Indian/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Pacific/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Mexico/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Singapore
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Turkey
