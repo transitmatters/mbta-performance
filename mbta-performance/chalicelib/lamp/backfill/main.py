@@ -12,6 +12,13 @@ EARLIEST_LAMP_DATA = date(2019, 9, 15)
 def backfill_all_in_index():
     """Backfill all the dates in the LAMP index."""
 
+    confirmation = input(
+        "This will backfill all dates in the LAMP index from today going back to September 15th 2019. This will cost about $1 per 30 days backfilled and will take hours. Are you sure you want to proceed? (yes/no): "
+    )
+    if confirmation.lower() != "yes" and confirmation.lower() != "y":
+        print("You must enter 'yes' to proceed. Exiting.")
+        exit(1)
+
     # all dates that LAMP has data for, starting from 2019-09-15
     dates = pd.date_range(EARLIEST_LAMP_DATA, date.today() - timedelta(days=1), freq="d")
 
