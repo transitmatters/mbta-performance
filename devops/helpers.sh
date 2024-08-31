@@ -24,11 +24,16 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Indian/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Pacific/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Mexico/*
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Pacific/*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Singapore
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Turkey
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Poland
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Egypt
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Hongkong
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Portugal
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Libya
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Kwajalein
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Zulu
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/I*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/J*
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/examples/*
