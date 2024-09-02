@@ -34,6 +34,7 @@ shrink
 maximumsize=79100000
 actualsize=$(wc -c <"cfn/layer-deployment.zip")
 difference=$(expr $actualsize - $maximumsize)
+echo "layer-deployment.zip is $actualsize bytes"
 if [ $actualsize -ge $maximumsize ]; then
     echo ""
     echo "layer-deployment.zip is over $maximumsize bytes. Shrink the package by $difference bytes to be able to deploy"
