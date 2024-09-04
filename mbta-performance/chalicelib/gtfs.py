@@ -21,7 +21,7 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
     )
     feed = mbta_gtfs.get_feed_for_date(service_date)
     feed.download_or_build()
-    session = feed.create_sqlite_session(compact=True)
+    session = feed.create_sqlite_session()
     exists_remotely = feed.exists_remotely()
 
     gtfs_stops = []
