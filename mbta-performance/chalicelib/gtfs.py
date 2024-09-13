@@ -22,6 +22,7 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
     feed = mbta_gtfs.get_feed_for_date(service_date)
     feed.download_or_build()
     session = feed.create_sqlite_session()
+    exists_remotely = feed.exists_remotely()
 
     gtfs_stops = []
     for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
@@ -38,4 +39,8 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
                 dtype={"direction_id": "int16"},
             )
         )
+
+    if not exists_remotely:
+        print(f"[{feed.key}] Uploading GTFS feed to S3")
+        feed.upload_to_s3()
     return pd.concat(gtfs_stops)
