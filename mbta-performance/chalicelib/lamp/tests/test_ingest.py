@@ -104,6 +104,26 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(pq_df_after.shape, (16700, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2023-10-07"})
 
+    def test_ingest_pq_file_nonrev(self):
+        pq_df_before = pd.read_parquet(
+            io.BytesIO(self.data),
+            columns=constants.LAMP_COLUMNS,
+            engine="pyarrow",
+            dtype_backend="numpy_nullable",
+        )
+        pq_df_before["direction_id"] = pq_df_before["direction_id"].astype("int16")
+
+        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
+            pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 4, 13))
+        nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
+        added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
+        null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
+        self.assertFalse(nonrev.empty)
+        self.assertEqual(added.shape, (3763, 17))
+        self.assertTrue(null_id_events.empty)
+        self.assertEqual(pq_df_after.shape, (16700, 17))
+        self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-04-13"})
+
     def test__average_scheduled_headways(self):
         pq_df_before = pd.read_parquet(
             io.BytesIO(self.data),
