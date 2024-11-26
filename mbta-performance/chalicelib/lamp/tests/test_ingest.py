@@ -84,7 +84,9 @@ class TestIngest(unittest.TestCase):
                 ],
             )
 
-    def test_ingest_pq_file(self):
+    # Before December 2023, LAMP will include trips both revenue and not.
+    # We should expect to see a few non-revenue trips in the output, and filter them out.
+    def test_ingest_pq_file_nonrevenue(self):
         pq_df_before = pd.read_parquet(
             io.BytesIO(self.data),
             columns=constants.LAMP_COLUMNS,
@@ -104,7 +106,9 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(pq_df_after.shape, (16700, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2023-10-07"})
 
-    def test_ingest_pq_file_nonrev(self):
+    # After December 2023, LAMP will only include trips that are properly revenue.
+    # Anything labeled as NONREV- or ADDED- after December 2023 are actually considered revenue
+    def test_ingest_pq_file_revenue(self):
         pq_df_before = pd.read_parquet(
             io.BytesIO(self.data),
             columns=constants.LAMP_COLUMNS,
