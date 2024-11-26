@@ -209,8 +209,8 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     # from that which GTFS reports in its schedule. Replace for better schedule matching.
     pq_df["stop_id"] = pq_df["stop_id"].replace(STOP_ID_NUMERIC_MAP)
     # drop non-revenue producing events
-    cutoff_date = pd.Timestamp("2023-11-30", tz=EASTERN_TIME)
-    pq_df = pq_df[~((pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)) & (pq_df["event_time"] < cutoff_date))]
+    cutoff_date = format_dateint(20231130)
+    pq_df = pq_df[~((pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)) & (pq_df["service_date"] < cutoff_date))]
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
