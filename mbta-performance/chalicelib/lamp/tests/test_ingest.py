@@ -95,13 +95,11 @@ class TestIngest(unittest.TestCase):
 
         with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
             pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
-        nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
-        self.assertTrue(nonrev.empty)
         self.assertEqual(added.shape, (3763, 17))
         self.assertTrue(null_id_events.empty)
-        self.assertEqual(pq_df_after.shape, (16700, 17))
+        self.assertEqual(pq_df_after.shape, (17074, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test__average_scheduled_headways(self):

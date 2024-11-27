@@ -25,9 +25,9 @@ COLUMN_RENAME_MAP = {
 }
 
 # if a trip_id begins with NONREV-, it is not revenue producing and thus not something we want to benchmark
-# if an event has a trip_id begins with ADDED-, then a downstream process was unable to determine the scheduled trip
-# that the vehicle is currently on (this can be due to AVL glitches, trip diversions, test train trips, etc.)
-TRIP_IDS_TO_DROP = ("NONREV-",)  # "ADDED-")
+# but only if it happens before December 2023 as it's an unreliable indicator of actual revenue service.
+# All trips after that are properly ignored by the LAMP system, and don't appear in the dataset anymore.
+TRIP_IDS_TO_DROP = ("NONREV-",)
 
 # defining these columns in particular becasue we use them everywhere
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
@@ -209,7 +209,8 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     # from that which GTFS reports in its schedule. Replace for better schedule matching.
     pq_df["stop_id"] = pq_df["stop_id"].replace(STOP_ID_NUMERIC_MAP)
     # drop non-revenue producing events
-    pq_df = pq_df[~pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)]
+    cutoff_date = format_dateint(20231130)
+    pq_df = pq_df[~((pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)) & (pq_df["service_date"] < cutoff_date))]
 
     processed_daily_events = _process_arrival_departure_times(pq_df)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
