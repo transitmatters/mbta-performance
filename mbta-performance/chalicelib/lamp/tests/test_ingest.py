@@ -84,9 +84,7 @@ class TestIngest(unittest.TestCase):
                 ],
             )
 
-    # Before December 2023, LAMP will include trips both revenue and not.
-    # We should expect to see a few non-revenue trips in the output, and filter them out.
-    def test_ingest_pq_file_nonrevenue(self):
+    def test_ingest_pq_file(self):
         pq_df_before = pd.read_parquet(
             io.BytesIO(self.data),
             columns=constants.LAMP_COLUMNS,
@@ -96,37 +94,13 @@ class TestIngest(unittest.TestCase):
         pq_df_before["direction_id"] = pq_df_before["direction_id"].astype("int16")
 
         with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
-            pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2023, 10, 7))
-        nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
+            pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
-        self.assertTrue(nonrev.empty)
         self.assertEqual(added.shape, (3763, 17))
         self.assertTrue(null_id_events.empty)
         self.assertEqual(pq_df_after.shape, (16700, 17))
-        self.assertEqual(set(pq_df_after["service_date"].unique()), {"2023-10-07"})
-
-    # After December 2023, LAMP will only include trips that are properly revenue.
-    # Anything labeled as NONREV- or ADDED- after December 2023 are actually considered revenue
-    def test_ingest_pq_file_revenue(self):
-        pq_df_before = pd.read_parquet(
-            io.BytesIO(self.data),
-            columns=constants.LAMP_COLUMNS,
-            engine="pyarrow",
-            dtype_backend="numpy_nullable",
-        )
-        pq_df_before["direction_id"] = pq_df_before["direction_id"].astype("int16")
-
-        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
-            pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 4, 13))
-        nonrev = pq_df_after[pq_df_after["trip_id"].str.startswith("NONREV-")]
-        added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
-        null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
-        self.assertFalse(nonrev.empty)
-        self.assertEqual(added.shape, (3763, 17))
-        self.assertTrue(null_id_events.empty)
-        self.assertEqual(pq_df_after.shape, (16700, 17))
-        self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-04-13"})
+        self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test__average_scheduled_headways(self):
         pq_df_before = pd.read_parquet(
