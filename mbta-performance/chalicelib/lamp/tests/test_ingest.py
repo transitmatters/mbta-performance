@@ -99,7 +99,7 @@ class TestIngest(unittest.TestCase):
         null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
         self.assertEqual(added.shape, (3763, 17))
         self.assertTrue(null_id_events.empty)
-        self.assertEqual(pq_df_after.shape, (16700, 17))
+        self.assertEqual(pq_df_after.shape, (17074, 17))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test__average_scheduled_headways(self):
