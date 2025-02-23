@@ -19,6 +19,7 @@
       "Properties": {
         "Environment": {
           "Variables": {
+            "DD_LAMBDA_HANDLER": "app.process_daily_lamp",
             "DD_API_KEY": {
               "Ref": "DDApiKey"
             },
