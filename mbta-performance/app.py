@@ -24,8 +24,8 @@ def process_daily_lamp(event):
     lamp.ingest_today_lamp_data()
 
 
-# Runs once the next day at 9am or 10am depending on DST
-@app.schedule(Cron("0", "13", "*", "*", "?", "*"))
+# Runs once the next day at 11am or 12pm depending on DST
+@app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
     lamp.ingest_yesterday_lamp_data()
