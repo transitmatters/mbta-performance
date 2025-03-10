@@ -15,7 +15,7 @@ app.register_middleware(ConvertToMiddleware(datadog_lambda_wrapper))
 @app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
 def process_daily_lamp(event):
     """Ensure execution only happens at 6 AM or later in Boston time."""
-    now_boston = datetime.now(ZoneInfo("America/New_York"))
+    now_boston = datetime.now(ZoneInfo("US/Eastern"))
 
     # If it's before 6 AM Boston time, exit early to avoid errors
     if now_boston.hour >= 3 and now_boston.hour < 6:
