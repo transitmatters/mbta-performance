@@ -241,9 +241,7 @@ def upload_to_s3(stop_id_and_events: Tuple[str, pd.DataFrame], service_date: dat
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 
-def ingest_today_lamp_data():
-    """Ingest and upload today's LAMP data."""
-    service_date = get_current_service_date()
+def ingest_lamp_data(service_date: date):
     try:
         pq_df = fetch_pq_file_from_remote(service_date)
     except ValueError as e:
@@ -255,6 +253,18 @@ def ingest_today_lamp_data():
     # split daily events by stop_id and parallel upload to s3
     stop_event_groups = processed_daily_events.groupby("stop_id")
     _parallel_upload(stop_event_groups, service_date)
+
+
+def ingest_today_lamp_data():
+    """Ingest and upload today's LAMP data."""
+    service_date = get_current_service_date()
+    ingest_lamp_data(service_date)
+
+
+def ingest_yesterday_lamp_data():
+    """Ingest and upload yesterday's LAMP data."""
+    service_date = get_current_service_date() - pd.Timedelta(days=1)
+    ingest_lamp_data(service_date)
 
 
 if __name__ == "__main__":

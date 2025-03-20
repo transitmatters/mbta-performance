@@ -35,6 +35,28 @@
           "Size": 2048
         }
       }
+    },
+    "ProcessYesterdayLamp": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Environment": {
+          "Variables": {
+            "DD_LAMBDA_HANDLER": "app.process_yesterday_lamp",
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        },
+        "EphemeralStorage": {
+          "Size": 2048
+        }
+      }
     }
   }
 }
