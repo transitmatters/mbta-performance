@@ -43,5 +43,6 @@ fi
 
 aws cloudformation package --template-file cfn/sam.json --s3-bucket $BUCKET --output-template-file cfn/packaged.yaml
 aws cloudformation deploy --template-file cfn/packaged.yaml --stack-name $STACK_NAME \
+    --tags service=mbta-performance env=prod \
     --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
     --parameter-overrides DDApiKey=$DD_API_KEY GitVersion=$GIT_VERSION DDTags=$DD_TAGS
