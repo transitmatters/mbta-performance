@@ -4,7 +4,7 @@ Scripts for processing MBTA performance data both from LAMP and from monthly his
 
 ## Requirements to develop locally
 
-- Python 3.12 with recent poetry (1.7.0 or later)
+- Python 3.12 with recent poetry (2.0.0 or later)
   - Verify with `python --version && poetry --version`
   - `poetry self update` to update poetry
 

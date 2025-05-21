@@ -25,10 +25,17 @@ pushd mbta-performance/
 poetry run chalice package --stage prod --merge-template .chalice/resources.json cfn/
 
 # Shrink the deployment package for the lambda layer https://stackoverflow.com/a/69355796
-echo "Shrinking the deployment package for the lambda layer"
+actualsize=$(wc -c <"cfn/layer-deployment.zip")
+echo "Shrinking the deployment package for the lambda layer. It's currently $actualsize bytes."
 
 source ../devops/helpers.sh
-shrink
+shrink > /dev/null 2>&1
+
+# Check the size of the new package
+newsize=$(wc -c <"cfn/layer-deployment.zip")
+echo "The deployment package is now $newsize bytes"
+diffsize=$(($actualsize - $newsize))
+echo "Difference: $diffsize bytes"
 
 # Check package size before deploying
 maximumsize=79100000
@@ -40,6 +47,7 @@ if [ $actualsize -ge $maximumsize ]; then
     echo "layer-deployment.zip is over $maximumsize bytes. Shrink the package by $difference bytes to be able to deploy"
     exit 1
 fi
+echo "layer-deployment.zip is under the maximum size of $maximumsize bytes, by $difference bytes"
 
 aws cloudformation package --template-file cfn/sam.json --s3-bucket $BUCKET --output-template-file cfn/packaged.yaml
 aws cloudformation deploy --template-file cfn/packaged.yaml --stack-name $STACK_NAME \
