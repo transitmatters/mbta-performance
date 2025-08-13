@@ -23,7 +23,7 @@ HISTORIC_COLUMNS_PRE_LAMP = [
     "vehicle_label",
     "event_type",
     "event_time_sec",
-    "vehicle_consist"
+    "vehicle_consist",
 ]
 
 HISTORIC_COLUMNS_LAMP = [
@@ -37,5 +37,5 @@ HISTORIC_COLUMNS_LAMP = [
     "vehicle_label",
     "event_type",
     "event_time_sec",
-    "vehicle_consist"
+    "vehicle_consist",
 ]
