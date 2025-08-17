@@ -18,6 +18,7 @@ LAMP_COLUMNS = [
     "scheduled_travel_time",
     "scheduled_headway_trunk",
     "scheduled_headway_branch",
+    "vehicle_consist",
 ]
 
 # columns that should be output to s3 events.csv
@@ -39,6 +40,7 @@ S3_COLUMNS = [
     "scheduled_tt",
     "scheduled_headway",
     "scheduled_headway_branch",
+    "vehicle_consist",
 ]
 
 

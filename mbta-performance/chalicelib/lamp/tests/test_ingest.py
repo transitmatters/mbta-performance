@@ -81,6 +81,7 @@ class TestIngest(unittest.TestCase):
                     pd.Int64Dtype(),
                     pd.Int64Dtype(),
                     pd.Int64Dtype(),
+                    "string[python]",  # vehicle_consist
                 ],
             )
 
@@ -97,9 +98,9 @@ class TestIngest(unittest.TestCase):
             pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
-        self.assertEqual(added.shape, (3763, 17))
+        self.assertEqual(added.shape, (3763, 18))
         self.assertTrue(null_id_events.empty)
-        self.assertEqual(pq_df_after.shape, (17074, 17))
+        self.assertEqual(pq_df_after.shape, (17074, 18))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test__average_scheduled_headways(self):
@@ -118,7 +119,7 @@ class TestIngest(unittest.TestCase):
         # that we do not erase any headway info
         null_headway_events_before = pq_df_before[pq_df_before["scheduled_headway"].isna()]
         null_headway_events_after = pq_df_after[pq_df_after["scheduled_headway"].isna()]
-        self.assertEqual(null_headway_events_after.shape, (245, 17))
+        self.assertEqual(null_headway_events_after.shape, (245, 18))
         self.assertTrue(len(null_headway_events_after) <= len(null_headway_events_before))
 
         # pick a route/dir and directly compare
