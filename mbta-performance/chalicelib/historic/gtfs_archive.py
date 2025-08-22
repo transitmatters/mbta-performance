@@ -129,24 +129,45 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         trip_start_times = gtfs_stops.groupby("trip_id").arrival_time.transform("min")
         gtfs_stops["scheduled_tt"] = (gtfs_stops.arrival_time - trip_start_times).dt.seconds
 
+        # Filter out rows with null values in merge keys to prevent merge_asof errors
+        days_events_clean = days_events.dropna(subset=RTE_DIR_STOP)
+        gtfs_stops_clean = gtfs_stops.dropna(subset=RTE_DIR_STOP)
+
+        if days_events_clean.empty or gtfs_stops_clean.empty:
+            continue
+
         # assign each actual timepoint a scheduled headway
         # merge_asof 'backward' matches the previous scheduled value of 'arrival_time'
-        days_events["arrival_time"] = days_events.event_time - service_date
+        days_events_clean = days_events_clean.copy()  # Create a copy to avoid SettingWithCopyWarning
+        days_events_clean["arrival_time"] = days_events_clean.event_time - service_date
+
+        # Additional null check after creating arrival_time
+        days_events_clean = days_events_clean.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
+        gtfs_stops_clean = gtfs_stops_clean.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
+
+        if days_events_clean.empty or gtfs_stops_clean.empty:
+            continue
+
         final = pd.merge_asof(
-            days_events.sort_values(by="arrival_time"),
-            gtfs_stops[RTE_DIR_STOP + ["arrival_time", "scheduled_headway"]],
+            days_events_clean.sort_values(by="arrival_time"),
+            gtfs_stops_clean[RTE_DIR_STOP + ["arrival_time", "scheduled_headway"]],
             on="arrival_time",
             direction="backward",
             by=RTE_DIR_STOP,
         )
 
         # assign each actual trip a scheduled trip_id, based on when it started the route
-        route_starts = days_events.loc[days_events.groupby("trip_id").event_time.idxmin()]
+        route_starts = days_events_clean.loc[days_events_clean.groupby("trip_id").event_time.idxmin()]
         route_starts = route_starts[RTE_DIR_STOP + ["trip_id", "arrival_time"]]
+
+        # Additional null check for route_starts
+        route_starts = route_starts.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
+        if route_starts.empty:
+            continue
 
         trip_id_map = pd.merge_asof(
             route_starts.sort_values(by="arrival_time"),
-            gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]],
+            gtfs_stops_clean[RTE_DIR_STOP + ["arrival_time", "trip_id"]],
             on="arrival_time",
             direction="nearest",
             by=RTE_DIR_STOP,
@@ -158,7 +179,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         final["scheduled_trip_id"] = final.trip_id.map(trip_id_map)
         final = pd.merge(
             final,
-            gtfs_stops[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]],
+            gtfs_stops_clean[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]],
             how="left",
             left_on=RTE_DIR_STOP + ["scheduled_trip_id"],
             right_on=RTE_DIR_STOP + ["trip_id"],
