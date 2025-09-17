@@ -37,3 +37,102 @@ HISTORIC_COLUMNS_LAMP = [
     "event_type",
     "event_time_sec",
 ]
+
+
+#  Ferry Section
+FERRY_UPDATE_CACHE_URL = "https://hub.arcgis.com/api/download/v1/items/ae21643bbe60488db8520cc694f882aa/csv?redirect=false&layers=0&updateCache=true"
+FERRY_RIDERSHIP_ARCGIS_URL = "https://hub.arcgis.com/api/v3/datasets/ae21643bbe60488db8520cc694f882aa_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1"
+
+
+CSV_FIELDS = [
+    "service_date",
+    "route_id",
+    "trip_id",
+    "direction_id",
+    "stop_id",
+    "stop_sequence",
+    "vehicle_id",
+    "vehicle_label",
+    "event_type",
+    "event_time",
+    "scheduled_headway",
+    "scheduled_tt",
+    "vehicle_consist",
+]
+
+
+unofficial_ferry_labels_map = {
+    "F1": "Boat-F1",
+    "F2H": "Boat-F1",
+    "F3": "Boat-EastBoston",
+    "F4": "Boat-F4",
+    "F5": "Boat-Lynn",
+    "F6": "Boat-F6",
+    "F7": "Boat-F7",
+    "F8": "Boat-F8",
+}
+
+inbound_outbound = {"From Boston": 0, "To Boston": 1}
+
+example_field_mapping = {
+    "service_date": "service_date",
+    "route_id": "route_id",
+    "trip_id": "trip_id",
+    "direction_id": "travel_direction",
+    "stop_id": "stop_id",
+    "stop_sequence": None,
+    "vehicle_id": "vessel_time_slot",
+    "vehicle_label": None,
+    "event_type": None,
+    "event_time": "actual_arrival",
+    "scheduled_headway": "mbta_sched_arrival",
+    "scheduled_tt": None,
+    "vehicle_consist": None,
+}
+
+arrival_field_mapping = {
+    "service_date": "service_date",
+    "route_id": "route_id",
+    "trip_id": "trip_id",
+    "travel_direction": "direction_id",
+    "arrival_terminal": "stop_id",
+    "vessel_time_slot": "vehicle_id",
+    "actual_arrival": "event_time",
+    "mbta_sched_arrival": "scheduled_headway",
+    "scheduled_tt": "scheduled_tt",
+}
+
+departure_field_mapping = {
+    "service_date": "service_date",
+    "route_id": "route_id",
+    "trip_id": "trip_id",
+    "travel_direction": "direction_id",
+    "departure_terminal": "stop_id",
+    "vessel_time_slot": "vehicle_id",
+    "actual_departure": "event_time",
+    "mbta_sched_departure": "scheduled_headway",
+    "scheduled_tt": "scheduled_tt",
+}
+
+# For these I used context clues from the CSV and then matched up using the MBTA Website to find Stop IDs
+station_mapping = {
+    "Aquarium": "Boat-Aquarium",
+    "Boston": "Boat-Long",
+    "Central Whf": "Boat-Aquarium",
+    "Georges": "Boat-George",
+    "Hingham": "Boat-Hingham",
+    "Hull": "Boat-Hull",
+    "Lewis": "Boat-Lewis",
+    "Logan": "Boat-Logan",
+    "Long Wharf N": "Boat-Long",
+    "Long Wharf S": "Boat-Long-South",
+    "Lynn": "Boat-Blossom",
+    "Navy Yard": "Boat-Charlestown",
+    "Quincy": "Boat-Quincy",
+    "Rowes": "Boat-Rowes",
+    "Rowes Wharf": "Boat-Rowes",
+    "Seaport": "Boat-Fan",
+    "Winthrop": "Boat-Winthrop",
+    "HULL": "Boat-Hull",
+    "LOGAN": "Boat-Logan",
+}
