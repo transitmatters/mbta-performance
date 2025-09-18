@@ -1,3 +1,4 @@
+# ARCGIS_IDS for each year, rapid transit data
 ARCGIS_IDS = {
     "2016": "3e892be850fe4cc4a15d6450de4bd318",
     "2017": "cde60045db904ad299922f4f8759dcad",
@@ -9,6 +10,18 @@ ARCGIS_IDS = {
     "2023": "9a7f5634db72459ab731b6a9b274a1d4",
     "2024": "0711756aa5e1400891e79b984a94b495",
     "2025": "e2344a2297004b36b82f57772926ed1a",
+}
+
+# ARCGIS_IDS for each year, bus data
+BUS_ARCGIS_IDS = {
+    "2018": "d685ba39d9a54d908f49a2a762a9eb47",
+    "2019": "1bd340b39942438685d8dcdfe3f26d1a",
+    "2020": "4c1293151c6c4a069d49e6b85ee68ea4",
+    "2021": "2d415555f63b431597721151a7e07a3e",
+    "2022": "ef464a75666349f481353f16514c06d0",
+    "2023": "b7b36fdb7b3a4728af2fccc78c2ca5b7",
+    "2024": "96c77138c3144906bce93d0257531b6a",
+    "2025": "924df13d845f4907bb6a6c3ed380d57a",
 }
 
 
