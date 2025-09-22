@@ -85,6 +85,8 @@ def process_ferry(
     df["mbta_sched_departure"] = pd.to_datetime(df["mbta_sched_departure"], errors="coerce").dt.tz_convert(
         tz="US/Eastern"
     )
+    df["actual_departure"] = pd.to_datetime(df["actual_departure"], errors="coerce").dt.tz_convert(tz="US/Eastern")
+    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], errors="coerce").dt.tz_convert(tz="US/Eastern")
 
     # Calculate Travel time in Minutes - only for rows that have both arrival and departure times
     # This should be calculated per trip, not per event
