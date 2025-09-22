@@ -76,10 +76,27 @@ def process_ferry(
 ):
     # read data, convert to datetime
     df = pd.read_csv(path_to_csv_file, low_memory=False)
+    df.dropna(
+        subset=["travel_direction", "trip_id", "departure_terminal", "mbta_sched_arrival", "mbta_sched_departure"]
+    )
 
-    # Calculate Travel time in Minutes
-    time_diff = pd.to_datetime(df["mbta_sched_arrival"]) - pd.to_datetime(df["mbta_sched_departure"])
+    # Convert to datetime first, then apply timezone localization
+    df["mbta_sched_arrival"] = pd.to_datetime(df["mbta_sched_arrival"], errors="coerce").dt.tz_convert(tz="US/Eastern")
+    df["mbta_sched_departure"] = pd.to_datetime(df["mbta_sched_departure"], errors="coerce").dt.tz_convert(
+        tz="US/Eastern"
+    )
+
+    # Calculate Travel time in Minutes - only for rows that have both arrival and departure times
+    # This should be calculated per trip, not per event
+    arrival_time = df["mbta_sched_arrival"]
+    departure_time = df["mbta_sched_departure"]
+
+    # Only calculate travel time where both times are valid
+    time_diff = arrival_time - departure_time
     df["scheduled_tt"] = time_diff.dt.total_seconds() / 60
+
+    # Remove negative travel times (data quality issue)
+    df.loc[df["scheduled_tt"] < 0, "scheduled_tt"] = None
 
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound).infer_objects(copy=False)
