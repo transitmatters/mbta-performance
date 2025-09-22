@@ -11,7 +11,6 @@ from .constants import (
     inbound_outbound,
 )
 from .gtfs_archive import add_gtfs_headways
-from ..date import service_date as get_service_date
 from datetime import datetime
 
 
