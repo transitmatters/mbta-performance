@@ -72,12 +72,22 @@ def to_disk(df: pd.DataFrame, outdir, nozip=False):
 def process_ferry(
     path_to_csv_file: str,
     outdir: str,
-    nozip: bool = False,
+    nozip: bool = True,
 ):
     # read data, convert to datetime
     df = pd.read_csv(path_to_csv_file, low_memory=False)
+
+    # Make sure these columns have data
     df.dropna(
-        subset=["travel_direction", "trip_id", "departure_terminal", "mbta_sched_arrival", "mbta_sched_departure"]
+        subset=[
+            "travel_direction",
+            "trip_id",
+            "departure_terminal",
+            "mbta_sched_arrival",
+            "mbta_sched_departure",
+            "actual_departure",
+            "actual_arrival",
+        ]
     )
 
     # Convert to datetime first, then apply timezone localization
@@ -85,8 +95,8 @@ def process_ferry(
     df["mbta_sched_departure"] = pd.to_datetime(df["mbta_sched_departure"], errors="coerce").dt.tz_convert(
         tz="US/Eastern"
     )
-    df["actual_departure"] = pd.to_datetime(df["actual_departure"], errors="coerce").dt.tz_convert(tz="US/Eastern")
-    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], errors="coerce").dt.tz_convert(tz="US/Eastern")
+    df["actual_departure"] = pd.to_datetime(df["actual_departure"], errors="coerce").dt.tz_localize(tz="US/Eastern")
+    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], errors="coerce").dt.tz_localize(tz="US/Eastern")
 
     # Calculate Travel time in Minutes - only for rows that have both arrival and departure times
     # This should be calculated per trip, not per event
@@ -97,8 +107,12 @@ def process_ferry(
     time_diff = arrival_time - departure_time
     df["scheduled_tt"] = time_diff.dt.total_seconds() / 60
 
-    # Remove negative travel times (data quality issue)
-    df.loc[df["scheduled_tt"] < 0, "scheduled_tt"] = None
+    # Shift departures back one day where travel time is negative
+    negative_tt_mask = df["scheduled_tt"] < 0
+    df.loc[negative_tt_mask, "mbta_sched_departure"] -= pd.Timedelta(days=1)
+
+    # Recalculate scheduled travel time for all rows
+    df["scheduled_tt"] = (df["mbta_sched_arrival"] - df["mbta_sched_departure"]).dt.total_seconds() / 60
 
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound).infer_objects(copy=False)
