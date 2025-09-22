@@ -1,4 +1,5 @@
 import pandas as pd
+import uuid
 import pathlib
 from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
 from .constants import (
@@ -81,7 +82,6 @@ def process_ferry(
     df.dropna(
         subset=[
             "travel_direction",
-            "trip_id",
             "departure_terminal",
             "mbta_sched_arrival",
             "mbta_sched_departure",
@@ -89,6 +89,9 @@ def process_ferry(
             "actual_arrival",
         ]
     )
+
+    missing_trip_ids_mask = df["trip_id"].isna()
+    df.loc[missing_trip_ids_mask, "trip_id"] = [str(uuid.uuid4()) for _ in range(missing_trip_ids_mask.sum())]
 
     # Convert to datetime first, then apply timezone localization
     df["mbta_sched_arrival"] = pd.to_datetime(df["mbta_sched_arrival"], errors="coerce").dt.tz_convert(tz="US/Eastern")
