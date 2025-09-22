@@ -73,7 +73,7 @@ def to_disk(df: pd.DataFrame, outdir, nozip=False):
 def process_ferry(
     path_to_csv_file: str,
     outdir: str,
-    nozip: bool = True,
+    nozip: bool = False,
 ):
     # read data, convert to datetime
     df = pd.read_csv(path_to_csv_file, low_memory=False)
