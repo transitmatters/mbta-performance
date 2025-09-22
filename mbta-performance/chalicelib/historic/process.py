@@ -11,7 +11,6 @@ from .constants import (
     inbound_outbound,
 )
 from .gtfs_archive import add_gtfs_headways
-from ..date import service_date as get_service_date
 from datetime import datetime
 
 
@@ -79,7 +78,7 @@ def process_ferry(
     df = pd.read_csv(path_to_csv_file, low_memory=False)
 
     # Make sure these columns have data
-    df.dropna(
+    df = df.dropna(
         subset=[
             "travel_direction",
             "departure_terminal",
@@ -98,8 +97,13 @@ def process_ferry(
     df["mbta_sched_departure"] = pd.to_datetime(df["mbta_sched_departure"], errors="coerce").dt.tz_convert(
         tz="US/Eastern"
     )
-    df["actual_departure"] = pd.to_datetime(df["actual_departure"], errors="coerce").dt.tz_localize(tz="US/Eastern")
-    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], errors="coerce").dt.tz_localize(tz="US/Eastern")
+    df["actual_departure"] = pd.to_datetime(df["actual_departure"], format="mixed", errors="coerce").dt.tz_localize(
+        tz="US/Eastern"
+    )
+    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], format="mixed", errors="coerce").dt.tz_localize(
+        tz="US/Eastern"
+    )
+    df["service_date"] = pd.to_datetime(df["service_date"], errors="coerce").dt.tz_convert(tz="US/Eastern")
 
     # Calculate Travel time in Minutes - only for rows that have both arrival and departure times
     # This should be calculated per trip, not per event
@@ -120,7 +124,7 @@ def process_ferry(
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound).infer_objects(copy=False)
     # Convert direction_id to integer to ensure outputs are integers
-    df["travel_direction"] = df["travel_direction"].astype("Int64")
+    df["travel_direction"] = pd.to_numeric(df["travel_direction"])
     # Replace terminal values with GTFS Approved Values
     df["departure_terminal"] = df["departure_terminal"].replace(station_mapping)
     df["arrival_terminal"] = df["arrival_terminal"].replace(station_mapping)
@@ -144,21 +148,16 @@ def process_ferry(
     arrival_events.loc[:, "event_type"] = "ARR"
     departure_events.loc[:, "event_type"] = "DEP"
 
-    # Convert event_time to datetime, handling mixed formats
-    arrival_events.loc[:, "event_time"] = pd.to_datetime(arrival_events["event_time"], format="mixed", errors="coerce")
-    departure_events.loc[:, "event_time"] = pd.to_datetime(
-        departure_events["event_time"], format="mixed", errors="coerce"
-    )
-
     arrival_events = arrival_events[CSV_FIELDS]
     departure_events = departure_events[CSV_FIELDS]
     df = pd.concat([arrival_events, departure_events])
 
-    # Convert service_date to datetime for proper grouping in to_disk()
-    # First convert to datetime, then apply service_date logic, then back to datetime
-    df.loc[:, "service_date"] = pd.to_datetime(df["service_date"], errors="coerce").apply(
-        lambda x: pd.to_datetime(get_service_date(x)) if pd.notna(x) else x
-    )
+    # Convert service_date to proper datetime format for grouping in to_disk()
+    # Keep as datetime but normalize to service date (date portion only) in Eastern timezone
+    df["service_date"] = df["service_date"].dt.tz_localize(None)
+    df["event_time"] = df["event_time"].dt.tz_localize(None)
+    df.loc[:, "service_date"] = df["service_date"].dt.strftime("%Y-%m-%d")
+    df.loc[:, "event_time"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # Load route constants and add stop sequence information
     # route_dicts = load_constants()
