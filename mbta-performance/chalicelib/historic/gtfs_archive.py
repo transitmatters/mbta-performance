@@ -63,35 +63,53 @@ def read_gtfs(date: datetime.date):
     - Find the appropriate gtfs archive (downloading if necessary)
     - Determine which services ran on that date
     - Return two dataframes containing just the trips and stop_times that ran on that date
+    - Return None if the archive is incomplete (missing required files)
     """
     dateint = to_dateint(date)
 
     archive_dir = get_gtfs_archive(dateint)
+    
+    # Check if required files exist
+    trips_file = archive_dir / "trips.txt"
+    stop_times_file = archive_dir / "stop_times.txt"
+    
+    if not trips_file.exists():
+        print(f"Warning: Missing trips.txt in GTFS archive for {date} ({archive_dir}). Skipping this date.")
+        return None, None
+    
+    if not stop_times_file.exists():
+        print(f"Warning: Missing stop_times.txt in GTFS archive for {date} ({archive_dir}). Skipping this date.")
+        return None, None
+
     services = get_services(date, archive_dir)
 
     # specify dtypes to avoid warnings
-    trips = pd.read_csv(
-        archive_dir / "trips.txt",
-        dtype={
-            "route_id": str,
-            "service_id": str,
-            "trip_id": str,
-            "trip_headsign": str,
-            "trip_short_name": str,
-            "block_id": str,
-        },
-    )
-    trips = trips[trips.service_id.isin(services)]
+    try:
+        trips = pd.read_csv(
+            trips_file,
+            dtype={
+                "route_id": str,
+                "service_id": str,
+                "trip_id": str,
+                "trip_headsign": str,
+                "trip_short_name": str,
+                "block_id": str,
+            },
+        )
+        trips = trips[trips.service_id.isin(services)]
 
-    stops = pd.read_csv(
-        archive_dir / "stop_times.txt",
-        dtype={"trip_id": str, "stop_id": str, "stop_headsign": str, "checkpoint_id": str},
-    )
-    stops = stops[stops.trip_id.isin(trips.trip_id)]
-    stops.arrival_time = pd.to_timedelta(stops.arrival_time)
-    stops.departure_time = pd.to_timedelta(stops.departure_time)
+        stops = pd.read_csv(
+            stop_times_file,
+            dtype={"trip_id": str, "stop_id": str, "stop_headsign": str, "checkpoint_id": str},
+        )
+        stops = stops[stops.trip_id.isin(trips.trip_id)]
+        stops.arrival_time = pd.to_timedelta(stops.arrival_time)
+        stops.departure_time = pd.to_timedelta(stops.departure_time)
 
-    return trips, stops
+        return trips, stops
+    except Exception as e:
+        print(f"Error reading GTFS files for {date} ({archive_dir}): {e}. Skipping this date.")
+        return None, None
 
 
 def add_gtfs_headways(events_df: pd.DataFrame):
@@ -112,6 +130,11 @@ def add_gtfs_headways(events_df: pd.DataFrame):
     # wa have to do this day-by-day because gtfs changes so often
     for service_date, days_events in events_df.groupby("service_date"):
         all_trips, all_stops = read_gtfs(service_date.date())
+        
+        # Skip this date if GTFS data is incomplete
+        if all_trips is None or all_stops is None:
+            print(f"Skipping service date {service_date.date()} due to incomplete GTFS data")
+            continue
 
         # filter out the trips of interest
         relevant_trips = all_trips[all_trips.route_id.isin(days_events.route_id)]

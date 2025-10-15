@@ -73,6 +73,8 @@ def process_ferry(
     path_to_csv_file: str,
     outdir: str,
     nozip: bool = False,
+    start_date=None,
+    end_date=None,
 ):
     # read data, convert to datetime
     df = pd.read_csv(path_to_csv_file, low_memory=False)
@@ -105,6 +107,25 @@ def process_ferry(
     )
     df["service_date"] = pd.to_datetime(df["service_date"], errors="coerce").dt.tz_convert(tz="US/Eastern")
 
+    # Apply date range filtering if specified
+    if start_date or end_date:
+        print(f"Filtering data by date range...")
+        original_count = len(df)
+        
+        if start_date:
+            df = df[df["service_date"].dt.date >= start_date]
+            print(f"After start date filter ({start_date}): {len(df)} rows")
+            
+        if end_date:
+            df = df[df["service_date"].dt.date <= end_date]
+            print(f"After end date filter ({end_date}): {len(df)} rows")
+            
+        print(f"Filtered from {original_count} to {len(df)} rows")
+        
+        if len(df) == 0:
+            print("No data remaining after date filtering. Exiting.")
+            return
+
     # Calculate Travel time in Minutes - only for rows that have both arrival and departure times
     # This should be calculated per trip, not per event
     arrival_time = df["mbta_sched_arrival"]
@@ -112,14 +133,15 @@ def process_ferry(
 
     # Only calculate travel time where both times are valid
     time_diff = arrival_time - departure_time
-    df["scheduled_tt"] = time_diff.dt.total_seconds() / 60
+    # Travel Time should be in Seconds not Minutes
+    df["scheduled_tt"] = time_diff.dt.total_seconds()
 
     # Shift departures back one day where travel time is negative
     negative_tt_mask = df["scheduled_tt"] < 0
     df.loc[negative_tt_mask, "mbta_sched_departure"] -= pd.Timedelta(days=1)
 
     # Recalculate scheduled travel time for all rows
-    df["scheduled_tt"] = (df["mbta_sched_arrival"] - df["mbta_sched_departure"]).dt.total_seconds() / 60
+    df["scheduled_tt"] = (df["mbta_sched_arrival"] - df["mbta_sched_departure"]).dt.total_seconds()
 
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound).infer_objects(copy=False)
@@ -138,16 +160,29 @@ def process_ferry(
     arrival_events.rename(columns=arrival_field_mapping, inplace=True)
     departure_events.rename(columns=departure_field_mapping, inplace=True)
 
-    # Add missing columns with default values
-    for events_df in [arrival_events, departure_events]:
-        events_df["stop_sequence"] = None
-        events_df["vehicle_label"] = None
-        events_df["vehicle_consist"] = None
-
-    # Add event_type to distinguish between arrivals and departures
+    # Add event_type to distinguish between arrivals and departures before GTFS processing
     arrival_events.loc[:, "event_type"] = "ARR"
     departure_events.loc[:, "event_type"] = "DEP"
-
+    
+    # Combine events and calculate scheduled headways from GTFS data ONCE
+    combined_events = pd.concat([arrival_events, departure_events], ignore_index=True)
+    
+    # Add missing columns with default values
+    combined_events["stop_sequence"] = None
+    combined_events["vehicle_label"] = None
+    combined_events["vehicle_consist"] = None
+    
+    # Calculate GTFS headways once for all events
+    try:
+        combined_events = add_gtfs_headways(combined_events)
+    except IndexError:
+        # failure to add gtfs benchmarks
+        pass
+    
+    # Split back into arrival and departure events after processing
+    arrival_events = combined_events[combined_events["event_type"] == "ARR"]
+    departure_events = combined_events[combined_events["event_type"] == "DEP"]
+    
     arrival_events = arrival_events[CSV_FIELDS]
     departure_events = departure_events[CSV_FIELDS]
     df = pd.concat([arrival_events, departure_events])
