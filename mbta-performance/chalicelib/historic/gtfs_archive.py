@@ -68,15 +68,15 @@ def read_gtfs(date: datetime.date):
     dateint = to_dateint(date)
 
     archive_dir = get_gtfs_archive(dateint)
-    
+
     # Check if required files exist
     trips_file = archive_dir / "trips.txt"
     stop_times_file = archive_dir / "stop_times.txt"
-    
+
     if not trips_file.exists():
         print(f"Warning: Missing trips.txt in GTFS archive for {date} ({archive_dir}). Skipping this date.")
         return None, None
-    
+
     if not stop_times_file.exists():
         print(f"Warning: Missing stop_times.txt in GTFS archive for {date} ({archive_dir}). Skipping this date.")
         return None, None
@@ -130,7 +130,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
     # wa have to do this day-by-day because gtfs changes so often
     for service_date, days_events in events_df.groupby("service_date"):
         all_trips, all_stops = read_gtfs(service_date.date())
-        
+
         # Skip this date if GTFS data is incomplete
         if all_trips is None or all_stops is None:
             print(f"Skipping service date {service_date.date()} due to incomplete GTFS data")

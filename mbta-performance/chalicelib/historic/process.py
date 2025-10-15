@@ -109,19 +109,19 @@ def process_ferry(
 
     # Apply date range filtering if specified
     if start_date or end_date:
-        print(f"Filtering data by date range...")
+        print("Filtering data by date range...")
         original_count = len(df)
-        
+
         if start_date:
             df = df[df["service_date"].dt.date >= start_date]
             print(f"After start date filter ({start_date}): {len(df)} rows")
-            
+
         if end_date:
             df = df[df["service_date"].dt.date <= end_date]
             print(f"After end date filter ({end_date}): {len(df)} rows")
-            
+
         print(f"Filtered from {original_count} to {len(df)} rows")
-        
+
         if len(df) == 0:
             print("No data remaining after date filtering. Exiting.")
             return
@@ -163,26 +163,26 @@ def process_ferry(
     # Add event_type to distinguish between arrivals and departures before GTFS processing
     arrival_events.loc[:, "event_type"] = "ARR"
     departure_events.loc[:, "event_type"] = "DEP"
-    
+
     # Combine events and calculate scheduled headways from GTFS data ONCE
     combined_events = pd.concat([arrival_events, departure_events], ignore_index=True)
-    
+
     # Add missing columns with default values
     combined_events["stop_sequence"] = None
     combined_events["vehicle_label"] = None
     combined_events["vehicle_consist"] = None
-    
+
     # Calculate GTFS headways once for all events
     try:
         combined_events = add_gtfs_headways(combined_events)
     except IndexError:
         # failure to add gtfs benchmarks
         pass
-    
+
     # Split back into arrival and departure events after processing
     arrival_events = combined_events[combined_events["event_type"] == "ARR"]
     departure_events = combined_events[combined_events["event_type"] == "DEP"]
-    
+
     arrival_events = arrival_events[CSV_FIELDS]
     departure_events = departure_events[CSV_FIELDS]
     df = pd.concat([arrival_events, departure_events])
