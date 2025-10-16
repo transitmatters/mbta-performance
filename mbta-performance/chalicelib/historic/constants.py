@@ -98,7 +98,6 @@ example_field_mapping = {
     "vehicle_label": None,
     "event_type": None,
     "event_time": "actual_arrival",
-    "scheduled_headway": "mbta_sched_arrival",
     "scheduled_tt": None,
     "vehicle_consist": None,
 }
@@ -111,7 +110,6 @@ arrival_field_mapping = {
     "arrival_terminal": "stop_id",
     "vessel_time_slot": "vehicle_id",
     "actual_arrival": "event_time",
-    "mbta_sched_arrival": "scheduled_headway",
     "scheduled_tt": "scheduled_tt",
 }
 
@@ -123,7 +121,6 @@ departure_field_mapping = {
     "departure_terminal": "stop_id",
     "vessel_time_slot": "vehicle_id",
     "actual_departure": "event_time",
-    "mbta_sched_departure": "scheduled_headway",
     "scheduled_tt": "scheduled_tt",
 }
 
