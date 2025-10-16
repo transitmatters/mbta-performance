@@ -196,6 +196,8 @@ def add_gtfs_headways(events_df: pd.DataFrame):
             by=RTE_DIR_STOP,
             suffixes=["", "_scheduled"],
         )
+        # Remove duplicates to ensure unique index for mapping
+        trip_id_map = trip_id_map.drop_duplicates(subset="trip_id")
         trip_id_map = trip_id_map.set_index("trip_id").trip_id_scheduled
 
         # use the scheduled trip matching to get the scheduled traveltime

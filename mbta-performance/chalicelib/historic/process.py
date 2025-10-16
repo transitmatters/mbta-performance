@@ -69,6 +69,31 @@ def to_disk(df: pd.DataFrame, outdir, nozip=False):
         events.to_csv(fname, index=False, compression={"method": "gzip", "mtime": 0} if not nozip else None)
 
 
+def to_disk_ferry(df: pd.DataFrame, outdir: str, nozip: bool = False):
+    """
+    For each service_date/stop_id/direction/route group, we write the events to disk.
+    Uses monthly ferry data structure: monthly-ferry-data/{route_id}-{direction_id}-{stop_id}/Year={year}/Month={month}/events.csv.gz
+    """
+    monthly_service_date = pd.Grouper(key="service_date", freq="1ME")
+    grouped = df.groupby([monthly_service_date, "stop_id", "direction_id", "route_id"])
+
+    for name, events in grouped:
+        service_date, stop_id, direction_id, route_id = name
+
+        fname = pathlib.Path(
+            outdir,
+            "Events",
+            "monthly-ferry-data",
+            f"{route_id}|{direction_id}|{stop_id}",
+            f"Year={service_date.year}",
+            f"Month={service_date.month}",
+            "events.csv.gz",
+        )
+        fname.parent.mkdir(parents=True, exist_ok=True)
+        # set mtime to 0 in gzip header for determinism (so we can re-gen old routes, and rsync to s3 will ignore)
+        events.to_csv(fname, index=False, compression={"method": "gzip", "mtime": 0} if not nozip else None)
+
+
 def process_ferry(
     path_to_csv_file: str,
     outdir: str,
@@ -144,7 +169,8 @@ def process_ferry(
     df["scheduled_tt"] = (df["mbta_sched_arrival"] - df["mbta_sched_departure"]).dt.total_seconds()
 
     # Convert To Boston/From Boston to Inbound/Outbound Values
-    df["travel_direction"] = df["travel_direction"].replace(inbound_outbound).infer_objects(copy=False)
+    df["travel_direction"] = df["travel_direction"].replace(inbound_outbound)
+    df = df.infer_objects(copy=False)
     # Convert direction_id to integer to ensure outputs are integers
     df["travel_direction"] = pd.to_numeric(df["travel_direction"])
     # Replace terminal values with GTFS Approved Values
@@ -160,28 +186,16 @@ def process_ferry(
     arrival_events.rename(columns=arrival_field_mapping, inplace=True)
     departure_events.rename(columns=departure_field_mapping, inplace=True)
 
-    # Add event_type to distinguish between arrivals and departures before GTFS processing
+    # Add missing columns with default values
+    for events_df in [arrival_events, departure_events]:
+        events_df["stop_sequence"] = None
+        events_df["vehicle_label"] = None
+        events_df["vehicle_consist"] = None
+        events_df["scheduled_headway"] = None
+
+    # Add event_type to distinguish between arrivals and departures
     arrival_events.loc[:, "event_type"] = "ARR"
     departure_events.loc[:, "event_type"] = "DEP"
-
-    # Combine events and calculate scheduled headways from GTFS data ONCE
-    combined_events = pd.concat([arrival_events, departure_events], ignore_index=True)
-
-    # Add missing columns with default values
-    combined_events["stop_sequence"] = None
-    combined_events["vehicle_label"] = None
-    combined_events["vehicle_consist"] = None
-
-    # Calculate GTFS headways once for all events
-    try:
-        combined_events = add_gtfs_headways(combined_events)
-    except IndexError:
-        # failure to add gtfs benchmarks
-        pass
-
-    # Split back into arrival and departure events after processing
-    arrival_events = combined_events[combined_events["event_type"] == "ARR"]
-    departure_events = combined_events[combined_events["event_type"] == "DEP"]
 
     arrival_events = arrival_events[CSV_FIELDS]
     departure_events = departure_events[CSV_FIELDS]
@@ -194,11 +208,19 @@ def process_ferry(
     df.loc[:, "service_date"] = df["service_date"].dt.strftime("%Y-%m-%d")
     df.loc[:, "event_time"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
+    # Calculate GTFS headways once for all events
+    try:
+        df = df.drop("scheduled_headway", axis=1)
+        df = add_gtfs_headways(df)
+    except IndexError:
+        # failure to add gtfs benchmarks
+        pass
+
     # Load route constants and add stop sequence information
     # route_dicts = load_constants()
     # events = add_stop_sequence_to_dataframe(events, route_dicts)
 
-    to_disk(df, outdir, nozip)
+    to_disk_ferry(df, outdir, nozip)
 
 
 def load_bus_data(input_csv: str, routes: list = None):
