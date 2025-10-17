@@ -151,23 +151,6 @@ def process_ferry(
             print("No data remaining after date filtering. Exiting.")
             return
 
-    # Calculate Travel time in Minutes - only for rows that have both arrival and departure times
-    # This should be calculated per trip, not per event
-    arrival_time = df["mbta_sched_arrival"]
-    departure_time = df["mbta_sched_departure"]
-
-    # Only calculate travel time where both times are valid
-    time_diff = arrival_time - departure_time
-    # Travel Time should be in Seconds not Minutes
-    df["scheduled_tt"] = time_diff.dt.total_seconds()
-
-    # Shift departures back one day where travel time is negative
-    negative_tt_mask = df["scheduled_tt"] < 0
-    df.loc[negative_tt_mask, "mbta_sched_departure"] -= pd.Timedelta(days=1)
-
-    # Recalculate scheduled travel time for all rows
-    df["scheduled_tt"] = (df["mbta_sched_arrival"] - df["mbta_sched_departure"]).dt.total_seconds()
-
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound)
     df = df.infer_objects(copy=False)
@@ -191,7 +174,6 @@ def process_ferry(
         events_df["stop_sequence"] = None
         events_df["vehicle_label"] = None
         events_df["vehicle_consist"] = None
-        events_df["scheduled_headway"] = None
 
     # Add event_type to distinguish between arrivals and departures
     arrival_events.loc[:, "event_type"] = "ARR"
@@ -209,8 +191,8 @@ def process_ferry(
     df.loc[:, "event_time"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # Calculate GTFS headways once for all events
+    # This adds scheduled_tt and scheduled_headway
     try:
-        df = df.drop("scheduled_headway", axis=1)
         df = add_gtfs_headways(df)
     except IndexError:
         # failure to add gtfs benchmarks
