@@ -68,8 +68,6 @@ CSV_FIELDS = [
     "vehicle_label",
     "event_type",
     "event_time",
-    "scheduled_headway",
-    "scheduled_tt",
     "vehicle_consist",
 ]
 
@@ -110,7 +108,6 @@ arrival_field_mapping = {
     "arrival_terminal": "stop_id",
     "vessel_time_slot": "vehicle_id",
     "actual_arrival": "event_time",
-    "scheduled_tt": "scheduled_tt",
 }
 
 departure_field_mapping = {
@@ -121,7 +118,6 @@ departure_field_mapping = {
     "departure_terminal": "stop_id",
     "vessel_time_slot": "vehicle_id",
     "actual_departure": "event_time",
-    "scheduled_tt": "scheduled_tt",
 }
 
 # For these I used context clues from the CSV and then matched up using the MBTA Website to find Stop IDs
