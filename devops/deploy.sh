@@ -18,11 +18,11 @@ DD_TAGS="git.commit.sha:$GIT_SHA,git.repository_url:github.com/transitmatters/mb
 DD_GIT_REPOSITORY_URL="github.com/transitmatters/mbta-performance"
 DD_GIT_COMMIT_SHA="$GIT_SHA"
 
-poetry export -f requirements.txt --output mbta-performance/requirements.txt --without-hashes
+uv export --no-hashes --no-dev > mbta-performance/requirements.txt
 
 pushd mbta-performance/
 
-poetry run chalice package --stage prod --merge-template .chalice/resources.json cfn/
+uv run chalice package --stage prod --merge-template .chalice/resources.json cfn/
 
 # Shrink the deployment package for the lambda layer https://stackoverflow.com/a/69355796
 actualsize=$(wc -c <"cfn/layer-deployment.zip")

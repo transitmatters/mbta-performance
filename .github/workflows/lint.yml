@@ -19,13 +19,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Setup Poetry
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Lint and format check with Ruff
         run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          poetry install
-      - name: Lint code with Flake8
-        run: |
-          poetry run flake8 mbta-performance
-      - name: Check code format with Black
-        run: |
-          poetry run black --check mbta-performance
+          uv run ruff check mbta-performance
+          uv run ruff format --check mbta-performance
