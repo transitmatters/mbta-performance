@@ -36,7 +36,7 @@ Scripts for processing MBTA performance data both from LAMP and from monthly his
 Run tests with pytest:
 
 ```shell
-uv run pytest
+uv run pytest mbta-performance
 ```
 
 ### Linting & Formatting
