@@ -81,7 +81,7 @@ wheels = [
 
 [[package]]
 name = "chalice"
-version = "1.31.4"
+version = "1.32.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
@@ -94,9 +94,9 @@ dependencies = [
     { name = "six" },
     { name = "wheel" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/86/038c372ee5b73dc9534cc8118b0bb069ececc5f17bf993ab03bfce852edb/chalice-1.31.4.tar.gz", hash = "sha256:b683a982b55371979faa1017a012e0acc3045235761c02f2aa3aa3e3950e427d", size = 257180, upload-time = "2025-02-05T20:00:47.377Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/aa/ea9b4394c160dbbbbbd6b923b0e1ac5f6f5aad0361b0a74353f8b1fcdf62/chalice-1.32.0.tar.gz", hash = "sha256:c1d469316747ef8850b4b286c60bcf8c53da3bab1a2042d7551284aa8be06af2", size = 256997, upload-time = "2025-05-29T16:19:03.506Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/3a/aabd521c28b2ff32515711ec932244d033f5a265b089219e475ac698d616/chalice-1.31.4-py3-none-any.whl", hash = "sha256:2406acda005c6dec753d0a9121c74ef57405a0536edf27cfd90fd36967d8e0ec", size = 265526, upload-time = "2025-02-05T20:00:44.802Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/89/f3756545a0df8792f79921a0a08786db8039ae753c0da7ca0d0475df9701/chalice-1.32.0-py3-none-any.whl", hash = "sha256:671fdf45b8fe9315a29acb63a0accfdff60dfc582ea4faf54f0d463323930542", size = 265483, upload-time = "2025-05-29T16:19:00.88Z" },
 ]
 
 [[package]]
@@ -378,7 +378,7 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = "~=1.34.162" },
     { name = "datadog-lambda", specifier = "==6.109.0" },
-    { name = "mbta-gtfs-sqlite", specifier = ">=1.1.1,<2" },
+    { name = "mbta-gtfs-sqlite", specifier = "~=1.1.1" },
     { name = "pandas", specifier = "~=2.2.3" },
     { name = "pyarrow", specifier = "~=17.0.0" },
     { name = "requests", specifier = ">=2.32.3,<3" },
@@ -386,7 +386,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "chalice", specifier = ">=1.31.4,<2" },
+    { name = "chalice", specifier = "==1.32.0" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "pytest", specifier = "~=8.3.5" },
     { name = "ruff", specifier = ">=0.14.3" },
