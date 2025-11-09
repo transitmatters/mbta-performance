@@ -7,7 +7,7 @@ MBTA uploads monthly data files periodically. These monthly batches take the pla
 MBTA updates the Ferry data ~every 6 months or so.
 
 ```sh
-poetry run python -m mbta-performance.chalicelib.historic.backfill.ferry
+uv run python -m mbta-performance.chalicelib.historic.backfill.ferry
 ```
 
 ## Backfill all years
@@ -15,7 +15,7 @@ poetry run python -m mbta-performance.chalicelib.historic.backfill.ferry
 This should only be done if we change the processing code or need to repopulate an empty bucket
 
 ```sh
-poetry run python -m mbta-performance.chalicelib.historic.backfill.main
+uv run python -m mbta-performance.chalicelib.historic.backfill.main
 ```
 
 ## Backfill Bus Data
@@ -23,7 +23,7 @@ poetry run python -m mbta-performance.chalicelib.historic.backfill.main
 This will produce a **huge** amount of data, run with caution. Watch your disk space.
 
 ```sh
-poetry run python -m mbta-performance.chalicelib.historic.backfill.bus
+uv run python -m mbta-performance.chalicelib.historic.backfill.bus
 ```
 
 ### Upload to S3
