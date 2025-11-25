@@ -2,7 +2,7 @@ import io
 from datetime import date
 from typing import Tuple
 
-import pandas as pd
+import fireducks.pandas as pd
 import requests
 
 from .. import parallel, s3

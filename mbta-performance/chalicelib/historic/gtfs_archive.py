@@ -1,8 +1,9 @@
 import datetime
-import pandas as pd
 import pathlib
 import shutil
 import urllib.request
+
+import fireducks.pandas as pd
 
 from ..date import to_dateint
 

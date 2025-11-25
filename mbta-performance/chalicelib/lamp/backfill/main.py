@@ -1,8 +1,9 @@
-import pandas as pd
-from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
-from ... import parallel
 from datetime import date, timedelta
 
+import fireducks.pandas as pd
+
+from ... import parallel
+from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
