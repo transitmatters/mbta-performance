@@ -6,5 +6,6 @@
       "source.fixAll.ruff": "explicit",
       "source.organizeImports.ruff": "explicit"
     }
-  }
+  },
+  "ruff.enable": true
 }
