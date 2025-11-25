@@ -65,7 +65,8 @@ jobs:
 
           # Shrink the package
           source ../devops/helpers.sh
-          shrink > /dev/null 2>&1
+          echo "Shrinking deployment package..."
+          shrink
 
           # Check size after shrinking
           newsize=$(wc -c <"cfn/layer-deployment.zip")
