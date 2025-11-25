@@ -2,37 +2,68 @@
 
 Scripts for processing MBTA performance data both from LAMP and from monthly historical files
 
-## Requirements to develop locally
+## Setup
 
-- Python 3.12 with recent poetry (2.0.0 or later)
-  - Verify with `python --version && poetry --version`
-  - `poetry self update` to update poetry
+### Requirements
 
-## Instructions to run locally
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/) - Fast Python package manager
+  - Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  - Verify: `uv --version`
 
-1. Add your AWS credentials (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to your shell environment, OR add them to a .boto config file with awscli command `aws configure`.
+### Installation
 
-## Testing
+1. Install dependencies:
 
-1. From the `mbta-performance` directory, set up the poetry with `poetry shell; poetry install`
-2. From the `mbta-performance` directory, run `poetry run pytest`
+   ```shell
+   uv sync --group dev
+   ```
+
+2. Set up pre-commit hooks:
+
+   ```shell
+   uv run pre-commit install
+   ```
+
+3. Configure AWS credentials (required for running locally):
+   - Add `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to your shell environment, OR
+   - Configure with awscli: `aws configure`
+
+## Development
+
+### Testing
+
+Run tests with pytest:
+
+```shell
+uv run pytest mbta-performance
+```
+
+### Linting & Formatting
+
+Check code style with Ruff:
+
+```shell
+uv run ruff check mbta-performance
+uv run ruff format mbta-performance
+```
 
 ## Run Locally
 
 ### Run today's LAMP ingest
 
 ```shell
-poetry run python -m mbta-performance.chalicelib.lamp.ingest
+uv run python -m mbta-performance.chalicelib.lamp.ingest
 ```
 
 ### Backfill LAMP
 
 ```shell
-poetry run python -m mbta-performance.chalicelib.lamp.backfill.main
+uv run python -m mbta-performance.chalicelib.lamp.backfill.main
 ```
 
 ### Backfill Historic
 
 ```shell
-poetry run python -m mbta-performance.chalicelib.historic.backfill.main
+uv run python -m mbta-performance.chalicelib.historic.backfill.main
 ```

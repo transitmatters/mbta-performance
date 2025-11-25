@@ -1,16 +1,14 @@
-from datetime import date
 import io
-import pandas as pd
-import requests
+from datetime import date
 from typing import Tuple
 
-from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
-from ..date import format_dateint, get_current_service_date, EASTERN_TIME
+import pandas as pd
+import requests
+
+from .. import parallel, s3
+from ..date import EASTERN_TIME, format_dateint, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
-
-from .. import parallel
-from .. import s3
-
+from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
 
 LAMP_INDEX_URL = "https://performancedata.mbta.com/lamp/subway-on-time-performance-v1/index.csv"
 RAPID_DAILY_URL_TEMPLATE = "https://performancedata.mbta.com/lamp/subway-on-time-performance-v1/{YYYY_MM_DD}-subway-on-time-performance-v1.parquet"
@@ -183,8 +181,12 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
 
     _enriched_trips = []
     for bucket in buckets:
-        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize(EASTERN_TIME)
-        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize(EASTERN_TIME)
+        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize(
+            EASTERN_TIME, ambiguous=True, nonexistent="shift_forward"
+        )
+        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize(
+            EASTERN_TIME, ambiguous=True, nonexistent="shift_forward"
+        )
         filtered_trips = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
 
         # Get the average headway per route
