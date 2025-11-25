@@ -1,0 +1,63 @@
+name: Layer Size Check
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  check-layer-size:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Export requirements
+        run: uv export --no-hashes --no-dev > mbta-performance/requirements.txt
+
+      - name: Package lambda layer
+        run: |
+          cd mbta-performance
+          uv run chalice package --stage prod --merge-template .chalice/resources.json cfn/
+
+      - name: Shrink deployment package and check size
+        run: |
+          cd mbta-performance
+
+          # Check size before shrinking
+          actualsize=$(wc -c <"cfn/layer-deployment.zip")
+          echo "Package size before shrinking: $actualsize bytes"
+
+          # Shrink the package
+          source ../devops/helpers.sh
+          shrink > /dev/null 2>&1
+
+          # Check size after shrinking
+          newsize=$(wc -c <"cfn/layer-deployment.zip")
+          echo "Package size after shrinking: $newsize bytes"
+          diffsize=$(($actualsize - $newsize))
+          echo "Size reduction: $diffsize bytes"
+
+      - name: Verify package size is under limit
+        run: |
+          cd mbta-performance
+          source ../devops/helpers.sh
+          check_package_size
