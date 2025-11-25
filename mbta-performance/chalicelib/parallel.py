@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import pandas as pd
+import fireducks.pandas as pd
 
 
 def make_parallel(single_func, THREAD_COUNT=5):

@@ -1,17 +1,19 @@
-import pandas as pd
-import uuid
 import pathlib
-from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
+import uuid
+from datetime import datetime
+
+import fireducks.pandas as pd
+
 from .constants import (
     CSV_FIELDS,
     arrival_field_mapping,
     departure_field_mapping,
+    inbound_outbound,
     station_mapping,
     unofficial_ferry_labels_map,
-    inbound_outbound,
 )
+from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
 from .gtfs_archive import add_gtfs_headways
-from datetime import datetime
 
 
 def process_events(input_csv: str, outdir: str, nozip: bool = False, columns: list = HISTORIC_COLUMNS):

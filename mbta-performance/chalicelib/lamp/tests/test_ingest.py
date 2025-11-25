@@ -1,13 +1,12 @@
-from datetime import date
 import io
 import os
 import unittest
+from datetime import date
 from unittest import mock
 
-import pandas as pd
+import fireducks.pandas as pd
 
-from .. import ingest
-from .. import constants
+from .. import constants, ingest
 
 # The sample file attached here is 10k events sampled from Feb 7th, 2024.
 # These rows contain real-world inconsistencies in their data!

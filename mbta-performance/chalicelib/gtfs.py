@@ -1,9 +1,9 @@
 from datetime import date
 from tempfile import TemporaryDirectory
-import pandas as pd
 from typing import Iterable
-import boto3
 
+import boto3
+import fireducks.pandas as pd
 from mbta_gtfs_sqlite import MbtaGtfsArchive
 from mbta_gtfs_sqlite.models import StopTime, Trip
 from sqlalchemy import or_
