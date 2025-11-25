@@ -11,6 +11,8 @@ on:
 jobs:
   check-layer-size:
     runs-on: ubuntu-latest
+    # Only run for PRs from the same repository (not forks) to protect secrets
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
     strategy:
       matrix:
         python-version: ["3.12"]
@@ -32,6 +34,15 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+
+      - name: Generate AWS profile
+        run: |
+          mkdir ~/.aws
+          cat >> ~/.aws/credentials << EOF
+          [$AWS_PROFILE]
+          aws_access_key_id = $AWS_ACCESS_KEY_ID
+          aws_secret_access_key = $AWS_SECRET_ACCESS_KEY
+          EOF
 
       - name: Sync dependencies
         run: uv sync --group dev
