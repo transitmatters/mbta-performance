@@ -13,9 +13,8 @@ ARCGIS_IDS = {
 }
 
 # ARCGIS_IDS for each year, bus data
+# 2018 & 2019 data is no longer available from the ArcGIS Hub
 BUS_ARCGIS_IDS = {
-    "2018": "d685ba39d9a54d908f49a2a762a9eb47",
-    "2019": "1bd340b39942438685d8dcdfe3f26d1a",
     "2020": "4c1293151c6c4a069d49e6b85ee68ea4",
     "2021": "2d415555f63b431597721151a7e07a3e",
     "2022": "ef464a75666349f481353f16514c06d0",
