@@ -470,3 +470,45 @@ class TestProcess(unittest.TestCase):
 
                 # Verify to_disk_bus was called
                 mock_to_disk.assert_called_once()
+
+    def test_load_bus_data_utc_conversion(self):
+        """Test that post-June 2024 bus data is correctly converted from UTC to Eastern Time.
+
+        MBTA changed their data format around June 2024:
+        - Before: Times were Eastern Time (mislabeled with Z suffix)
+        - After: Times are actual UTC
+
+        This test verifies that UTC times are properly converted to Eastern.
+        """
+        # Post-June 2024 data with UTC times
+        # 10:05:00Z UTC = 06:05:00 EDT (UTC-4 in summer)
+        utc_bus_data = pd.DataFrame(
+            {
+                "service_date": ["2024-07-15", "2024-07-15"],
+                "route_id": ["01", "01"],
+                "direction_id": ["Inbound", "Inbound"],
+                "half_trip_id": ["12345", "12345"],
+                "stop_id": ["110", "67"],
+                "time_point_id": ["hhgat", "maput"],
+                "time_point_order": [1, 2],
+                "point_type": ["Startpoint", "Midpoint"],
+                "standard_type": ["Schedule", "Schedule"],
+                "scheduled": ["1900-01-01T10:05:00Z", "1900-01-01T10:08:00Z"],
+                "actual": ["1900-01-01T10:06:00Z", "1900-01-01T10:09:30Z"],
+                "scheduled_headway": [None, None],
+                "headway": [None, None],
+            }
+        )
+
+        bus_csv = pathlib.Path(self.temp_dir) / "bus_utc.csv"
+        utc_bus_data.to_csv(bus_csv, index=False)
+
+        df = process.load_bus_data(str(bus_csv))
+
+        # Verify times are converted to Eastern (EDT in July = UTC-4)
+        # 10:06:00 UTC should become 06:06:00 EDT
+        expected_time_1 = datetime.datetime(2024, 7, 15, 6, 6, 0)
+        expected_time_2 = datetime.datetime(2024, 7, 15, 6, 9, 30)
+
+        self.assertEqual(df.iloc[0]["actual"], expected_time_1)
+        self.assertEqual(df.iloc[1]["actual"], expected_time_2)
