@@ -416,6 +416,7 @@ class TestProcess(unittest.TestCase):
                 "direction_id": [0],
                 "trip_id": ["trip1"],
                 "event_type": ["ARR"],
+                "event_time": [pd.Timestamp("2024-02-07 08:30:00")],
             }
         )
 
