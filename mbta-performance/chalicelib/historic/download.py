@@ -1,9 +1,11 @@
-import pathlib
-import requests
 import os
-from zipfile import ZipFile
-import subprocess
+import pathlib
 import shutil
+import subprocess
+from zipfile import ZipFile
+
+import requests
+
 from .constants import ARCGIS_IDS, BUS_ARCGIS_IDS
 
 
@@ -19,7 +21,7 @@ def download_historic_data(year: str):
         raise ValueError(f"Year {year} dataset is not available. Supported years are {list(ARCGIS_IDS.keys())}")
 
     url = f"https://www.arcgis.com/sharing/rest/content/items/{ARCGIS_IDS[year]}/data"
-    response = requests.get(url)
+    response = requests.get(url, allow_redirects=True)
     if response.status_code != 200:
         raise ValueError(f"Failed to fetch historic data from {url}. Status code: {response.status_code}")
 
@@ -60,7 +62,7 @@ def download_bus_data(year: str):
         raise ValueError(f"Year {year} bus dataset is not available. Supported years are {list(BUS_ARCGIS_IDS.keys())}")
 
     url = f"https://www.arcgis.com/sharing/rest/content/items/{BUS_ARCGIS_IDS[year]}/data"
-    response = requests.get(url)
+    response = requests.get(url, allow_redirects=True)
     if response.status_code != 200:
         raise ValueError(f"Failed to fetch bus data from {url}. Status code: {response.status_code}")
 

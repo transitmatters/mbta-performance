@@ -1,17 +1,19 @@
-import pandas as pd
-import uuid
 import pathlib
-from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
+import uuid
+from datetime import datetime
+
+import pandas as pd
+
 from .constants import (
     CSV_FIELDS,
     arrival_field_mapping,
     departure_field_mapping,
+    inbound_outbound,
     station_mapping,
     unofficial_ferry_labels_map,
-    inbound_outbound,
 )
+from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
 from .gtfs_archive import add_gtfs_headways
-from datetime import datetime
 
 
 def process_events(input_csv: str, outdir: str, nozip: bool = False, columns: list = HISTORIC_COLUMNS):
@@ -256,13 +258,43 @@ def load_bus_data(input_csv: str, routes: list = None):
     df.stop_id = df.stop_id.astype(str)
 
     # Convert dates
-    df.scheduled = pd.to_datetime(df.scheduled).dt.tz_localize(None)
+    # Note: Starting June 2024, MBTA changed the data format from Eastern Time to UTC
+    # We need to detect this and convert UTC times to Eastern Time
     df.service_date = pd.to_datetime(df.service_date).dt.tz_localize(None)
-    df.actual = pd.to_datetime(df.actual).dt.tz_localize(None)
 
-    OFFSET = datetime(1900, 1, 1, 0, 0, 0)
-    df.scheduled = df.service_date + (df.scheduled - OFFSET)
-    df.actual = df.service_date + (df.actual - OFFSET)
+    # Parse scheduled/actual times - they have 'Z' suffix
+    df.scheduled = pd.to_datetime(df.scheduled, utc=True)
+    df.actual = pd.to_datetime(df.actual, utc=True)
+
+    # Check if this is post-June 2024 data (UTC format) by looking at the first service_date
+    first_service_date = df.service_date.min()
+    is_utc_format = first_service_date >= datetime(2024, 6, 1)
+
+    # Extract time components and days offset from the 1900-01-0X placeholder dates
+    # Days offset handles after-midnight times (1900-01-02 = +1 day from service_date)
+    scheduled_days_offset = pd.to_timedelta(df.scheduled.dt.day - 1, unit="D")
+    actual_days_offset = pd.to_timedelta(df.actual.dt.day - 1, unit="D")
+    scheduled_time = df.scheduled - df.scheduled.dt.normalize()
+    actual_time = df.actual - df.actual.dt.normalize()
+
+    if is_utc_format:
+        # Data is in UTC - combine with service_date first, then convert to Eastern
+        # We must do it this way so DST rules are applied based on the actual date, not 1900
+        from zoneinfo import ZoneInfo
+
+        eastern = ZoneInfo("US/Eastern")
+
+        # Build full UTC datetime: service_date + days_offset + time_of_day
+        df.scheduled = (df.service_date + scheduled_days_offset + scheduled_time).dt.tz_localize("UTC")
+        df.actual = (df.service_date + actual_days_offset + actual_time).dt.tz_localize("UTC")
+
+        # Convert to Eastern and strip timezone
+        df.scheduled = df.scheduled.dt.tz_convert(eastern).dt.tz_localize(None)
+        df.actual = df.actual.dt.tz_convert(eastern).dt.tz_localize(None)
+    else:
+        # Data is already in Eastern Time (despite Z suffix) - just combine with service_date
+        df.scheduled = df.service_date + scheduled_days_offset + scheduled_time
+        df.actual = df.service_date + actual_days_offset + actual_time
 
     df.direction_id = df.direction_id.map({"Outbound": 0, "Inbound": 1})
 
@@ -327,19 +359,29 @@ def to_disk_bus(df: pd.DataFrame, outdir: str, nozip: bool = False):
     For each service_date/stop_id/direction/route group, we write the events to disk.
     Uses monthly bus data structure: monthly-bus-data/{route_id}-{direction_id}-{stop_id}/Year={year}/Month={month}/events.csv.gz
     """
-    monthly_service_date = pd.Grouper(key="service_date", freq="1ME")
-    grouped = df.groupby([monthly_service_date, "stop_id", "direction_id", "route_id"])
+    # Format datetime columns as strings in Eastern Time format (source data is Eastern Time)
+    # This ensures consistent output and prevents downstream UTC misinterpretation
+    df = df.copy()
+    df["service_date"] = df["service_date"].dt.strftime("%Y-%m-%d")
+    df["event_time"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    monthly_service_date = pd.to_datetime(df["service_date"])
+    df["_month_group"] = monthly_service_date.dt.to_period("M")
+    grouped = df.groupby(["_month_group", "stop_id", "direction_id", "route_id"])
 
     for name, events in grouped:
-        service_date, stop_id, direction_id, route_id = name
+        month_group, stop_id, direction_id, route_id = name
+
+        # Drop the internal grouping column before writing
+        events = events.drop(columns=["_month_group"])
 
         fname = pathlib.Path(
             outdir,
             "Events",
             "monthly-bus-data",
             f"{route_id}-{direction_id}-{stop_id}",
-            f"Year={service_date.year}",
-            f"Month={service_date.month}",
+            f"Year={month_group.year}",
+            f"Month={month_group.month}",
             "events.csv.gz",
         )
         fname.parent.mkdir(parents=True, exist_ok=True)
