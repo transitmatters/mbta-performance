@@ -17,6 +17,7 @@
     "ProcessDailyLamp": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
+        "Description": "Processes today's LAMP data, regularly throughout the day",
         "Environment": {
           "Variables": {
             "DD_LAMBDA_HANDLER": "app.process_daily_lamp",
@@ -39,6 +40,7 @@
     "ProcessYesterdayLamp": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
+        "Description": "Processes yesterday's LAMP data, once in the morning to catch any cleaned data",
         "Environment": {
           "Variables": {
             "DD_LAMBDA_HANDLER": "app.process_yesterday_lamp",
