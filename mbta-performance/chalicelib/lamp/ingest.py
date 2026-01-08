@@ -1,4 +1,6 @@
 import io
+import logging
+import os
 from datetime import date
 from typing import Tuple
 
@@ -9,6 +11,8 @@ from .. import parallel, s3
 from ..date import EASTERN_TIME, format_dateint, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
 from .constants import LAMP_COLUMNS, S3_COLUMNS, STOP_ID_NUMERIC_MAP
+
+logger = logging.getLogger(__name__)
 
 LAMP_INDEX_URL = "https://performancedata.mbta.com/lamp/subway-on-time-performance-v1/index.csv"
 RAPID_DAILY_URL_TEMPLATE = "https://performancedata.mbta.com/lamp/subway-on-time-performance-v1/{YYYY_MM_DD}-subway-on-time-performance-v1.parquet"
@@ -61,6 +65,7 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
                 370             | place-chhil   | 4:59:36 AM  | 5:00:30 AM
                 380             | place-rsmnl   | (blah)      | (blah)
     """
+    logger.debug(f"Processing arrival/departure times for {len(pq_df)} rows")
     pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
     pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
     pq_df = pq_df.sort_values(by=["stop_sequence"])
@@ -99,19 +104,24 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     dep_df = dep_df.rename(columns=renamed_cols)[S3_COLUMNS]
 
     # stitch together arrivals and departures
-    return pd.concat([arr_df, dep_df])
+    result = pd.concat([arr_df, dep_df])
+    logger.debug(f"Processed arrival/departure times: {len(arr_df)} arrivals, {len(dep_df)} departures")
+    return result
 
 
 def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     """Fetch a parquet file from LAMP for a given service date."""
     # TODO(check if file exists in index, throw if it doesn't)
     url = RAPID_DAILY_URL_TEMPLATE.format(YYYY_MM_DD=service_date.strftime("%Y-%m-%d"))
+    logger.info(f"Fetching LAMP parquet file from {url}")
     result = requests.get(url)
 
     if result.status_code != 200:
+        logger.error(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
         raise ValueError(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
 
-    return pd.read_parquet(
+    logger.info(f"Successfully fetched LAMP parquet file ({len(result.content)} bytes)")
+    df = pd.read_parquet(
         io.BytesIO(result.content),
         columns=LAMP_COLUMNS,
         engine="pyarrow",
@@ -121,12 +131,16 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
         # https://pandas.pydata.org/docs/user_guide/integer_na.html#nullable-integer-data-type
         dtype_backend="numpy_nullable",
     )
+    logger.info(f"Parsed parquet file: {len(df)} rows")
+    return df
 
 
 def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
     """Enrich LAMP data with GTFS data for some schedule information."""
     trip_ids = pq_df["trip_id"].unique()
+    logger.info(f"Enriching LAMP data with GTFS for {len(trip_ids)} unique trips on {service_date}")
     gtfs_stops = fetch_stop_times_from_gtfs(trip_ids, service_date)
+    logger.debug(f"Fetched {len(gtfs_stops)} GTFS stop times")
     gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
 
     # remove the reported travel times, because we use a slightly different metric.
@@ -164,6 +178,10 @@ def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
         right_on=RTE_DIR_STOP + ["trip_id"],
         suffixes=["", "_gtfs"],
     )
+    unmatched_trips = pq_df["scheduled_trip_id"].isna().sum()
+    if unmatched_trips > 0:
+        logger.warning(f"{unmatched_trips} events could not be matched to a scheduled trip")
+    logger.debug(f"GTFS enrichment complete: {len(pq_df)} events")
     return pq_df[S3_COLUMNS]
 
 
@@ -174,6 +192,7 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
     TODO: do this with branch headways as well
     TODO: group green line branches together in trunk headways
     """
+    logger.debug(f"Calculating average scheduled headways for {len(pq_df)} events")
     # service date starts at 5:30am, but there are enough very early/late departures that we dont want to be opinionated
     start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
     end_time = start_time + pd.Timedelta(hours=48)
@@ -202,6 +221,7 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
 
 def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     """Process and tranform columns for the full day's events."""
+    logger.info(f"Processing {len(pq_df)} raw events for service date {service_date}")
     pq_df["direction_id"] = pq_df["direction_id"].astype("int16")
     pq_df["service_date"] = pq_df["service_date"].apply(format_dateint)
     # use trunk headway metrics as default, and add branch metrics when it makes sense.
@@ -212,13 +232,27 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     pq_df["stop_id"] = pq_df["stop_id"].replace(STOP_ID_NUMERIC_MAP)
     # drop non-revenue producing events
     cutoff_date = format_dateint(20231130)
+    initial_count = len(pq_df)
     pq_df = pq_df[~((pq_df["trip_id"].str.startswith(TRIP_IDS_TO_DROP)) & (pq_df["service_date"] < cutoff_date))]
+    dropped_nonrev = initial_count - len(pq_df)
+    if dropped_nonrev > 0:
+        logger.debug(f"Dropped {dropped_nonrev} non-revenue events")
 
+    logger.info("Processing arrival/departure times")
     processed_daily_events = _process_arrival_departure_times(pq_df)
+    events_before_filter = len(processed_daily_events)
     processed_daily_events = processed_daily_events[processed_daily_events["stop_id"].notna()]
+    events_dropped = events_before_filter - len(processed_daily_events)
+    if events_dropped > 0:
+        logger.warning(f"Dropped {events_dropped} events with null stop_id")
+
+    logger.info("Recalculating fields from GTFS")
     processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
+
+    logger.info("Averaging scheduled headways")
     processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
 
+    logger.info(f"Processing complete: {len(processed_daily_events)} events ready for upload")
     return processed_daily_events.sort_values(by=["event_time"])
 
 
@@ -235,8 +269,13 @@ def upload_to_s3(stop_id_and_events: Tuple[str, pd.DataFrame], service_date: dat
 
     # Upload to s3 as csv
     s3_key = S3_KEY_TEMPLATE.format(stop_id=stop_id, YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
+    logger.debug(f"Uploading {len(stop_events)} events for stop {stop_id} to s3://{S3_BUCKET}/{s3_key}")
     # _local_save(s3_key, stop_events)
-    s3.upload_df_as_csv(S3_BUCKET, s3_key, stop_events)
+    try:
+        s3.upload_df_as_csv(S3_BUCKET, s3_key, stop_events)
+    except Exception as e:
+        logger.error(f"Failed to upload events for stop {stop_id} to S3: {e}")
+        raise
     return [stop_id]
 
 
@@ -244,30 +283,58 @@ _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 
 def ingest_lamp_data(service_date: date):
+    logger.debug(f"Starting LAMP data ingestion for service date {service_date}")
     try:
         pq_df = fetch_pq_file_from_remote(service_date)
     except ValueError as e:
         # If we can't fetch the file, we can't process it
-        print(e)
+        logger.error(f"Failed to fetch LAMP data for {service_date}: {e}")
         return
-    processed_daily_events = ingest_pq_file(pq_df, service_date)
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching LAMP data for {service_date}: {e}")
+        raise
+
+    try:
+        processed_daily_events = ingest_pq_file(pq_df, service_date)
+    except Exception as e:
+        logger.exception(f"Error processing LAMP data for {service_date}: {e}")
+        raise
 
     # split daily events by stop_id and parallel upload to s3
     stop_event_groups = processed_daily_events.groupby("stop_id")
-    _parallel_upload(stop_event_groups, service_date)
+    num_stops = len(stop_event_groups)
+    logger.info(f"Uploading events for {num_stops} stops to S3")
+    try:
+        _parallel_upload(stop_event_groups, service_date)
+    except Exception as e:
+        logger.exception(f"Error uploading LAMP data for {service_date}: {e}")
+        raise
+    logger.info(f"LAMP data ingestion complete for service date {service_date}")
 
 
 def ingest_today_lamp_data():
     """Ingest and upload today's LAMP data."""
     service_date = get_current_service_date()
+    logger.debug(f"Ingesting today's LAMP data (service date: {service_date})")
     ingest_lamp_data(service_date)
 
 
 def ingest_yesterday_lamp_data():
     """Ingest and upload yesterday's LAMP data."""
     service_date = get_current_service_date() - pd.Timedelta(days=1)
+    logger.debug(f"Ingesting yesterday's LAMP data (service date: {service_date})")
     ingest_lamp_data(service_date)
 
 
 if __name__ == "__main__":
+    import os
+
+    # Configure logging for local execution
+    # Set LOG_LEVEL=DEBUG in environment to enable debug logging
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     ingest_today_lamp_data()
