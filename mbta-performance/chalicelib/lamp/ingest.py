@@ -283,7 +283,7 @@ _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 
 def ingest_lamp_data(service_date: date):
-    logger.debug(f"Starting LAMP data ingestion for service date {service_date}")
+    logger.info(f"Starting LAMP data ingestion for service date {service_date}")
     try:
         pq_df = fetch_pq_file_from_remote(service_date)
     except ValueError as e:
@@ -315,14 +315,14 @@ def ingest_lamp_data(service_date: date):
 def ingest_today_lamp_data():
     """Ingest and upload today's LAMP data."""
     service_date = get_current_service_date()
-    logger.debug(f"Ingesting today's LAMP data (service date: {service_date})")
+    logger.info(f"Ingesting today's LAMP data (service date: {service_date})")
     ingest_lamp_data(service_date)
 
 
 def ingest_yesterday_lamp_data():
     """Ingest and upload yesterday's LAMP data."""
     service_date = get_current_service_date() - pd.Timedelta(days=1)
-    logger.debug(f"Ingesting yesterday's LAMP data (service date: {service_date})")
+    logger.info(f"Ingesting yesterday's LAMP data (service date: {service_date})")
     ingest_lamp_data(service_date)
 
 
