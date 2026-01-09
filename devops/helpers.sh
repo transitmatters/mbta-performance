@@ -16,6 +16,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip '**/*.pxd' || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy*/tests/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas*/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/conftest.py || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/_libs/tslibs/src/datetime/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/io/formats/templates/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/io/tests/**/* || true
