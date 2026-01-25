@@ -58,3 +58,20 @@ STOP_ID_NUMERIC_MAP = {
     "Union Square-01": "70503",
     "Union Square-02": "70504",
 }
+
+# Red Line branch stops - used to determine which branch a trip belongs to
+# These are stops unique to each branch (not on the trunk)
+RED_LINE_ASHMONT_STOPS = {"70085", "70086", "70087", "70088", "70089", "70090", "70091", "70092", "70093", "70094"}
+RED_LINE_BRAINTREE_STOPS = {
+    "70095",
+    "70096",
+    "70097",
+    "70098",
+    "70099",
+    "70100",
+    "70101",
+    "70102",
+    "70103",
+    "70104",
+    "70105",
+}
