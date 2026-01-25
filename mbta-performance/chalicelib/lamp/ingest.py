@@ -20,6 +20,8 @@ from .constants import (
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 LAMP_INDEX_URL = "https://performancedata.mbta.com/lamp/subway-on-time-performance-v1/index.csv"
 RAPID_DAILY_URL_TEMPLATE = "https://performancedata.mbta.com/lamp/subway-on-time-performance-v1/{YYYY_MM_DD}-subway-on-time-performance-v1.parquet"
 S3_BUCKET = "tm-mbta-performance"
