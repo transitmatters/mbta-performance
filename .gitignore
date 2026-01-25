@@ -4,3 +4,7 @@
 **/data
 .envrc
 .cursor
+.ruff_cache
+.venv
+.pytest_cache
+.poetry

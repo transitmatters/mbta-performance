@@ -1,8 +1,9 @@
-import pandas as pd
-from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
-from ... import parallel
 from datetime import date, timedelta
 
+import pandas as pd
+
+from ... import parallel
+from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
@@ -39,4 +40,15 @@ def backfill_all_in_index():
 
 
 if __name__ == "__main__":
+    import logging
+    import os
+
+    # Configure logging for local execution
+    # Set LOG_LEVEL=DEBUG in environment to enable debug logging
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     backfill_all_in_index()

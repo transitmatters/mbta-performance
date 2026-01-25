@@ -1,12 +1,15 @@
+import logging
 from datetime import date
 from tempfile import TemporaryDirectory
-import pandas as pd
 from typing import Iterable
-import boto3
 
+import boto3
+import pandas as pd
 from mbta_gtfs_sqlite import MbtaGtfsArchive
 from mbta_gtfs_sqlite.models import StopTime, Trip
 from sqlalchemy import or_
+
+logger = logging.getLogger(__name__)
 
 # information to fetch from GTFS
 MAX_QUERY_DEPTH = 900  # actually 1000
@@ -14,17 +17,29 @@ MAX_QUERY_DEPTH = 900  # actually 1000
 
 def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
     """Fetch scheduled stop time information from GTFS."""
+    logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
     mbta_gtfs = MbtaGtfsArchive(
         local_archive_path=TemporaryDirectory().name,
         s3_bucket=s3.Bucket("tm-gtfs"),
     )
     feed = mbta_gtfs.get_feed_for_date(service_date)
-    feed.download_or_build()
+    logger.info(f"GTFS feed key: {feed.key}")
+
+    logger.info("Downloading or building GTFS feed...")
+    try:
+        feed.download_or_build()
+    except Exception as e:
+        logger.exception(f"Failed to download or build GTFS feed {feed.key}: {e}")
+        raise
+    logger.info("GTFS feed ready")
+
     session = feed.create_sqlite_session()
     exists_remotely = feed.exists_remotely()
 
     gtfs_stops = []
+    num_batches = (len(trip_ids) + MAX_QUERY_DEPTH - 1) // MAX_QUERY_DEPTH
+    logger.debug(f"Querying GTFS in {num_batches} batches")
     for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
         gtfs_stops.append(
             pd.read_sql(
@@ -41,6 +56,14 @@ def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> p
         )
 
     if not exists_remotely:
-        print(f"[{feed.key}] Uploading GTFS feed to S3")
-        feed.upload_to_s3()
-    return pd.concat(gtfs_stops)
+        logger.info(f"Uploading GTFS feed {feed.key} to S3...")
+        try:
+            feed.upload_to_s3()
+        except Exception as e:
+            logger.exception(f"Failed to upload GTFS feed {feed.key} to S3: {e}")
+            raise
+        logger.info(f"GTFS feed {feed.key} uploaded to S3")
+
+    result = pd.concat(gtfs_stops)
+    logger.info(f"Fetched {len(result)} GTFS stop times")
+    return result

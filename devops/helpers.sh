@@ -14,16 +14,70 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip '**/*.h' || true
     zip -d -qq cfn/layer-deployment.zip '**/*.pyx' || true
     zip -d -qq cfn/layer-deployment.zip '**/*.pxd' || true
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy*/tests/**/* || true
+    # Numpy tests - delete test files but keep _natype.py (needed by numpy.testing at runtime)
+    # Note: numpy/_core/tests/_natype.py must be preserved - it's imported by numpy/testing/_private/utils.py
+    # Use explicit paths because wildcards with ** can match too broadly
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/tests/test_*.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/tests/_locales.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/tests/data/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/tests/data/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/tests/examples/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/tests/examples/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_pyinstaller/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_pyinstaller/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/compat/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/compat/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/f2py/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/f2py/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/fft/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/fft/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/lib/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/lib/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/linalg/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/linalg/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/ma/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/ma/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/matrixlib/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/matrixlib/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/polynomial/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/polynomial/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/random/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/random/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/typing/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/typing/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/testing/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/testing/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/conftest.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/numpy/_core/*_tests*.so || true
+    # Pandas tests
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas*/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/tests/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/conftest.py || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/_libs/tslibs/src/datetime/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/io/formats/templates/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/io/tests/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pandas/core/tests/**/* || true
+    # Pyarrow tests and development files
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow*/tests/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow*/tests/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/include/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/include/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/src/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/src/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/examples/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/examples/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/cmake_modules/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/matplotlib/mpl-data/sample_data/**/* || true
+    # SQLAlchemy testing utilities (not needed at runtime)
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy*/testing/**/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy*/testing/* || true
+    # ddtrace test directories
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/ddtrace/**/test/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/ddtrace/**/tests/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy/dialects/oracle/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy/dialects/mssql/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/sqlalchemy/dialects/mysql/**/* || true

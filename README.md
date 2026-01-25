@@ -50,6 +50,12 @@ uv run ruff format mbta-performance
 
 ## Run Locally
 
+If you want more verbose logging and debug info, export `DEBUG` as log level. However this will heavily pollute logs with s3transfer and botocore logs.
+
+```shell
+export LOG_LEVEL="DEBUG"
+```
+
 ### Run today's LAMP ingest
 
 ```shell
