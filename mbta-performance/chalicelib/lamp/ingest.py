@@ -222,11 +222,11 @@ def _derive_lamp_branch_route_id(pq_df: pd.DataFrame) -> pd.DataFrame:
     return pq_df
 
 
-def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date):
+def _recalculate_fields_from_gtfs(pq_df: pd.DataFrame, service_date: date, local_archive_path: str | None = None):
     """Enrich LAMP data with GTFS data for some schedule information."""
     trip_ids = pq_df["trip_id"].unique()
     logger.info(f"Enriching LAMP data with GTFS for {len(trip_ids)} unique trips on {service_date}")
-    gtfs_stops = fetch_stop_times_from_gtfs(trip_ids, service_date)
+    gtfs_stops = fetch_stop_times_from_gtfs(trip_ids, service_date, local_archive_path=local_archive_path)
     logger.debug(f"Fetched {len(gtfs_stops)} GTFS stop times")
     gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
 
@@ -349,7 +349,7 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
     return pd.concat(_enriched_trips)[S3_COLUMNS]
 
 
-def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
+def ingest_pq_file(pq_df: pd.DataFrame, service_date: date, local_archive_path: str | None = None) -> pd.DataFrame:
     """Process and tranform columns for the full day's events."""
     logger.info(f"Processing {len(pq_df)} raw events for service date {service_date}")
     pq_df["direction_id"] = pq_df["direction_id"].astype("int16")
@@ -377,7 +377,7 @@ def ingest_pq_file(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
         logger.warning(f"Dropped {events_dropped} events with null stop_id")
 
     logger.info("Recalculating fields from GTFS")
-    processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date)
+    processed_daily_events = _recalculate_fields_from_gtfs(processed_daily_events, service_date, local_archive_path)
 
     logger.info("Averaging scheduled headways")
     processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)

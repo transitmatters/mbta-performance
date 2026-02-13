@@ -15,12 +15,16 @@ logger = logging.getLogger(__name__)
 MAX_QUERY_DEPTH = 900  # actually 1000
 
 
-def fetch_stop_times_from_gtfs(trip_ids: Iterable[str], service_date: date) -> pd.DataFrame:
+def fetch_stop_times_from_gtfs(
+    trip_ids: Iterable[str], service_date: date, local_archive_path: str | None = None
+) -> pd.DataFrame:
     """Fetch scheduled stop time information from GTFS."""
     logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
+    if not local_archive_path:
+        local_archive_path = TemporaryDirectory().name
     mbta_gtfs = MbtaGtfsArchive(
-        local_archive_path=TemporaryDirectory().name,
+        local_archive_path=local_archive_path,
         s3_bucket=s3.Bucket("tm-gtfs"),
     )
     feed = mbta_gtfs.get_feed_for_date(service_date)
