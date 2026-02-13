@@ -8,7 +8,7 @@ from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
-EARLIEST_LAMP_DATA = date(2026, 2, 10)
+EARLIEST_LAMP_DATA = date(2019, 9, 15)
 
 LOCAL_ARCHIVE_PATH = os.environ.get("LOCAL_ARCHIVE_PATH", "./feeds")
 
