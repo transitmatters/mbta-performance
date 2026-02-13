@@ -25,7 +25,8 @@ class TestGTFS(unittest.TestCase):
         # Verify expected parameters
         self.assertIn("trip_ids", params)
         self.assertIn("service_date", params)
-        self.assertEqual(len(params), 2)
+        self.assertIn("local_archive_path", params)
+        self.assertEqual(len(params), 3)
 
     def test_fetch_stop_times_from_gtfs_return_type_annotation(self):
         """Test that fetch_stop_times_from_gtfs has proper type annotations."""

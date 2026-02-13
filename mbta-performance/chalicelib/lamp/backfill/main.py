@@ -1,3 +1,4 @@
+import os
 from datetime import date, timedelta
 
 import pandas as pd
@@ -8,6 +9,8 @@ from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 EARLIEST_LAMP_DATA = date(2019, 9, 15)
+
+LOCAL_ARCHIVE_PATH = os.environ.get("LOCAL_ARCHIVE_PATH", "./feeds")
 
 
 def backfill_all_in_index():
@@ -31,8 +34,9 @@ def backfill_all_in_index():
         except ValueError as e:
             # If we can't fetch the file, we can't process it
             print(f"Failed to fetch {date_to_backfill}: {e}")
+            continue
         print(f"Processing {date_to_backfill}")
-        processed_daily_events = ingest_pq_file(pq_df, date_to_backfill)
+        processed_daily_events = ingest_pq_file(pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH)
 
         # split daily events by stop_id and parallel upload to s3
         stop_event_groups = processed_daily_events.groupby("stop_id")
