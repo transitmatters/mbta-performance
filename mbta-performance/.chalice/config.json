@@ -27,6 +27,11 @@
           "iam_policy_file": "policy-lamp-ingest.json",
           "lambda_timeout": 250,
           "lambda_memory_size": 2048
+        },
+        "ensure_gtfs_bundle": {
+          "iam_policy_file": "policy-lamp-ingest.json",
+          "lambda_timeout": 600,
+          "lambda_memory_size": 2048
         }
       }
     }

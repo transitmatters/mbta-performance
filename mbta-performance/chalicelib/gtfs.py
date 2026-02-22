@@ -71,3 +71,24 @@ def fetch_stop_times_from_gtfs(
     result = pd.concat(gtfs_stops)
     logger.info(f"Fetched {len(result)} GTFS stop times")
     return result
+
+
+def ensure_gtfs_bundle_for_date(service_date: date) -> None:
+    """Ensure the GTFS SQLite bundle for the given date is built and uploaded to S3."""
+    logger.info(f"Checking GTFS bundle for {service_date}...")
+    s3 = boto3.resource("s3")
+    with TemporaryDirectory() as tmpdir:
+        mbta_gtfs = MbtaGtfsArchive(
+            local_archive_path=tmpdir,
+            s3_bucket=s3.Bucket("tm-gtfs"),
+        )
+        feed = mbta_gtfs.get_feed_for_date(service_date)
+        logger.info(f"GTFS feed key: {feed.key}")
+        if feed.exists_remotely():
+            logger.info("GTFS feed already in S3, nothing to do.")
+            return
+        logger.info("GTFS feed not in S3. Downloading and building...")
+        feed.download_or_build()
+        logger.info("Uploading GTFS feed to S3...")
+        feed.upload_to_s3()
+        logger.info("GTFS feed uploaded successfully.")

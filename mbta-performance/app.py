@@ -37,3 +37,14 @@ def process_daily_lamp(event):
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
     lamp.ingest_yesterday_lamp_data()
+
+
+# Runs at 9 AM UTC (~4-5 AM Boston), one hour before LAMP ingest begins at 10 AM UTC
+@app.schedule(Cron("0", "9", "*", "*", "?", "*"))
+def ensure_gtfs_bundle(event):
+    """Pre-fetch and upload the GTFS bundle for today so LAMP ingest doesn't time out on new bundles."""
+    from datetime import date
+
+    from chalicelib.gtfs import ensure_gtfs_bundle_for_date
+
+    ensure_gtfs_bundle_for_date(date.today())

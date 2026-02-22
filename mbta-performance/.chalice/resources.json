@@ -59,6 +59,29 @@
           "Size": 2048
         }
       }
+    },
+    "EnsureGtfsBundle": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Description": "Pre-fetches and uploads the GTFS bundle for today so LAMP ingest does not time out on new bundles",
+        "Environment": {
+          "Variables": {
+            "DD_LAMBDA_HANDLER": "app.ensure_gtfs_bundle",
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        },
+        "EphemeralStorage": {
+          "Size": 2048
+        }
+      }
     }
   }
 }
