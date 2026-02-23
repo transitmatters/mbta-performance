@@ -392,7 +392,7 @@ def upload_to_s3(stop_id_and_events: Tuple[str, pd.DataFrame], service_date: dat
     Args:
         stop_id_and_events: tuple of a stop id, and all the arrival/departure events that occured at this
             stop over the course of a day (so far)
-        service day: service date corresponding to the events.
+        service_date: Service date corresponding to the events.
     """
     # unpack from iterable
     stop_id, stop_events = stop_id_and_events
@@ -413,6 +413,17 @@ _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 
 def ingest_lamp_data(service_date: date):
+    """Fetch, process, and upload LAMP performance data for a single service date.
+
+    Orchestrates the full daily ingestion pipeline: downloads the parquet file
+    from the LAMP remote, processes arrival/departure times and GTFS enrichment,
+    then uploads per-stop CSV files to S3 in parallel.
+
+    Args:
+        service_date: The service date to ingest. If the remote parquet file is
+            unavailable (ValueError), the function logs the error and returns
+            without raising. All other errors are re-raised.
+    """
     logger.info(f"Starting LAMP data ingestion for service date {service_date}")
     try:
         pq_df = fetch_pq_file_from_remote(service_date)

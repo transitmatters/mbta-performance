@@ -1,3 +1,11 @@
+"""Utilities for fetching scheduled stop-time data from GTFS feeds.
+
+GTFS (General Transit Feed Specification) feeds are downloaded on demand from
+the tm-gtfs S3 bucket via the mbta-gtfs-sqlite library and queried with
+SQLAlchemy. Feeds are uploaded back to S3 after the first local build so that
+subsequent runs can skip the rebuild step.
+"""
+
 import logging
 from datetime import date
 from tempfile import TemporaryDirectory
