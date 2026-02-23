@@ -5,6 +5,17 @@ from ..arcgis import download_latest_ferry_data, ferry_update_cache
 
 
 def backfill_ferry_data(start_date=None, end_date=None):
+    """Download the latest ferry data from ArcGIS and process it into event files.
+
+    Triggers a cache refresh on the ArcGIS Hub before downloading so that the
+    most recent data is included.
+
+    Args:
+        start_date: Optional lower bound (inclusive) for service_date filtering.
+            If None, all available dates are processed.
+        end_date: Optional upper bound (inclusive) for service_date filtering.
+            If None, all available dates are processed.
+    """
     print("Processing Ferry Data")
     if start_date:
         print(f"Start date: {start_date}")
