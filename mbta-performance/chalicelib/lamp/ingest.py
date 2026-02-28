@@ -83,7 +83,7 @@ def _derive_gtfs_branch_route_id(gtfs_stops: pd.DataFrame) -> pd.DataFrame:
     return gtfs_stops
 
 
-def _local_save(s3_key, stop_events):
+def _local_save(s3_key, stop_events):  # pragma: no cover
     """TODO remove this temp code, it saves the output files locally!"""
     import os
 
@@ -456,7 +456,7 @@ def ingest_yesterday_lamp_data():
     ingest_lamp_data(service_date)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     import os
 
     # Configure logging for local execution
