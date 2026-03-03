@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import date
 from tempfile import TemporaryDirectory
 from typing import Iterable
@@ -10,6 +11,29 @@ from mbta_gtfs_sqlite.models import StopTime, Trip
 from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
+
+BOOSTED_TIMEOUT = 900  # AWS Lambda maximum timeout in seconds
+NORMAL_TIMEOUT = 250  # Normal configured timeout for LAMP ingest functions
+
+
+def _set_lambda_timeout(timeout_seconds: int) -> None:
+    """Update this Lambda function's configured timeout for future invocations.
+
+    Has no effect on the current invocation — only applies to the next one.
+    Safe to call from local dev (no-op when AWS_LAMBDA_FUNCTION_NAME is unset).
+    """
+    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    if not function_name:
+        return
+    try:
+        client = boto3.client("lambda")
+        current = client.get_function_configuration(FunctionName=function_name)["Timeout"]
+        if current != timeout_seconds:
+            logger.info(f"Updating Lambda timeout: {current}s → {timeout_seconds}s")
+            client.update_function_configuration(FunctionName=function_name, Timeout=timeout_seconds)
+    except Exception:
+        logger.exception("Failed to update Lambda timeout — continuing anyway")
+
 
 # information to fetch from GTFS
 MAX_QUERY_DEPTH = 900  # actually 1000
@@ -30,6 +54,13 @@ def fetch_stop_times_from_gtfs(
     feed = mbta_gtfs.get_feed_for_date(service_date)
     logger.info(f"GTFS feed key: {feed.key}")
 
+    # Check S3 before downloading so we can boost the Lambda timeout if a
+    # new bundle needs to be built and uploaded (which can take several minutes).
+    exists_remotely = feed.exists_remotely()
+    if not exists_remotely:
+        logger.warning(f"GTFS feed {feed.key} not in S3 — boosting Lambda timeout for next invocation")
+        _set_lambda_timeout(BOOSTED_TIMEOUT)
+
     logger.info("Downloading or building GTFS feed...")
     try:
         feed.download_or_build()
@@ -39,7 +70,6 @@ def fetch_stop_times_from_gtfs(
     logger.info("GTFS feed ready")
 
     session = feed.create_sqlite_session()
-    exists_remotely = feed.exists_remotely()
 
     gtfs_stops = []
     num_batches = (len(trip_ids) + MAX_QUERY_DEPTH - 1) // MAX_QUERY_DEPTH
@@ -67,6 +97,8 @@ def fetch_stop_times_from_gtfs(
             logger.exception(f"Failed to upload GTFS feed {feed.key} to S3: {e}")
             raise
         logger.info(f"GTFS feed {feed.key} uploaded to S3")
+        # Upload succeeded — restore normal timeout for future invocations
+        _set_lambda_timeout(NORMAL_TIMEOUT)
 
     result = pd.concat(gtfs_stops)
     logger.info(f"Fetched {len(result)} GTFS stop times")
