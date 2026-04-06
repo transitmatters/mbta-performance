@@ -10,6 +10,7 @@ from .constants import ARCGIS_IDS, BUS_ARCGIS_IDS
 
 
 def prep_local_dir():
+    """Create the expected local directory structure for data downloads."""
     pathlib.Path("data").mkdir(exist_ok=True)
     pathlib.Path("data/input").mkdir(exist_ok=True)
     pathlib.Path("data/input/bus").mkdir(exist_ok=True)
@@ -17,6 +18,17 @@ def prep_local_dir():
 
 
 def download_historic_data(year: str):
+    """Download the historic rapid-transit event zip for a given year from ArcGIS.
+
+    Args:
+        year: Four-digit year string (e.g. "2022"). Must be a key in ARCGIS_IDS.
+
+    Returns:
+        Absolute path to the downloaded zip file.
+
+    Raises:
+        ValueError: If the year is not in ARCGIS_IDS or the request fails.
+    """
     if year not in ARCGIS_IDS.keys():
         raise ValueError(f"Year {year} dataset is not available. Supported years are {list(ARCGIS_IDS.keys())}")
 
@@ -31,6 +43,18 @@ def download_historic_data(year: str):
 
 
 def unzip_historic_data(zip_file: str, output_dir: str):
+    """Extract a historic data zip file into an output directory.
+
+    Falls back to the system ``unzip`` binary if Python's ZipFile raises
+    NotImplementedError (e.g. unsupported compression method).
+
+    Args:
+        zip_file: Path to the zip file to extract.
+        output_dir: Directory to extract contents into (created if absent).
+
+    Returns:
+        The output directory path.
+    """
     pathlib.Path(output_dir).mkdir(exist_ok=True)
 
     try:
@@ -46,6 +70,14 @@ def unzip_historic_data(zip_file: str, output_dir: str):
 
 
 def list_files_in_dir(dir: str):
+    """Recursively list all files under a directory.
+
+    Args:
+        dir: Root directory to walk.
+
+    Returns:
+        A flat list of absolute file paths found at any depth under ``dir``.
+    """
     csv_files = []
     files = os.listdir(dir)
     for file in files:
@@ -87,7 +119,17 @@ def unzip_bus_data(zip_file: str, output_dir: str):
 
 
 def process_bus_file_names(year: str, year_dir: str):
-    """Rename bus files to have consistent names and remove spaces."""
+    """Normalize bus CSV filenames within a year's download directory.
+
+    Each year's ArcGIS zip uses a different naming convention. This function
+    moves files out of subdirectories and renames them to a consistent
+    quarterly pattern (e.g. ``2020-Q1.csv``) so downstream processing can
+    use predictable paths.
+
+    Args:
+        year: Four-digit year string (e.g. "2020").
+        year_dir: Path to the directory containing that year's extracted files.
+    """
     year_path = pathlib.Path(year_dir)
 
     # Handle years 2021+ that have files in subdirectories

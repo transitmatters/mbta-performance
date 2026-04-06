@@ -9,3 +9,5 @@
 .pytest_cache
 .poetry
 feeds/
+.coverage
+site/

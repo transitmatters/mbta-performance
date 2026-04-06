@@ -14,6 +14,11 @@ def ferry_update_cache():
 
 
 def download_latest_ferry_data() -> str:
+    """Download the latest ferry ridership CSV from ArcGIS to a temporary file.
+
+    Returns:
+        Path to the temporary file containing the downloaded CSV data.
+    """
     ferry_tmp_path = NamedTemporaryFile().name
 
     with open(ferry_tmp_path, "wb") as file:

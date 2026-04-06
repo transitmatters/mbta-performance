@@ -17,6 +17,15 @@ from .gtfs_archive import add_gtfs_headways
 
 
 def process_events(input_csv: str, outdir: str, nozip: bool = False, columns: list = HISTORIC_COLUMNS):
+    """Read a historic rapid-transit event CSV, enrich with GTFS headways, and write to disk.
+
+    Args:
+        input_csv: Path to the input CSV file.
+        outdir: Root output directory passed to ``to_disk``.
+        nozip: If True, write plain CSV instead of gzip-compressed output.
+        columns: List of column names to read from the CSV. Defaults to
+            HISTORIC_COLUMNS_PRE_LAMP.
+    """
     df = pd.read_csv(
         input_csv,
         usecols=columns,
@@ -103,6 +112,19 @@ def process_ferry(
     start_date=None,
     end_date=None,
 ):
+    """Read the ferry ridership CSV, transform it into ARR/DEP events, and write to disk.
+
+    Converts ArcGIS ferry data (with MBTA-specific column names and terminal
+    labels) into the standard event format used by the rest of the pipeline,
+    then calls ``to_disk_ferry`` to write monthly partitioned output.
+
+    Args:
+        path_to_csv_file: Path to the raw ferry CSV downloaded from ArcGIS.
+        outdir: Root output directory passed to ``to_disk_ferry``.
+        nozip: If True, write plain CSV instead of gzip-compressed output.
+        start_date: Optional lower bound (inclusive) for service_date filtering.
+        end_date: Optional upper bound (inclusive) for service_date filtering.
+    """
     # read data, convert to datetime
     df = pd.read_csv(path_to_csv_file, low_memory=False)
 

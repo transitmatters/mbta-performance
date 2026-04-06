@@ -4,11 +4,27 @@ import pandas as pd
 
 
 def make_parallel(single_func, THREAD_COUNT=5):
-    # This function will wrap another function
-    # (similar to a decorator, but we don't want to overwrite the original)
-    # e.g. parallel_func = make_parallel(singleton_func)
-    # singleton_func's first parameter must be the var to multiplex on
-    # and parallel_func will take an iterable in its stead
+    """Wrap a function so it runs concurrently over an iterable of inputs.
+
+    Similar to a decorator but preserves the original function. The wrapped
+    function's first positional argument is replaced by an iterable; each
+    item in the iterable is passed to a separate thread.
+
+    Example::
+
+        parallel_fetch = make_parallel(fetch_day)
+        results = parallel_fetch([date1, date2, date3], extra_arg)
+
+    Args:
+        single_func: The function to parallelize. Its first parameter is the
+            item to multiplex; all remaining args/kwargs are forwarded as-is.
+        THREAD_COUNT: Maximum number of concurrent threads. Defaults to 5.
+
+    Returns:
+        A new function that accepts an iterable as its first argument and
+        returns a flat list of all results.
+    """
+
     def parallel_func(iterable, *args, **kwargs):
         futures = []
         with ThreadPoolExecutor(max_workers=THREAD_COUNT) as executor:
@@ -22,13 +38,32 @@ def make_parallel(single_func, THREAD_COUNT=5):
 
 
 def date_range(start, end):
+    """Return a daily DatetimeIndex from start to end, inclusive.
+
+    Args:
+        start: Start date (any type accepted by pandas.date_range).
+        end: End date (any type accepted by pandas.date_range).
+
+    Returns:
+        A pandas DatetimeIndex with daily frequency.
+    """
     return pd.date_range(start, end)
 
 
 def month_range(start, end):
-    # This is kinda funky, but is stil simpler than other approaches
-    # pandas won't generate a monthly date_range that includes Jan and Feb for Jan31-Feb1 e.g.
-    # So we generate a daily date_range and then resample it down (summing 0s as a no-op in the process) so it aligns.
+    """Return a month-end DatetimeIndex covering every month between start and end.
+
+    Uses a daily resample rather than a direct monthly date_range to ensure that
+    edge cases like Jan 31 – Feb 1 produce both months in the result.
+
+    Args:
+        start: Start date (any type accepted by pandas.date_range).
+        end: End date (any type accepted by pandas.date_range).
+
+    Returns:
+        A pandas DatetimeIndex with month-end frequency, containing one entry
+        per calendar month spanned by [start, end].
+    """
     dates = pd.date_range(start, end, freq="1D", inclusive="both")
     series = pd.Series(0, index=dates)
     months = series.resample("1M").sum().index
