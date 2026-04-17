@@ -15,9 +15,7 @@ def backfill_single_year(year: str, start_date: date = None, end_date: date = No
     for file in list_files_in_dir(input_dir):
         # in 2024 data moved to LAMP and the format changed
         if int(year) >= 2024:
-            process_events(
-                file, "data/output", columns=HISTORIC_COLUMNS_LAMP, start_date=start_date, end_date=end_date
-            )
+            process_events(file, "data/output", columns=HISTORIC_COLUMNS_LAMP, start_date=start_date, end_date=end_date)
         else:
             process_events(
                 file, "data/output", columns=HISTORIC_COLUMNS_PRE_LAMP, start_date=start_date, end_date=end_date
