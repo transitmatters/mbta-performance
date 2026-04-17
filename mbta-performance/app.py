@@ -37,3 +37,23 @@ def process_daily_lamp(event):
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
     lamp.ingest_yesterday_lamp_data()
+
+
+# Bus LAMP data processing
+# Runs every 30 minutes from either 5 AM -> 2:30AM or 6 AM -> 3:30 AM depending on DST
+@app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
+def process_daily_bus_lamp(event):
+    """Ingest today's bus LAMP data."""
+    now_boston = datetime.now(ZoneInfo("US/Eastern"))
+
+    if now_boston.hour >= 3 and now_boston.hour < 6:
+        return
+
+    lamp.ingest_today_bus_data()
+
+
+# Runs once the next day at 11am or 12pm depending on DST
+@app.schedule(Cron("0", "15", "*", "*", "?", "*"))
+def process_yesterday_bus_lamp(event):
+    """Process yesterday's bus LAMP data, to ensure we have everything we need."""
+    lamp.ingest_yesterday_bus_data()
