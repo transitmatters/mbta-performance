@@ -1,3 +1,4 @@
+from ..constants import BUS_ARCGIS_IDS
 from ..process import process_bus_events
 
 from ..download import download_all_bus_data
@@ -10,13 +11,13 @@ def backfill_bus_data(years: list = None, routes: list = None, output_dir: str =
     This replaces the bash script functionality.
 
     Args:
-        years: List of years to process (default: 2018-2025)
+        years: List of years to process (default: all years in BUS_ARCGIS_IDS)
         routes: List of route IDs to process (default: common bus routes)
         output_dir: Output directory for processed data
         nozip: Whether to skip gzipping files
     """
     if years is None:
-        years = list(range(2018, 2026))  # 2018-2025
+        years = [int(y) for y in BUS_ARCGIS_IDS.keys()]
 
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 

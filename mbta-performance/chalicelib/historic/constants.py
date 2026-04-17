@@ -10,6 +10,7 @@ ARCGIS_IDS = {
     "2023": "9a7f5634db72459ab731b6a9b274a1d4",
     "2024": "0711756aa5e1400891e79b984a94b495",
     "2025": "e2344a2297004b36b82f57772926ed1a",
+    "2026": "a6d2a50d28fc43d8a4f86f73085d17b0",
 }
 
 # ARCGIS_IDS for each year, bus data
@@ -21,6 +22,7 @@ BUS_ARCGIS_IDS = {
     "2023": "b7b36fdb7b3a4728af2fccc78c2ca5b7",
     "2024": "96c77138c3144906bce93d0257531b6a",
     "2025": "924df13d845f4907bb6a6c3ed380d57a",
+    "2026": "9d8a8cad277545c984c1b25ed10b7d3c",
 }
 
 

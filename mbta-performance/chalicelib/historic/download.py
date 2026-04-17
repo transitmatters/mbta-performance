@@ -173,7 +173,7 @@ def clean_unicode_bom(file_path: str):
 
 
 def download_all_bus_data():
-    """Download all bus data files (2018-2025)."""
+    """Download all bus data files for every year in BUS_ARCGIS_IDS."""
     prep_local_dir()
 
     # Download bus data for each year
