@@ -27,6 +27,11 @@
           "iam_policy_file": "policy-lamp-ingest.json",
           "lambda_timeout": 900,
           "lambda_memory_size": 4096
+        },
+        "regenerate_tm_benchmarks": {
+          "iam_policy_file": "policy-tm-benchmarks.json",
+          "lambda_timeout": 300,
+          "lambda_memory_size": 1024
         }
       }
     }

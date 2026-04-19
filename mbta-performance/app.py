@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from chalice import Chalice, ConvertToMiddleware, Cron
 from chalicelib import (
+    benchmarks,
     lamp,
 )
 from datadog_lambda.wrapper import datadog_lambda_wrapper
@@ -37,3 +38,11 @@ def process_daily_lamp(event):
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
     lamp.ingest_yesterday_lamp_data()
+
+
+# Runs on the 1st of every month at 10:00 UTC (5-6 AM Boston depending on DST).
+# Historical p50 barely moves week-to-week so monthly is plenty.
+@app.schedule(Cron("0", "10", "1", "*", "?", "*"))
+def regenerate_tm_benchmarks(event):
+    """Regenerate TransitMatters travel-time benchmarks for rapid transit."""
+    benchmarks.generate_travel_time_benchmarks()
