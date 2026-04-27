@@ -185,7 +185,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
         # Additional null check for route_starts
         route_starts = route_starts.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
-        if route_starts.empty:
+        if route_starts.empty:  # pragma: no cover
             continue
 
         trip_id_map = pd.merge_asof(
