@@ -12,6 +12,19 @@ DATA_PREFIX = os.path.join(os.path.dirname(__file__), "sample_data")
 SAMPLE_BUS_DATA_PATH = os.path.join(DATA_PREFIX, "bus-20260407-sample.parquet")
 
 
+def _empty_gtfs_mock() -> pd.DataFrame:
+    """Empty GTFS stop_times mock matching fetch_stop_times_from_gtfs's schema."""
+    return pd.DataFrame(
+        {
+            "trip_id": pd.array([], dtype="string"),
+            "stop_id": pd.array([], dtype="string"),
+            "arrival_time": pd.array([], dtype="Int64"),
+            "route_id": pd.array([], dtype="string"),
+            "direction_id": pd.array([], dtype="int16"),
+        }
+    )
+
+
 class TestBusIngest(unittest.TestCase):
     def setUp(self):
         with open(SAMPLE_BUS_DATA_PATH, "rb") as f:
@@ -23,6 +36,7 @@ class TestBusIngest(unittest.TestCase):
             engine="pyarrow",
             dtype_backend="numpy_nullable",
         )
+        self.mock_gtfs_data = _empty_gtfs_mock()
 
     def test_fetch_bus_pq_file_from_remote(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
@@ -68,7 +82,8 @@ class TestBusIngest(unittest.TestCase):
             self.assertGreater(len(departures), 0)
 
     def test_ingest_bus_pq_file(self):
-        result = bus_ingest.ingest_bus_pq_file(self.sample_df, date(2026, 4, 7))
+        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
+            result = bus_ingest.ingest_bus_pq_file(self.sample_df, date(2026, 4, 7))
 
         # No null stop_ids
         self.assertFalse(result["stop_id"].isna().any())
@@ -98,8 +113,12 @@ class TestBusIngest(unittest.TestCase):
         mock_response = mock.Mock(status_code=200, content=self.data)
         with mock.patch("requests.get", return_value=mock_response):
             with mock.patch("chalicelib.lamp.bus_ingest._parallel_upload") as mock_upload:
-                bus_ingest.ingest_bus_data(date(2026, 4, 7))
-                mock_upload.assert_called_once()
+                with mock.patch(
+                    "chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs",
+                    return_value=self.mock_gtfs_data,
+                ):
+                    bus_ingest.ingest_bus_data(date(2026, 4, 7))
+                    mock_upload.assert_called_once()
 
     def test_ingest_bus_data_no_file_found(self):
         mock_response = mock.Mock(status_code=404)
@@ -111,15 +130,25 @@ class TestBusIngest(unittest.TestCase):
         mock_response = mock.Mock(status_code=200, content=self.data)
         with mock.patch("requests.get", return_value=mock_response):
             with mock.patch("chalicelib.lamp.bus_ingest._parallel_upload"):
-                with mock.patch("chalicelib.lamp.bus_ingest.get_current_service_date", return_value=date(2026, 4, 7)):
-                    bus_ingest.ingest_today_bus_data()
+                with mock.patch(
+                    "chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data
+                ):
+                    with mock.patch(
+                        "chalicelib.lamp.bus_ingest.get_current_service_date", return_value=date(2026, 4, 7)
+                    ):
+                        bus_ingest.ingest_today_bus_data()
 
     def test_ingest_yesterday_bus_data(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
         with mock.patch("requests.get", return_value=mock_response):
             with mock.patch("chalicelib.lamp.bus_ingest._parallel_upload"):
-                with mock.patch("chalicelib.lamp.bus_ingest.get_current_service_date", return_value=date(2026, 4, 8)):
-                    bus_ingest.ingest_yesterday_bus_data()
+                with mock.patch(
+                    "chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data
+                ):
+                    with mock.patch(
+                        "chalicelib.lamp.bus_ingest.get_current_service_date", return_value=date(2026, 4, 8)
+                    ):
+                        bus_ingest.ingest_yesterday_bus_data()
 
     def test_column_rename_map(self):
         df = self.sample_df.copy()

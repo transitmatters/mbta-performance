@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import date, timedelta
 
 import pandas as pd
@@ -11,6 +12,8 @@ logger = logging.getLogger(__name__)
 _parallel_upload = parallel.make_parallel(upload_bus_to_s3)
 
 EARLIEST_BUS_LAMP_DATA = date(2020, 1, 8)
+
+LOCAL_ARCHIVE_PATH = os.environ.get("LOCAL_ARCHIVE_PATH", "./feeds")
 
 
 def backfill_all_bus_dates(start_date: date = EARLIEST_BUS_LAMP_DATA):
@@ -42,7 +45,7 @@ def backfill_all_bus_dates(start_date: date = EARLIEST_BUS_LAMP_DATA):
             continue
 
         logger.info(f"Processing {date_to_backfill}")
-        processed = ingest_bus_pq_file(pq_df, date_to_backfill)
+        processed = ingest_bus_pq_file(pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH)
 
         group_event_groups = processed.groupby(RTE_DIR_STOP)
         logger.info(f"Uploading events for {len(group_event_groups)} route-direction-stop groups to S3")
