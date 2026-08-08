@@ -19,6 +19,14 @@
       "Effect": "Allow",
       "Action": "s3:*",
       "Resource": ["arn:aws:s3:::tm-gtfs", "arn:aws:s3:::tm-gtfs/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:GetFunctionConfiguration",
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "Resource": "arn:aws:lambda:*:*:function:mbta-performance-*"
     }
   ]
 }
