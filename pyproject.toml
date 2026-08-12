@@ -20,6 +20,7 @@ dev = [
     "ruff>=0.14.8",
     "pytest~=9.0.2",
     "pre-commit>=4.4.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [tool.uv]
@@ -28,6 +29,9 @@ package = false
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.coverage.run]
+omit = ["*/backfill/*"]
 
 [tool.black]
 line-length = 120
