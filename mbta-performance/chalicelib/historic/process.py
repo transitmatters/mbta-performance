@@ -16,7 +16,14 @@ from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
 from .gtfs_archive import add_gtfs_headways
 
 
-def process_events(input_csv: str, outdir: str, nozip: bool = False, columns: list = HISTORIC_COLUMNS):
+def process_events(
+    input_csv: str,
+    outdir: str,
+    nozip: bool = False,
+    columns: list = HISTORIC_COLUMNS,
+    start_date=None,
+    end_date=None,
+):
     df = pd.read_csv(
         input_csv,
         usecols=columns,
@@ -30,6 +37,13 @@ def process_events(input_csv: str, outdir: str, nozip: bool = False, columns: li
             "event_time": "int",
         },
     )
+
+    if start_date is not None:
+        df = df[df["service_date"].dt.date >= start_date]
+    if end_date is not None:
+        df = df[df["service_date"].dt.date <= end_date]
+    if df.empty:
+        return
 
     df["event_time"] = df["service_date"] + pd.to_timedelta(df["event_time_sec"], unit="s")
     df.drop(columns=["event_time_sec"], inplace=True)

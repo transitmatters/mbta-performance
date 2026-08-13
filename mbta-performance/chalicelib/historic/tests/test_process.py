@@ -472,6 +472,140 @@ class TestProcess(unittest.TestCase):
                 # Verify to_disk_bus was called
                 mock_to_disk.assert_called_once()
 
+    def test_load_bus_data_overnight_trip_offset(self):
+        """Bus rows with a 1900-01-02 base date represent next-day (overnight) trips.
+
+        The day offset (1900-01-0X where X-1 is the number of extra days) should be
+        added to service_date so the output timestamp is on the following calendar day.
+        """
+        bus_data = pd.DataFrame(
+            {
+                "service_date": ["2020-01-15"],
+                "route_id": ["01"],
+                "direction": ["Inbound"],
+                "half_trip_id": ["46374001"],
+                "stop_id": ["67"],
+                "time_point_id": ["maput"],
+                "time_point_order": [2],
+                "point_type": ["Midpoint"],
+                "standard_type": ["Schedule"],
+                # 1900-01-02 means +1 day from service_date
+                "scheduled": ["1900-01-02 01:30:00"],
+                "actual": ["1900-01-02 01:35:00"],
+                "scheduled_headway": [0],
+                "headway": [None],
+            }
+        )
+
+        bus_csv = pathlib.Path(self.temp_dir) / "bus_overnight.csv"
+        bus_data.to_csv(bus_csv, index=False)
+
+        result = process.load_bus_data(str(bus_csv))
+
+        # service_date 2020-01-15 + 1 day offset + 01:30:00 → 2020-01-16 01:30:00
+        expected_scheduled = datetime.datetime(2020, 1, 16, 1, 30, 0)
+        expected_actual = datetime.datetime(2020, 1, 16, 1, 35, 0)
+        self.assertEqual(result.iloc[0]["scheduled"], expected_scheduled)
+        self.assertEqual(result.iloc[0]["actual"], expected_actual)
+
+    def test_load_bus_data_pre_june_2024_z_suffix_treated_as_eastern(self):
+        """Pre-June 2024 bus data with a Z suffix is treated as Eastern Time, not UTC.
+
+        Before June 2024 the MBTA labelled Eastern times with a Z suffix.
+        The loader detects this (service_date < 2024-06-01) and does NOT apply
+        a UTC→Eastern conversion, so the output time equals the wall-clock value
+        from the raw data.
+        """
+        bus_data = pd.DataFrame(
+            {
+                "service_date": ["2024-01-15"],
+                "route_id": ["01"],
+                "direction": ["Inbound"],
+                "half_trip_id": ["12345"],
+                "stop_id": ["110"],
+                "time_point_id": ["hhgat"],
+                "time_point_order": [1],
+                "point_type": ["Startpoint"],
+                "standard_type": ["Schedule"],
+                # Z suffix but service_date is before June 2024 → treat as Eastern, no tz shift
+                "scheduled": ["1900-01-01T08:05:00Z"],
+                "actual": ["1900-01-01T08:06:00Z"],
+                "scheduled_headway": [0],
+                "headway": [None],
+            }
+        )
+
+        bus_csv = pathlib.Path(self.temp_dir) / "bus_pre_june.csv"
+        bus_data.to_csv(bus_csv, index=False)
+
+        result = process.load_bus_data(str(bus_csv))
+
+        # Pre-June 2024: the "Z" is ignored as a UTC indicator.
+        # 08:06 stays as 08:06 on the service date (no UTC→Eastern shift).
+        expected_actual = datetime.datetime(2024, 1, 15, 8, 6, 0)
+        self.assertEqual(result.iloc[0]["actual"], expected_actual)
+
+    def test_process_ferry_all_rows_filtered(self):
+        """process_ferry returns early when date filtering removes all rows."""
+        ferry_data = pd.DataFrame(
+            {
+                "service_date": ["2024-02-07 00:00:00+00:00"],
+                "route_id": ["F1"],
+                "trip_id": ["trip1"],
+                "travel_direction": ["To Boston"],
+                "departure_terminal": ["Hingham"],
+                "arrival_terminal": ["Boston"],
+                "mbta_sched_arrival": ["2024-02-07 08:00:00+00:00"],
+                "mbta_sched_departure": ["2024-02-07 07:45:00+00:00"],
+                "actual_arrival": ["2024-02-07 08:02:00"],
+                "actual_departure": ["2024-02-07 07:46:00"],
+                "vessel_time_slot": ["slot1"],
+            }
+        )
+
+        ferry_csv = pathlib.Path(self.temp_dir) / "ferry_filtered.csv"
+        ferry_data.to_csv(ferry_csv, index=False)
+
+        with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
+            # start_date in March means all Feb data is filtered out
+            process.process_ferry(
+                str(ferry_csv),
+                self.temp_dir,
+                nozip=True,
+                start_date=datetime.date(2024, 3, 1),
+            )
+
+            # to_disk_ferry should never be called — function returned early
+            mock_to_disk.assert_not_called()
+
+    def test_process_ferry_gtfs_failure(self):
+        """process_ferry continues to write output even when add_gtfs_headways raises IndexError."""
+        ferry_data = pd.DataFrame(
+            {
+                "service_date": ["2024-02-07 00:00:00+00:00"],
+                "route_id": ["F1"],
+                "trip_id": ["trip1"],
+                "travel_direction": ["To Boston"],
+                "departure_terminal": ["Hingham"],
+                "arrival_terminal": ["Boston"],
+                "mbta_sched_arrival": ["2024-02-07 08:00:00+00:00"],
+                "mbta_sched_departure": ["2024-02-07 07:45:00+00:00"],
+                "actual_arrival": ["2024-02-07 08:02:00"],
+                "actual_departure": ["2024-02-07 07:46:00"],
+                "vessel_time_slot": ["slot1"],
+            }
+        )
+
+        ferry_csv = pathlib.Path(self.temp_dir) / "ferry_gtfs_fail.csv"
+        ferry_data.to_csv(ferry_csv, index=False)
+
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=IndexError("GTFS error")):
+            with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
+                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+
+                # to_disk_ferry should still be called despite the GTFS failure
+                mock_to_disk.assert_called_once()
+
     def test_load_bus_data_utc_conversion(self):
         """Test that post-June 2024 bus data is correctly converted from UTC to Eastern Time.
 
