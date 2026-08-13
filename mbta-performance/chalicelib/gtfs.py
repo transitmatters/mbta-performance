@@ -38,8 +38,16 @@ def fetch_stop_times_from_gtfs(
         raise
     logger.info("GTFS feed ready")
 
+    if not feed.exists_remotely():
+        logger.info(f"Uploading GTFS feed {feed.key} to S3...")
+        try:
+            feed.upload_to_s3()
+        except Exception as e:
+            logger.exception(f"Failed to upload GTFS feed {feed.key} to S3: {e}")
+            raise
+        logger.info(f"GTFS feed {feed.key} uploaded to S3")
+
     session = feed.create_sqlite_session()
-    exists_remotely = feed.exists_remotely()
 
     gtfs_stops = []
     num_batches = (len(trip_ids) + MAX_QUERY_DEPTH - 1) // MAX_QUERY_DEPTH
@@ -58,15 +66,6 @@ def fetch_stop_times_from_gtfs(
                 dtype={"direction_id": "int16"},
             )
         )
-
-    if not exists_remotely:
-        logger.info(f"Uploading GTFS feed {feed.key} to S3...")
-        try:
-            feed.upload_to_s3()
-        except Exception as e:
-            logger.exception(f"Failed to upload GTFS feed {feed.key} to S3: {e}")
-            raise
-        logger.info(f"GTFS feed {feed.key} uploaded to S3")
 
     result = pd.concat(gtfs_stops)
     logger.info(f"Fetched {len(result)} GTFS stop times")

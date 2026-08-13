@@ -273,6 +273,27 @@ class TestDownload(unittest.TestCase):
             content = f.read()
         self.assertEqual(content, original_content)
 
+    def test_unzip_bus_data_with_unsupported_compression(self):
+        """Test unzip_bus_data fallback to system unzip when NotImplementedError is raised."""
+        zip_file = f"{self.temp_dir}/test.zip"
+        output_dir = f"{self.temp_dir}/output"
+
+        mock_zip = mock.MagicMock()
+        mock_zip.extractall.side_effect = NotImplementedError("Unsupported compression")
+        mock_zip_context = mock.MagicMock()
+        mock_zip_context.__enter__ = mock.Mock(return_value=mock_zip)
+        mock_zip_context.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("pathlib.Path.mkdir"):
+            with mock.patch("chalicelib.historic.download.ZipFile", return_value=mock_zip_context):
+                with mock.patch("subprocess.run") as mock_run:
+                    result = download.unzip_bus_data(zip_file, output_dir)
+
+                    mock_run.assert_called_once()
+                    call_args = mock_run.call_args[0][0]
+                    self.assertEqual(call_args[0], "unzip")
+                    self.assertEqual(result, output_dir)
+
     def test_download_all_bus_data(self):
         """Test download_all_bus_data function."""
         mock_response = mock.Mock(status_code=200, content=b"mock content")
@@ -286,3 +307,16 @@ class TestDownload(unittest.TestCase):
                                 # Mock the clean_unicode_bom to avoid file operations
                                 with mock.patch("chalicelib.historic.download.clean_unicode_bom"):
                                     download.download_all_bus_data()
+
+    def test_download_all_bus_data_cleans_unicode_bom(self):
+        """Test download_all_bus_data calls clean_unicode_bom when 2020-Q3.csv exists."""
+        with mock.patch("chalicelib.historic.download.prep_local_dir"):
+            with mock.patch("chalicelib.historic.download.download_bus_data", return_value="/fake/path.zip"):
+                with mock.patch("chalicelib.historic.download.unzip_bus_data"):
+                    with mock.patch("chalicelib.historic.download.process_bus_file_names"):
+                        with mock.patch("pathlib.Path.exists", return_value=True):
+                            with mock.patch("chalicelib.historic.download.clean_unicode_bom") as mock_clean:
+                                download.download_all_bus_data()
+
+                                # clean_unicode_bom should have been called at least once
+                                mock_clean.assert_called()
