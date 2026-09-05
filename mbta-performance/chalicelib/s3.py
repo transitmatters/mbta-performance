@@ -37,6 +37,17 @@ def upload_df_as_csv(bucket, key, df):
     s3.upload_fileobj(buffer, bucket, Key=key, ExtraArgs={"ContentType": "text/csv"})
 
 
+def upload_parquet(bucket, key, data: bytes):
+    """Upload already-serialised parquet bytes.
+
+    Deliberately not zlib-wrapped the way upload() is: parquet carries its own internal
+    compression, and readers (pandas, GeoPandas, DuckDB, the dashboard) expect to open the
+    object directly rather than having to inflate it first.
+    """
+    key = str(key)
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/vnd.apache.parquet")
+
+
 def download_csv_as_df(bucket, key):
     key = str(key)
     obj = s3.get_object(Bucket=bucket, Key=key)
