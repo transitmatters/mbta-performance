@@ -49,7 +49,7 @@ import pyarrow.parquet as pq
 import requests
 
 from .. import parallel, s3
-from ..date import EASTERN_TIME
+from ..date import EASTERN_TIME, service_date, service_day_start
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,6 @@ LOCAL_PARQUET_PATH = "/tmp/lamp_alerts.parquet"
 # all history is a separate local script: chalicelib/lamp/backfill/alerts.py.
 LOOKBACK_DAYS = 30
 LOOKAHEAD_DAYS = 90
-
-# Alert service dates roll over at 3am ET, matching chalicelib/date.py::service_date
-# and data-ingestion's get_current_service_date (the producer of Alerts/v3/).
-SERVICE_DATE_ROLLOVER_HOUR = 3
 
 # We skip `description_text.translation.text` and `recurrence_text.translation.text`:
 # together they account for ~170MB of the file's ~480MB uncompressed, and nothing
@@ -136,13 +132,19 @@ def last_seen_by_alert(path: str) -> pd.DataFrame:
     )
 
 
-def _select_winning_versions(path: str) -> pa.Table:
+def select_winning_versions(path: str) -> pa.Table:
     """(id, last_modified_timestamp) identifying the latest active-period-bearing
     version of every alert in the file -- computed globally, independent of any
     window. This has to be a separate global pass: picking "latest" only among
     rows that already happen to overlap a window would return a stale, superseded
     active_period whenever an alert's true latest version was rescheduled to fall
     outside that window.
+
+    Public (rather than a module-private helper) because it's window-independent
+    and callers that read multiple windows against the same file -- e.g.
+    backfill/alerts.py's per-year chunking -- should compute it once and pass the
+    result to read_latest_versions instead of paying for a redundant full-file
+    scan on every chunk.
     """
     table = pq.read_table(path, columns=["id", "last_modified_timestamp", "active_period.start_timestamp"])
     table = table.filter(pc.is_valid(table["active_period.start_timestamp"]))
@@ -152,26 +154,46 @@ def _select_winning_versions(path: str) -> pa.Table:
     return winners.select(["id", "last_modified_timestamp_max"]).rename_columns(["id", "last_modified_timestamp"])
 
 
-def read_latest_versions(path: str, window: tuple, last_seen: pd.DataFrame) -> pd.DataFrame:
+def read_latest_versions(
+    path: str, window: tuple, last_seen: pd.DataFrame, winners: Optional[pa.Table] = None
+) -> pd.DataFrame:
     """Read the latest active-period-bearing version of every alert overlapping `window`.
 
     Filtering happens in Arrow, row-group batch by batch, before anything becomes a
     pandas object: converting the full file to pandas costs several GB of RSS,
     while window-filtering first keeps peak memory around 1GB.
 
+    `window` bounds are service dates (3am ET rollover, per chalicelib/date.py), so
+    the boundaries here are computed with service_day_start rather than midnight --
+    otherwise an alert starting between midnight and 3am ET the day after the
+    window ends would belong (by service-date) to the window's last day but get
+    excluded here, since its wall-clock start falls on the following calendar day.
+
+    `winners`, if given, reuses a previously computed select_winning_versions()
+    result instead of recomputing it -- see that function's docstring.
+
     Each alert's effective end (used only for bucketing into day files, not for the
     "end" field we emit) is: its active_period.end if present, else the last time
-    MBTA marked it closed, else the last time it was modified at all. We do not
-    extend an unclosed alert's effective end to "today" -- most such alerts are
-    years-old and orphaned rather than genuinely ongoing, and today's alerts are
-    covered by the live v3 poller regardless (see t-performance-dash's same-day
-    fallback), so there's no accuracy gained and a real risk of a stale alert
-    reappearing in every day file forever.
+    MBTA marked it closed, else the last time it was modified at all -- clamped to
+    never precede active_period.start. Without that clamp, a pre-announced alert
+    (created long before its future active period, never revised since) would have
+    an effective end older than its own start, which can make it fail this
+    function's window filter and makes service_dates_for's day-range loop yield no
+    days at all. We do not extend an unclosed alert's effective end to "today" --
+    most such alerts are years-old and orphaned rather than genuinely ongoing, and
+    today's alerts are covered by the live v3 poller regardless (see
+    t-performance-dash's same-day fallback), so there's no accuracy gained and a
+    real risk of a stale alert reappearing in every day file forever.
     """
-    window_start = datetime.combine(window[0], datetime.min.time(), EASTERN_TIME).timestamp()
-    window_end = datetime.combine(window[1] + timedelta(days=1), datetime.min.time(), EASTERN_TIME).timestamp()
+    # int(), not a bare float: all our *_timestamp columns are whole-second int64,
+    # and comparing an int64 Arrow field against a Python float literal (rather
+    # than an int) in an Expression trips a pyarrow 17 Acero bug that tries an
+    # unsafe int64->float32 cast for values above 2**24, raising ArrowInvalid.
+    window_start = int(service_day_start(window[0]).timestamp())
+    window_end = int(service_day_start(window[1] + timedelta(days=1)).timestamp())
 
-    winners = _select_winning_versions(path)
+    if winners is None:
+        winners = select_winning_versions(path)
     last_seen_table = pa.Table.from_pandas(last_seen.reset_index(), preserve_index=False).rename_columns(
         ["id", "_all_versions_last_modified", "_all_versions_closed"]
     )
@@ -191,6 +213,7 @@ def read_latest_versions(path: str, window: tuple, last_seen: pd.DataFrame) -> p
         eff_end = pc.coalesce(
             batch["active_period.end_timestamp"], batch["_all_versions_closed"], batch["_all_versions_last_modified"]
         )
+        eff_end = pc.max_element_wise(eff_end, batch["active_period.start_timestamp"])
         batch = batch.append_column("eff_end", eff_end)
         batch = batch.filter(
             (pc.field("active_period.start_timestamp") < window_end) & (pc.field("eff_end") >= window_start)
@@ -217,11 +240,10 @@ def _clean(value):
 
 
 def service_dates_for(start_ts: float, end_ts: float) -> Iterator[date]:
-    """Every service date (3am ET rollover) that the closed interval [start_ts, end_ts] touches."""
-    start_day = (
-        datetime.fromtimestamp(int(start_ts), EASTERN_TIME) - timedelta(hours=SERVICE_DATE_ROLLOVER_HOUR)
-    ).date()
-    end_day = (datetime.fromtimestamp(int(end_ts), EASTERN_TIME) - timedelta(hours=SERVICE_DATE_ROLLOVER_HOUR)).date()
+    """Every service date that the closed interval [start_ts, end_ts] touches, per
+    chalicelib/date.py::service_date's 3am ET rollover."""
+    start_day = service_date(datetime.fromtimestamp(int(start_ts), EASTERN_TIME))
+    end_day = service_date(datetime.fromtimestamp(int(end_ts), EASTERN_TIME))
     day = start_day
     while day <= end_day:
         yield day
@@ -317,18 +339,41 @@ def ingest_lamp_alerts(lookback_days: int = LOOKBACK_DAYS, lookahead_days: int =
     Runs daily and re-derives the window from scratch each time (rather than
     tracking incremental state) so retroactive corrections in the LAMP source data
     propagate automatically.
+
+    Unlike lamp/ingest.py's per-day fetches (where a missing file for "today" is an
+    expected, recoverable case), there's no legitimate reason for any stage here to
+    fail -- so every stage logs which one broke, for Datadog attribution, and then
+    re-raises so the Lambda invocation is reported as failed rather than silently
+    doing nothing. The whole pipeline, including the download, runs inside the
+    try/finally so a partial/failed download never leaves a stale file in /tmp for
+    a warm Lambda container's next invocation to trip over.
     """
     today = date.today()
     window = (today - timedelta(days=lookback_days), today + timedelta(days=lookahead_days))
     logger.info(f"Ingesting LAMP alerts for window {window[0]} to {window[1]}")
 
-    path = fetch_alerts_parquet()
+    path = LOCAL_PARQUET_PATH
     try:
-        last_seen = last_seen_by_alert(path)
-        df = read_latest_versions(path, window, last_seen)
-        alerts, day_index = build_v3_alerts(df, window=window)
-        logger.info(f"Rebuilding {len(day_index)} day files covering {len(alerts)} alerts")
-        _parallel_upload_days(day_index.keys(), alerts, day_index)
+        try:
+            fetch_alerts_parquet(path)
+        except Exception as e:
+            logger.exception(f"Failed to fetch LAMP alerts parquet: {e}")
+            raise
+
+        try:
+            last_seen = last_seen_by_alert(path)
+            df = read_latest_versions(path, window, last_seen)
+        except Exception as e:
+            logger.exception(f"Failed to read/filter LAMP alerts: {e}")
+            raise
+
+        try:
+            alerts, day_index = build_v3_alerts(df, window=window)
+            logger.info(f"Rebuilding {len(day_index)} day files covering {len(alerts)} alerts")
+            _parallel_upload_days(day_index.keys(), alerts, day_index)
+        except Exception as e:
+            logger.exception(f"Failed to build/upload LAMP alerts: {e}")
+            raise
     finally:
         if os.path.exists(path):
             os.remove(path)

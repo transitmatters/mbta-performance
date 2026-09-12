@@ -1,9 +1,53 @@
 import os
+import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest import mock
+from zoneinfo import ZoneInfo
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from .. import alerts
+
+ET = ZoneInfo("US/Eastern")
+
+
+# Explicit schema so an all-None column (e.g. a row with no closed_timestamp)
+# still gets a concrete nullable type -- pa.Table.from_pylist would otherwise infer
+# it as an untyped "null" column, which pyarrow's Acero join engine rejects.
+_SYNTHETIC_ALERTS_SCHEMA = pa.schema(
+    [
+        ("id", pa.int64()),
+        ("cause", pa.string()),
+        ("effect_detail", pa.string()),
+        ("severity", pa.int8()),
+        ("alert_lifecycle", pa.string()),
+        ("header_text.translation.text", pa.string()),
+        ("service_effect_text.translation.text", pa.string()),
+        ("created_timestamp", pa.int64()),
+        ("last_modified_timestamp", pa.int64()),
+        ("closed_timestamp", pa.int64()),
+        ("active_period.start_timestamp", pa.int64()),
+        ("active_period.end_timestamp", pa.int64()),
+        ("informed_entity.route_id", pa.string()),
+        ("informed_entity.route_type", pa.int8()),
+        ("informed_entity.direction_id", pa.int8()),
+        ("informed_entity.stop_id", pa.string()),
+        ("informed_entity.activities", pa.string()),
+    ]
+)
+
+
+def _write_alerts_parquet(rows: list[dict]) -> str:
+    """Write a minimal synthetic alerts parquet (ALERT_COLUMNS + closed_timestamp)
+    for tests that need to craft a specific timestamp/version scenario rather than
+    rely on finding one in the real-data fixture."""
+    fd, path = tempfile.mkstemp(suffix=".parquet")
+    os.close(fd)
+    pq.write_table(pa.Table.from_pylist(rows, schema=_SYNTHETIC_ALERTS_SCHEMA), path)
+    return path
+
 
 # 6 real alerts sliced (all versions, all rows) from the live LAMP_RT_ALERTS.parquet,
 # chosen to cover the edge cases in the module docstring:
@@ -148,6 +192,87 @@ class TestAlerts(unittest.TestCase):
         self.assertTrue(all(window[0] <= d <= window[1] for d in day_index))
         self.assertIn(date(2023, 7, 1), day_index)  # 293631 still open at this point
         self.assertIn("293631", day_index[date(2023, 7, 1)])
+
+    def test_window_end_aligns_with_service_date_rollover_not_midnight(self):
+        # Regression: an alert starting between midnight and 3am ET the day after
+        # window[1] belongs, by service date, to window[1] itself -- it must not
+        # be excluded just because its wall-clock start falls on the next calendar day.
+        start = datetime(2020, 1, 2, 1, 0, 0, tzinfo=ET).timestamp()  # service date 2020-01-01
+        end = datetime(2020, 1, 2, 1, 30, 0, tzinfo=ET).timestamp()
+        row = {
+            "id": 999001,
+            "cause": "UNKNOWN_CAUSE",
+            "effect_detail": "DELAY",
+            "severity": 3,
+            "alert_lifecycle": "NEW",
+            "header_text.translation.text": "Boundary test alert",
+            "service_effect_text.translation.text": "Test",
+            "created_timestamp": int(start),
+            "last_modified_timestamp": int(start),
+            "closed_timestamp": None,
+            "active_period.start_timestamp": int(start),
+            "active_period.end_timestamp": int(end),
+            "informed_entity.route_id": "Red",
+            "informed_entity.route_type": 1,
+            "informed_entity.direction_id": None,
+            "informed_entity.stop_id": None,
+            "informed_entity.activities": "BOARD|EXIT|RIDE",
+        }
+        path = _write_alerts_parquet([row])
+        try:
+            last_seen = alerts.last_seen_by_alert(path)
+            df = alerts.read_latest_versions(path, (date(2020, 1, 1), date(2020, 1, 1)), last_seen)
+            self.assertEqual(set(df.id.unique()), {999001})
+            _, day_index = alerts.build_v3_alerts(df, window=(date(2020, 1, 1), date(2020, 1, 1)))
+            self.assertIn("999001", day_index[date(2020, 1, 1)])
+        finally:
+            os.remove(path)
+
+    def test_eff_end_is_clamped_to_active_period_start(self):
+        # Regression: a pre-announced alert (created long before an active period
+        # that starts later, never revised or closed) would otherwise have
+        # eff_end == last_modified_timestamp, which precedes active_period.start.
+        # That can make the window filter reject the row, or make
+        # service_dates_for's day range come out empty. Both must be guarded against.
+        created = datetime(2020, 1, 1, 12, 0, 0, tzinfo=ET).timestamp()
+        start = datetime(2020, 6, 1, 12, 0, 0, tzinfo=ET).timestamp()
+        row = {
+            "id": 999002,
+            "cause": "UNKNOWN_CAUSE",
+            "effect_detail": "DETOUR",
+            "severity": 3,
+            "alert_lifecycle": "UPCOMING",
+            "header_text.translation.text": "Pre-announced alert",
+            "service_effect_text.translation.text": "Test",
+            "created_timestamp": int(created),
+            "last_modified_timestamp": int(created),  # never revised since creation
+            "closed_timestamp": None,
+            "active_period.start_timestamp": int(start),
+            "active_period.end_timestamp": None,
+            "informed_entity.route_id": "1",
+            "informed_entity.route_type": 3,
+            "informed_entity.direction_id": None,
+            "informed_entity.stop_id": None,
+            "informed_entity.activities": "BOARD|EXIT|RIDE",
+        }
+        path = _write_alerts_parquet([row])
+        try:
+            last_seen = alerts.last_seen_by_alert(path)
+            window = (date(2020, 6, 1), date(2020, 6, 1))
+            df = alerts.read_latest_versions(path, window, last_seen)
+            self.assertEqual(set(df.id.unique()), {999002})
+            self.assertGreaterEqual(df.iloc[0]["eff_end"], df.iloc[0]["active_period.start_timestamp"])
+            _, day_index = alerts.build_v3_alerts(df, window=window)
+            self.assertIn("999002", day_index[date(2020, 6, 1)])
+        finally:
+            os.remove(path)
+
+    def test_select_winning_versions_is_reusable_across_calls(self):
+        # backfill/alerts.py computes this once and passes it into every per-year
+        # read_latest_versions call rather than recomputing it each time.
+        winners = alerts.select_winning_versions(SAMPLE_ALERTS_PATH)
+        df = alerts.read_latest_versions(SAMPLE_ALERTS_PATH, FULL_HISTORY_WINDOW, self.last_seen, winners=winners)
+        self.assertEqual(set(df.id.unique()), {293631, 332786, 351440, 691095, 1028254, 1030402})
 
     def test_upload_day_alerts_writes_expected_bucket_and_key(self):
         alerts_by_id = {"1": {"id": "1", "type": "alert", "attributes": {}}}

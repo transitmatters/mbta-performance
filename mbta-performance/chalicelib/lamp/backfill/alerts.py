@@ -21,10 +21,10 @@ def backfill_all_alerts():
     history into pandas in one shot costs several GB of RSS.
 
     We keep that memory bounded by chunking the read into one-year windows (the
-    download and the global "latest version per alert" pass still happen once,
-    since neither is memory-heavy) at the cost of re-scanning the full parquet
-    once per chunk -- an acceptable trade for a script that runs rarely and
-    doesn't need to fit in a Lambda's memory ceiling.
+    download and the two global, window-independent passes -- last_seen_by_alert
+    and select_winning_versions -- still happen once) at the cost of re-scanning
+    the full parquet's per-row columns once per chunk -- an acceptable trade for a
+    script that runs rarely and doesn't need to fit in a Lambda's memory ceiling.
     """
     end = date.today() + timedelta(days=alerts.LOOKAHEAD_DAYS)
     confirmation = input(
@@ -36,9 +36,11 @@ def backfill_all_alerts():
         print("You must enter 'yes' to proceed. Exiting.")
         exit(1)
 
-    path = alerts.fetch_alerts_parquet()
+    path = alerts.LOCAL_PARQUET_PATH
     try:
+        alerts.fetch_alerts_parquet(path)
         last_seen = alerts.last_seen_by_alert(path)
+        winners = alerts.select_winning_versions(path)
 
         chunk_start = date(EARLIEST_LAMP_ALERTS_DATA.year, 1, 1)
         while chunk_start <= end:
@@ -46,7 +48,7 @@ def backfill_all_alerts():
             window = (max(chunk_start, EARLIEST_LAMP_ALERTS_DATA), chunk_end)
             logger.info(f"Backfilling {window[0]} to {window[1]}")
 
-            df = alerts.read_latest_versions(path, window, last_seen)
+            df = alerts.read_latest_versions(path, window, last_seen, winners=winners)
             built_alerts, day_index = alerts.build_v3_alerts(df, window=window)
             logger.info(f"  {len(day_index)} day files, {len(built_alerts)} alerts")
             alerts._parallel_upload_days(day_index.keys(), built_alerts, day_index)
