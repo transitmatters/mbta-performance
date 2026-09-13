@@ -46,3 +46,11 @@ def process_yesterday_lamp(event):
 def regenerate_tm_benchmarks(event):
     """Regenerate TransitMatters travel-time benchmarks for rapid transit."""
     benchmarks.generate_travel_time_benchmarks()
+
+
+# Runs daily at 11:00 UTC (6-7 AM Boston depending on DST), after the LAMP alerts
+# parquet has settled for the prior service day.
+@app.schedule(Cron("0", "11", "*", "*", "?", "*"))
+def process_lamp_alerts(event):
+    """Rebuild the rolling window of Alerts/lamp/{date}.json.gz day files from the LAMP alerts archive."""
+    lamp.ingest_lamp_alerts()
