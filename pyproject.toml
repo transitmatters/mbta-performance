@@ -11,7 +11,7 @@ dependencies = [
     "pandas~=2.2.3",
     "datadog_lambda==6.109.0",
     "pyarrow~=17.0.0",
-    "mbta-gtfs-sqlite~=1.1.2",
+    "mbta-gtfs-sqlite~=1.2.0",
 ]
 
 [dependency-groups]
