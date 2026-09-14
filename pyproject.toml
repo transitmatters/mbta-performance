@@ -11,15 +11,15 @@ dependencies = [
     "pandas~=2.2.3",
     "datadog_lambda==6.109.0",
     "pyarrow~=17.0.0",
-    "mbta-gtfs-sqlite~=1.1.1",
+    "mbta-gtfs-sqlite~=1.1.2",
 ]
 
 [dependency-groups]
 dev = [
-    "chalice==1.32.0",
-    "ruff>=0.14.8",
-    "pytest~=9.0.2",
-    "pre-commit>=4.4.0",
+    "chalice==1.33.0",
+    "ruff>=0.16.7",
+    "pytest~=9.1.1",
+    "pre-commit>=4.6.2",
 ]
 
 [tool.uv]
