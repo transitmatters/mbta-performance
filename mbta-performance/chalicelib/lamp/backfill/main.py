@@ -51,7 +51,11 @@ def backfill_all_in_index():
             print(f"Failed to fetch {date_to_backfill}: {e}")
             continue
         print(f"Processing {date_to_backfill}")
-        processed_daily_events = ingest_pq_file(pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH)
+        # allow_build: this runs on a laptop, so it can build a missing feed and
+        # publish it. Lambda cannot -- see chalicelib/gtfs.py.
+        processed_daily_events = ingest_pq_file(
+            pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH, allow_build=True
+        )
 
         # split daily events by stop_id and parallel upload to s3
         stop_event_groups = processed_daily_events.groupby("stop_id")

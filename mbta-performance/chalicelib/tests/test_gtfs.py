@@ -29,7 +29,11 @@ class TestGTFS(unittest.TestCase):
         self.assertIn("trip_ids", params)
         self.assertIn("service_date", params)
         self.assertIn("local_archive_path", params)
-        self.assertEqual(len(params), 3)
+        self.assertIn("allow_build", params)
+        self.assertEqual(len(params), 4)
+        # Lambda must never build: a feed build is ~200s and ~1GB of disk against
+        # a 60s timeout. Only the backfill scripts opt in.
+        self.assertIs(sig.parameters["allow_build"].default, False)
 
     def test_fetch_stop_times_from_gtfs_return_type_annotation(self):
         """Test that fetch_stop_times_from_gtfs has proper type annotations."""
@@ -132,28 +136,46 @@ class TestGTFS(unittest.TestCase):
 
         self.assertEqual(mock_read_sql.call_count, 1)
 
-    def test_fetch_stop_times_from_gtfs_uploads_when_not_remote(self):
-        """If the feed does not exist remotely, it should be uploaded after building."""
-        empty_df = pd.DataFrame(
-            {
-                "trip_id": pd.Series([], dtype=str),
-                "stop_id": pd.Series([], dtype=str),
-                "arrival_time": pd.Series([], dtype=float),
-                "route_id": pd.Series([], dtype=str),
-                "direction_id": pd.array([], dtype="int16"),
-            }
-        )
-
-        mock_feed = mock.MagicMock()
-        mock_feed.exists_remotely.return_value = False  # not on S3 yet
+    def test_missing_feed_enqueues_a_build_and_raises(self):
+        """The 2026-09-15 failure mode: the MBTA published feed 20260907, no bundle
+        existed, and download_or_build() burned the 60s timeout every 30 minutes for
+        5 hours. Fail in ~2s and hand the build to data-ingestion instead."""
+        mock_feed = self._make_mock_feed()
+        mock_feed.key = "20260907"
+        mock_feed.exists_locally.return_value = False
+        mock_feed.exists_remotely.return_value = False
         mock_archive = self._make_mock_archive(mock_feed)
 
         with mock.patch("chalicelib.gtfs.boto3.resource"):
             with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=mock_archive):
-                with mock.patch("chalicelib.gtfs.pd.read_sql", return_value=empty_df):
-                    gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2024, 2, 7))
+                with mock.patch("chalicelib.gtfs._enqueue_gtfs_build") as mock_enqueue:
+                    with self.assertRaises(RuntimeError) as ctx:
+                        gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2026, 9, 15))
 
-        mock_feed.upload_to_s3.assert_called_once()
+        mock_enqueue.assert_called_once_with("20260907")
+        self.assertIn("20260907", str(ctx.exception))
+        mock_feed.build_locally.assert_not_called()
+        mock_feed.upload_to_s3.assert_not_called()
+
+    def test_enqueue_failure_does_not_mask_the_error(self):
+        """If SQS is unreachable the RuntimeError is still the actionable signal."""
+        mock_feed = self._make_mock_feed()
+        mock_feed.exists_locally.return_value = False
+        mock_feed.exists_remotely.return_value = False
+        mock_archive = self._make_mock_archive(mock_feed)
+
+        def resource(name, *args, **kwargs):
+            # s3 is needed to construct the archive; only sqs is broken here.
+            if name == "sqs":
+                raise RuntimeError("no sqs")
+            return mock.MagicMock()
+
+        with mock.patch("chalicelib.gtfs.boto3.resource", side_effect=resource):
+            with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=mock_archive):
+                with self.assertRaises(RuntimeError) as ctx:
+                    gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2026, 9, 15))
+
+        self.assertIn("not in s3://tm-gtfs", str(ctx.exception))
 
     def test_fetch_stop_times_from_gtfs_skips_upload_when_remote(self):
         """If the feed already exists remotely, upload_to_s3 should NOT be called."""
@@ -177,10 +199,12 @@ class TestGTFS(unittest.TestCase):
 
         mock_feed.upload_to_s3.assert_not_called()
 
-    def test_fetch_stop_times_download_or_build_failure(self):
-        """fetch_stop_times_from_gtfs should re-raise when download_or_build fails."""
+    def test_fetch_stop_times_download_failure(self):
+        """A failed download must re-raise rather than fall back to building."""
         mock_feed = self._make_mock_feed()
-        mock_feed.download_or_build.side_effect = RuntimeError("build failed")
+        mock_feed.exists_locally.return_value = False
+        mock_feed.exists_remotely.return_value = True
+        mock_feed.download_from_s3.side_effect = RuntimeError("download failed")
         mock_archive = self._make_mock_archive(mock_feed)
 
         with mock.patch("chalicelib.gtfs.boto3.resource"):
@@ -188,8 +212,11 @@ class TestGTFS(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2024, 2, 7))
 
-    def test_fetch_stop_times_upload_to_s3_failure(self):
-        """fetch_stop_times_from_gtfs should re-raise when upload_to_s3 fails."""
+        mock_feed.build_locally.assert_not_called()
+
+    def test_backfill_may_build_and_upload(self):
+        """allow_build=True is the backfill path -- it runs on a laptop, so it can
+        build a missing feed and publish it for everyone else."""
         empty_df = pd.DataFrame(
             {
                 "trip_id": pd.Series([], dtype=str),
@@ -199,14 +226,17 @@ class TestGTFS(unittest.TestCase):
                 "direction_id": pd.array([], dtype="int16"),
             }
         )
-
-        mock_feed = mock.MagicMock()
-        mock_feed.exists_remotely.return_value = False  # triggers upload path
-        mock_feed.upload_to_s3.side_effect = RuntimeError("S3 upload failed")
+        mock_feed = self._make_mock_feed()
+        mock_feed.exists_locally.return_value = False
+        mock_feed.exists_remotely.return_value = False
         mock_archive = self._make_mock_archive(mock_feed)
 
         with mock.patch("chalicelib.gtfs.boto3.resource"):
             with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=mock_archive):
                 with mock.patch("chalicelib.gtfs.pd.read_sql", return_value=empty_df):
-                    with self.assertRaises(RuntimeError):
-                        gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2024, 2, 7))
+                    with mock.patch("chalicelib.gtfs._enqueue_gtfs_build") as mock_enqueue:
+                        gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2024, 2, 7), allow_build=True)
+
+        mock_feed.build_locally.assert_called_once()
+        mock_feed.upload_to_s3.assert_called_once()
+        mock_enqueue.assert_not_called()

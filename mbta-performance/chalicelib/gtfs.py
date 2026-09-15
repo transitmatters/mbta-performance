@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import date
 from tempfile import TemporaryDirectory
@@ -14,11 +15,38 @@ logger = logging.getLogger(__name__)
 # information to fetch from GTFS
 MAX_QUERY_DEPTH = 900  # actually 1000
 
+# data-ingestion owns building GTFS bundles. Its on-demand worker reads this
+# queue -- see transitmatters/data-ingestion ingestor/chalicelib/gtfs/enqueue.py.
+GTFS_BUILD_QUEUE = "gtfs-ingest-keys"
+
+
+def _enqueue_gtfs_build(feed_key: str) -> None:
+    """Ask data-ingestion to build a feed we need but do not have.
+
+    Best effort: a failure to enqueue must not mask the RuntimeError the caller
+    is about to raise, which is the actionable signal.
+    """
+    try:
+        queue = boto3.resource("sqs").get_queue_by_name(QueueName=GTFS_BUILD_QUEUE)
+        queue.send_message(MessageBody=json.dumps({"feed_key": feed_key}))
+        logger.info(f"Enqueued a build for GTFS feed {feed_key} on {GTFS_BUILD_QUEUE}")
+    except Exception as e:  # pragma: no cover - best effort
+        logger.error(f"Could not enqueue a build for GTFS feed {feed_key}: {e}")
+
 
 def fetch_stop_times_from_gtfs(
-    trip_ids: Iterable[str], service_date: date, local_archive_path: str | None = None
+    trip_ids: Iterable[str],
+    service_date: date,
+    local_archive_path: str | None = None,
+    allow_build: bool = False,
 ) -> pd.DataFrame:
-    """Fetch scheduled stop time information from GTFS."""
+    """Fetch scheduled stop time information from GTFS.
+
+    Args:
+        allow_build: Whether this caller may build a missing feed itself. False in
+            Lambda, where a build cannot fit; True for the backfill scripts, which
+            run on a laptop with the disk and time to do it.
+    """
     logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
     if not local_archive_path:
@@ -30,22 +58,35 @@ def fetch_stop_times_from_gtfs(
     feed = mbta_gtfs.get_feed_for_date(service_date)
     logger.info(f"GTFS feed key: {feed.key}")
 
-    logger.info("Downloading or building GTFS feed...")
-    try:
-        feed.download_or_build()
-    except Exception as e:
-        logger.exception(f"Failed to download or build GTFS feed {feed.key}: {e}")
-        raise
-    logger.info("GTFS feed ready")
-
-    if not feed.exists_remotely():
-        logger.info(f"Uploading GTFS feed {feed.key} to S3...")
+    if feed.exists_locally():
+        logger.info(f"GTFS feed {feed.key} already present locally")
+    elif feed.exists_remotely():
+        logger.info(f"Downloading GTFS feed {feed.key} from S3...")
         try:
-            feed.upload_to_s3()
+            feed.download_from_s3()
         except Exception as e:
-            logger.exception(f"Failed to upload GTFS feed {feed.key} to S3: {e}")
+            logger.exception(f"Failed to download GTFS feed {feed.key}: {e}")
             raise
-        logger.info(f"GTFS feed {feed.key} uploaded to S3")
+    elif allow_build:
+        # Backfill on a laptop: build it, and publish it so the next caller --
+        # including Lambda -- does not have to.
+        logger.info(f"GTFS feed {feed.key} is missing; building locally")
+        feed.build_locally()
+        logger.info(f"Uploading GTFS feed {feed.key} to S3...")
+        feed.upload_to_s3()
+    else:
+        # In Lambda a full build is ~200s and ~1GB of disk against a 60s timeout,
+        # so download_or_build() could only ever time out -- and it did, every 30
+        # minutes for 5 hours on 2026-09-15, when the MBTA published feed 20260907
+        # (and later retracted it). Fail in ~2s and let data-ingestion's worker
+        # build it; a later scheduled run picks it up.
+        _enqueue_gtfs_build(feed.key)
+        raise RuntimeError(
+            f"GTFS feed {feed.key} is not in s3://tm-gtfs; enqueued a build on "
+            f"{GTFS_BUILD_QUEUE}. Cannot build it here -- that needs ~200s and ~1GB "
+            f"of disk against a 60s timeout."
+        )
+    logger.info("GTFS feed ready")
 
     session = feed.create_sqlite_session()
 
