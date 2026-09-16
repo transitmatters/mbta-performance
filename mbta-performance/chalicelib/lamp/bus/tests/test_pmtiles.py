@@ -79,6 +79,10 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         self.assertEqual(command[command.index("--layer") + 1], pmtiles.LAYER_NAME)
         self.assertEqual(command[command.index("--minimum-zoom") + 1], str(pmtiles.MINIMUM_ZOOM))
         self.assertEqual(command[command.index("--maximum-zoom") + 1], str(pmtiles.MAXIMUM_ZOOM))
+        # Without these, a dense real day (many overlapping time-band/direction duplicates at
+        # high zoom) fails outright instead of tiling -- see _run_tippecanoe's comment.
+        self.assertIn("--drop-densest-as-needed", command)
+        self.assertIn("--extend-zooms-if-still-dropping", command)
 
     def test_raises_on_a_nonzero_exit(self):
         def failing_run(command, **_kwargs):

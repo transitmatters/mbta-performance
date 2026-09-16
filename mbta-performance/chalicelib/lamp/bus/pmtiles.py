@@ -70,6 +70,14 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
         str(MINIMUM_ZOOM),
         "--maximum-zoom",
         str(MAXIMUM_ZOOM),
+        # Geometry is repeated per time band and direction (see the bus README), so a dense
+        # area like downtown Boston has many overlapping near-duplicate lines at high zoom --
+        # enough to blow past tippecanoe's default 500KB tile limit and fail outright without
+        # this. Verified against a real day (51k features) that this only drops features
+        # above MINIMUM_ZOOM: every route still has geometry at MINIMUM_ZOOM, which is what
+        # the frontend's fallback view relies on.
+        "--drop-densest-as-needed",
+        "--extend-zooms-if-still-dropping",
         str(geojson_path),
     ]
     logger.info(f"Running tippecanoe on {geojson_path} -> {output_path}")
