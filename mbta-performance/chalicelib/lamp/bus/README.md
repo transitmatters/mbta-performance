@@ -5,11 +5,14 @@ as **GeoParquet**, so the result drops straight into QGIS, DuckDB spatial, GeoPa
 or deck.gl without any conversion step.
 
 ```shell
-# Local file only -- never touches S3.
+# Local file only -- never touches S3 or DynamoDB.
 uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --out segments.parquet
 
 # Also publish to the performance bucket.
 uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --upload
+
+# Also write daily per-route metrics to DynamoDB (see "Daily route metrics" below).
+uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --write-to-dynamo
 ```
 
 One row per `(route, direction, from_stop, to_stop, service_date, time_band)`. A typical
@@ -43,6 +46,36 @@ place, so backfills and corrected re-runs are safe to repeat.
 Uploading is opt-in (`--upload`, or `upload=True`), so a local run never writes to the
 bucket. `generate_yesterday_speed_segments()` is the production entry point and publishes
 by default.
+
+## Daily route metrics
+
+The GeoParquet above is per-segment, for the map. `daily_metrics.py` additionally rolls the
+same traversals up to one row per `(route, service_date)` -- both directions combined -- and
+batch-writes them to a `DeliveredTripMetricsBus` DynamoDB table (`route` partition key,
+`date` sort key):
+
+| Field | Meaning |
+| --- | --- |
+| `count` | Distinct trips that contributed a segment that day. |
+| `n_traversals` | Raw segment traversals, always ≥ `count`. |
+| `n_interpolated` | Of those, how many crossed a stop LAMP didn't observe directly. |
+| `miles_covered` | Sum of actual segment distance traveled that day. |
+| `total_time` | Sum of actual segment time (dwell-inclusive), in seconds. |
+| `median_speed_mph` / `mean_speed_mph` | Across all segment traversals for the route that day. |
+
+This is a table for the same kind of "how fast is this route" line chart the dashboard
+already draws for rail from `DeliveredTripMetrics`, kept separate from that table because bus
+has no fixed round-trip track length or line/branch structure to key on. Where rail
+multiplies a nominal round-trip length by an observed trip count, `miles_covered` and
+`total_time` here are summed directly from what LAMP actually recorded, so they're already
+directly comparable via `miles_covered / (total_time / 3600)` without a `speed.py`-style
+API round trip.
+
+Writing is opt-in (`--write-to-dynamo`, or `write_to_dynamo=True`) and independent of
+`--upload`: turning one on doesn't turn on the other. `generate_yesterday_speed_segments()`
+writes both by default. Note this table and the write path are not yet wired into `app.py`'s
+scheduled Lambdas or granted DynamoDB permissions in `policy-lamp-ingest.json` -- that's a
+follow-up, same as the map segments' S3 upload isn't scheduled yet either.
 
 Geometry is repeated across the six time bands, a 4.9x duplication. Splitting it into a
 static sidecar would cut daily files from 4.08MB to 2.90MB and cost 1.07MB once. That is

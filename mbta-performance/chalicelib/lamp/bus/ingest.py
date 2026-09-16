@@ -23,6 +23,7 @@ from .constants import (
     S3_BUCKET,
     S3_KEY_TEMPLATE,
 )
+from .daily_metrics import write_daily_route_metrics
 from .geoparquet import write_geoparquet
 from .patterns import build_pattern_geometry
 from .remote_parquet import read_service_date
@@ -55,11 +56,22 @@ def source_url_for(service_date: date) -> str:
     return BUS_ALL_URL
 
 
-def generate_speed_segments(service_date: date, output_path: str | None = None, upload: bool = False) -> pd.DataFrame:
+def generate_speed_segments(
+    service_date: date,
+    output_path: str | None = None,
+    upload: bool = False,
+    write_to_dynamo: bool = False,
+) -> pd.DataFrame:
     """Build the aggregated speed-segment table for one service date.
 
     Writes a local GeoParquet when `output_path` is given, and publishes to S3 when
     `upload` is set. Uploading is opt-in so a local run never touches the bucket.
+
+    `write_to_dynamo` additionally rolls the same traversals up to one row per (route,
+    service_date) -- miles covered, total time, trip count -- and batch-writes them to the
+    DeliveredTripMetricsBus table, for the same kind of daily speed chart the dashboard
+    already draws for rail. Also opt-in, and independent of `upload`: this is a per-route
+    daily summary alongside the per-segment map data, not a replacement for it.
     """
     logger.info(f"Generating bus speed segments for {service_date}")
 
@@ -78,6 +90,9 @@ def generate_speed_segments(service_date: date, output_path: str | None = None, 
     if traversals.empty:
         raise ValueError(f"No usable segment traversals for {service_date}")
 
+    if write_to_dynamo:
+        write_daily_route_metrics(traversals)
+
     aggregated = aggregate_segments(traversals)
     chosen_geometry = select_segment_geometry(traversals, geometry.segments)
 
@@ -93,12 +108,16 @@ def generate_speed_segments(service_date: date, output_path: str | None = None, 
     return result
 
 
-def generate_yesterday_speed_segments(output_path: str | None = None, upload: bool = True) -> pd.DataFrame:
+def generate_yesterday_speed_segments(
+    output_path: str | None = None, upload: bool = True, write_to_dynamo: bool = True
+) -> pd.DataFrame:
     """Yesterday's service date is the first one LAMP has finished writing.
 
-    This is the production entry point, so it publishes by default.
+    This is the production entry point, so it publishes and writes daily metrics by default.
     """
-    return generate_speed_segments(get_current_service_date() - timedelta(days=1), output_path, upload=upload)
+    return generate_speed_segments(
+        get_current_service_date() - timedelta(days=1), output_path, upload=upload, write_to_dynamo=write_to_dynamo
+    )
 
 
 if __name__ == "__main__":
@@ -109,7 +128,10 @@ if __name__ == "__main__":
     parser.add_argument("--date", type=date.fromisoformat, help="Service date (YYYY-MM-DD), default yesterday")
     parser.add_argument("--out", default="bus_speed_segments.parquet", help="Output GeoParquet path")
     parser.add_argument("--upload", action="store_true", help=f"Also publish to s3://{S3_BUCKET}/{S3_KEY_TEMPLATE}")
+    parser.add_argument(
+        "--write-to-dynamo", action="store_true", help="Also write daily per-route metrics to DeliveredTripMetricsBus"
+    )
     arguments = parser.parse_args()
 
     target = arguments.date or (get_current_service_date() - timedelta(days=1))
-    generate_speed_segments(target, arguments.out, upload=arguments.upload)
+    generate_speed_segments(target, arguments.out, upload=arguments.upload, write_to_dynamo=arguments.write_to_dynamo)

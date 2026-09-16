@@ -64,9 +64,17 @@ PERCENTILES = (50, 90)
 MIN_TRAVERSALS_HINT = 3
 
 METERS_PER_SECOND_TO_MPH = 2.2369362920544
+METERS_PER_MILE = 1609.344
 
 
 # Output lives in the same bucket as the rest of the performance archive. Month and day are
 # not zero-padded, matching the existing Events-lamp/ and Events/ key layouts.
 S3_BUCKET = "tm-mbta-performance"
 S3_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments.parquet"
+
+# Daily per-route speed rollup, a coarser companion to the per-segment GeoParquet above --
+# one row per (route, service_date) rather than per segment, for the same kind of "how fast
+# is this route" line chart the dashboard already draws for rail from the DeliveredTripMetrics
+# family of tables. Named separately from that family: bus has ~150 independent routes rather
+# than a handful of lines with fixed branches and a nominal track length.
+DYNAMO_TABLE_NAME = "DeliveredTripMetricsBus"
