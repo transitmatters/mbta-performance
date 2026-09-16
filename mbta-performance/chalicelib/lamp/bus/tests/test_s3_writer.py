@@ -42,6 +42,30 @@ class TestS3Key(unittest.TestCase):
         )
 
 
+class TestPmtilesKey(unittest.TestCase):
+    def test_month_and_day_are_not_zero_padded(self):
+        key = s3_writer.pmtiles_key_for(date(2026, 9, 3))
+
+        self.assertEqual(key, "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles")
+
+
+class TestUploadPmtiles(unittest.TestCase):
+    def test_uploads_built_pmtiles_bytes_to_the_dated_key(self):
+        with (
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", return_value=b"PMTiles\x03fake") as build,
+            mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
+        ):
+            key = s3_writer.upload_pmtiles(_segments(), date(2026, 9, 3))
+
+        build.assert_called_once()
+        upload.assert_called_once()
+        bucket, uploaded_key, data = upload.call_args[0]
+        self.assertEqual(bucket, "tm-mbta-performance")
+        self.assertEqual(uploaded_key, key)
+        self.assertEqual(uploaded_key, "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles")
+        self.assertEqual(data, b"PMTiles\x03fake")
+
+
 class TestUpload(unittest.TestCase):
     def test_uploads_parquet_bytes_to_the_dated_key(self):
         with mock.patch.object(s3_writer.s3, "upload_parquet") as upload:
@@ -85,6 +109,7 @@ class TestUploadIsOptIn(unittest.TestCase):
         with (
             mock.patch.object(ingest, "read_service_date") as read,
             mock.patch.object(ingest, "upload_speed_segments") as upload,
+            mock.patch.object(ingest, "upload_pmtiles") as upload_pmtiles,
             mock.patch.object(ingest, "build_pattern_geometry"),
         ):
             read.return_value = pd.DataFrame()
@@ -92,3 +117,4 @@ class TestUploadIsOptIn(unittest.TestCase):
                 ingest.generate_speed_segments(date(2026, 9, 3))
 
         upload.assert_not_called()
+        upload_pmtiles.assert_not_called()

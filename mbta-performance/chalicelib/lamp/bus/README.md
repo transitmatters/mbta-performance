@@ -13,6 +13,9 @@ uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 -
 
 # Also write daily per-route metrics to DynamoDB (see "Daily route metrics" below).
 uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --write-to-dynamo
+
+# Also build and publish PMTiles for the live map (see "PMTiles" below; requires tippecanoe).
+uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --write-pmtiles
 ```
 
 One row per `(route, direction, from_stop, to_stop, service_date, time_band)`. A typical
@@ -28,6 +31,7 @@ about 25 seconds end to end.
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
 4. **Build per-traversal times, then aggregate** to percentiles per time band.
 5. **Write GeoParquet** with road-following `LineString` geometry (`geoparquet.py`).
+6. **Optionally build PMTiles** from the same result, for the live map (`pmtiles.py`).
 
 ## Output location
 
@@ -46,6 +50,34 @@ place, so backfills and corrected re-runs are safe to repeat.
 Uploading is opt-in (`--upload`, or `upload=True`), so a local run never writes to the
 bucket. `generate_yesterday_speed_segments()` is the production entry point and publishes
 by default.
+
+## PMTiles
+
+GeoParquet is for analysts -- QGIS, DuckDB spatial, GeoPandas, Felt. The live dashboard map
+reads a **PMTiles** vector tileset instead, fetched byte-range by byte-range straight from
+the browser via MapLibre's `pmtiles://` protocol, at the same key with a `.pmtiles`
+extension:
+
+```
+s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles
+```
+
+`pmtiles.py` builds it from the same `result` frame the GeoParquet above is written from --
+one `tippecanoe` invocation, writing every segment into a single vector layer named
+`segments` (matching `modules/busspeedmap/constants.ts`'s `PMTILES_SOURCE_LAYER` in the
+dashboard repo). Only the columns the map actually reads (`TILE_PROPERTIES`: route, direction,
+stop names, time band, `p50_speed_mph`, traversal counts) are handed to tippecanoe, so a
+column like `p90_speed_mph` or `moving_speed_mph` can never end up on the map by accident --
+see `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend
+type.
+
+**Requires `tippecanoe` on `PATH`.** It's a system binary, not a Python dependency -- there's
+nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (or the
+equivalent for the container image this pipeline runs in); `build_pmtiles_bytes` raises a
+clear error if it's missing rather than a bare `FileNotFoundError`.
+
+Writing is opt-in (`--write-pmtiles`, or `write_pmtiles=True`) and independent of `--upload`
+and `--write-to-dynamo`. `generate_yesterday_speed_segments()` writes all three by default.
 
 ## Daily route metrics
 

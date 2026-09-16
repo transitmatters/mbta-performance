@@ -6,7 +6,8 @@ Pipeline:
     -> missing stop times interpolated by distance
     -> per-traversal segment times
     -> aggregated per (route, direction, stop pair, date, time band)
-    -> GeoParquet with road-following LineString geometry
+    -> GeoParquet with road-following LineString geometry (for analysts)
+    -> PMTiles built from the same result, opt-in (for the live map)
 """
 
 import logging
@@ -27,7 +28,7 @@ from .daily_metrics import write_daily_route_metrics
 from .geoparquet import write_geoparquet
 from .patterns import build_pattern_geometry
 from .remote_parquet import read_service_date
-from .s3_writer import upload_speed_segments
+from .s3_writer import upload_pmtiles, upload_speed_segments
 from .segments import (
     aggregate_segments,
     attach_shape_distance,
@@ -61,6 +62,7 @@ def generate_speed_segments(
     output_path: str | None = None,
     upload: bool = False,
     write_to_dynamo: bool = False,
+    write_pmtiles: bool = False,
 ) -> pd.DataFrame:
     """Build the aggregated speed-segment table for one service date.
 
@@ -72,6 +74,11 @@ def generate_speed_segments(
     DeliveredTripMetricsBus table, for the same kind of daily speed chart the dashboard
     already draws for rail. Also opt-in, and independent of `upload`: this is a per-route
     daily summary alongside the per-segment map data, not a replacement for it.
+
+    `write_pmtiles` additionally builds a PMTiles tileset from the same result and publishes
+    it alongside the GeoParquet, under the same S3 prefix -- this is what the live map
+    actually reads. Also opt-in and independent of `upload`, and requires tippecanoe on
+    PATH (see pmtiles.py).
     """
     logger.info(f"Generating bus speed segments for {service_date}")
 
@@ -105,18 +112,28 @@ def generate_speed_segments(
         write_geoparquet(result, output_path)
     if upload:
         upload_speed_segments(result, service_date)
+    if write_pmtiles:
+        upload_pmtiles(result, service_date)
     return result
 
 
 def generate_yesterday_speed_segments(
-    output_path: str | None = None, upload: bool = True, write_to_dynamo: bool = True
+    output_path: str | None = None,
+    upload: bool = True,
+    write_to_dynamo: bool = True,
+    write_pmtiles: bool = True,
 ) -> pd.DataFrame:
     """Yesterday's service date is the first one LAMP has finished writing.
 
-    This is the production entry point, so it publishes and writes daily metrics by default.
+    This is the production entry point, so it publishes, writes daily metrics, and builds
+    PMTiles by default.
     """
     return generate_speed_segments(
-        get_current_service_date() - timedelta(days=1), output_path, upload=upload, write_to_dynamo=write_to_dynamo
+        get_current_service_date() - timedelta(days=1),
+        output_path,
+        upload=upload,
+        write_to_dynamo=write_to_dynamo,
+        write_pmtiles=write_pmtiles,
     )
 
 
@@ -131,7 +148,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--write-to-dynamo", action="store_true", help="Also write daily per-route metrics to DeliveredTripMetricsBus"
     )
+    parser.add_argument(
+        "--write-pmtiles", action="store_true", help="Also build and publish a PMTiles tileset (requires tippecanoe)"
+    )
     arguments = parser.parse_args()
 
     target = arguments.date or (get_current_service_date() - timedelta(days=1))
-    generate_speed_segments(target, arguments.out, upload=arguments.upload, write_to_dynamo=arguments.write_to_dynamo)
+    generate_speed_segments(
+        target,
+        arguments.out,
+        upload=arguments.upload,
+        write_to_dynamo=arguments.write_to_dynamo,
+        write_pmtiles=arguments.write_pmtiles,
+    )

@@ -72,6 +72,10 @@ METERS_PER_MILE = 1609.344
 S3_BUCKET = "tm-mbta-performance"
 S3_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments.parquet"
 
+# Same key, but the PMTiles vector tileset the live map reads instead of the GeoParquet
+# above -- see pmtiles.py.
+PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments.pmtiles"
+
 # Daily per-route speed rollup, a coarser companion to the per-segment GeoParquet above --
 # one row per (route, service_date) rather than per segment, for the same kind of "how fast
 # is this route" line chart the dashboard already draws for rail from the DeliveredTripMetrics

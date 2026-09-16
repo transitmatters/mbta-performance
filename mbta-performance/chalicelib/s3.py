@@ -48,6 +48,18 @@ def upload_parquet(bucket, key, data: bytes):
     s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/vnd.apache.parquet")
 
 
+def upload_pmtiles(bucket, key, data: bytes):
+    """Upload an already-built PMTiles tileset.
+
+    Not zlib-wrapped, and for a stricter reason than upload_parquet: a PMTiles reader fetches
+    individual tiles with HTTP Range requests directly against this object, so wrapping the
+    whole file in a stream-level compression layer would make every ranged read return
+    garbage instead of a valid tile.
+    """
+    key = str(key)
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/vnd.pmtiles")
+
+
 def download_csv_as_df(bucket, key):
     key = str(key)
     obj = s3.get_object(Bucket=bucket, Key=key)
