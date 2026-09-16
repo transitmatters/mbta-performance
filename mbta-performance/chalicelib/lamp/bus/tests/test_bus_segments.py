@@ -1,8 +1,8 @@
-import struct
 import unittest
 
 import numpy as np
 import pandas as pd
+from shapely.geometry import LineString
 
 from .. import geoparquet, gtfs_geo, segments
 
@@ -45,23 +45,27 @@ class TestProjection(unittest.TestCase):
         np.testing.assert_allclose(distances[3:], [370.0, 470.0, 570.0], atol=1e-6)
 
 
-class TestSliceShape(unittest.TestCase):
+class TestCutSegment(unittest.TestCase):
     def test_cuts_between_two_distances_and_interpolates_the_ends(self):
-        shape = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
-        cumulative = np.array([0.0, 100.0, 200.0, 300.0])
+        line = LineString([(0.0, 0.0), (100.0, 0.0), (200.0, 0.0), (300.0, 0.0)])
 
-        coordinates = gtfs_geo.slice_shape(shape, cumulative, 50.0, 250.0)
+        cut = gtfs_geo.cut_segment(line, 50.0, 250.0)
 
-        self.assertAlmostEqual(coordinates[0][0], 0.5, places=6)
-        self.assertAlmostEqual(coordinates[-1][0], 2.5, places=6)
+        self.assertAlmostEqual(cut.coords[0][0], 50.0, places=6)
+        self.assertAlmostEqual(cut.coords[-1][0], 250.0, places=6)
         # The interior vertices at 100 and 200 are retained between the two cuts.
-        self.assertEqual(len(coordinates), 4)
+        self.assertEqual(len(cut.coords), 4)
 
-    def test_returns_nothing_for_a_non_advancing_slice(self):
-        shape = np.array([[0.0, 0.0], [1.0, 0.0]])
-        cumulative = np.array([0.0, 100.0])
+    def test_returns_none_for_a_non_advancing_slice(self):
+        line = LineString([(0.0, 0.0), (100.0, 0.0)])
 
-        self.assertEqual(gtfs_geo.slice_shape(shape, cumulative, 50.0, 50.0), [])
+        self.assertIsNone(gtfs_geo.cut_segment(line, 50.0, 50.0))
+
+    def test_returns_none_for_a_degenerate_zero_length_line(self):
+        # A shape with a duplicated point has nothing to cut, even with an advancing range.
+        line = LineString([(0.0, 0.0), (0.0, 0.0)])
+
+        self.assertIsNone(gtfs_geo.cut_segment(line, 0.0, 10.0))
 
 
 def _events(rows: list[dict]) -> pd.DataFrame:
@@ -264,18 +268,18 @@ class TestTimeBands(unittest.TestCase):
 
 
 class TestGeoParquet(unittest.TestCase):
-    def test_encodes_a_linestring_as_little_endian_wkb(self):
-        wkb = geoparquet.linestring_to_wkb([(-71.05, 42.36), (-71.06, 42.37)])
+    def test_encodes_coordinates_as_linestring_geometry(self):
+        frame = pd.DataFrame({"coordinates": [[(-71.05, 42.36), (-71.06, 42.37)]]})
 
-        byte_order, geometry_type, count = struct.unpack("<BII", wkb[:9])
-        self.assertEqual(byte_order, 1)
-        self.assertEqual(geometry_type, 2)
-        self.assertEqual(count, 2)
+        geo_frame = geoparquet._to_geodataframe(frame)
 
-        coordinates = np.frombuffer(wkb[9:], dtype="<f8")
-        np.testing.assert_allclose(coordinates, [-71.05, 42.36, -71.06, 42.37])
+        self.assertNotIn("coordinates", geo_frame.columns)
+        self.assertEqual(geo_frame.crs.to_epsg(), 4326)
+        self.assertEqual(list(geo_frame.geometry.iloc[0].coords), [(-71.05, 42.36), (-71.06, 42.37)])
 
-    def test_rejects_degenerate_geometry(self):
-        self.assertIsNone(geoparquet.linestring_to_wkb([(-71.05, 42.36)]))
-        self.assertIsNone(geoparquet.linestring_to_wkb([]))
-        self.assertIsNone(geoparquet.linestring_to_wkb(None))
+    def test_drops_rows_with_degenerate_geometry(self):
+        frame = pd.DataFrame({"coordinates": [[(-71.05, 42.36), (-71.06, 42.37)], [(-71.05, 42.36)], [], None]})
+
+        geo_frame = geoparquet._to_geodataframe(frame)
+
+        self.assertEqual(len(geo_frame), 1)

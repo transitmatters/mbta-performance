@@ -150,8 +150,13 @@ the all-time export otherwise.
 
 ## Dependencies
 
-Deliberately none beyond what the project already has. Geometry is projected with a local
-equirectangular approximation and WKB is written by hand, keeping shapely/geopandas/pyproj
-out of the Lambda bundle. Validated against GeoPandas: measuring the emitted geometry in
-Massachusetts State Plane (EPSG:26986) reproduces the reported `segment_length_m` to a
-median of 0.21m (0.085%).
+Uses `shapely`, `geopandas` and `pyproj` from the `geo` dependency group (`uv sync --group
+geo`) rather than the project's base dependencies -- this pipeline runs as a k8s cron job,
+not through the Lambda deployment that `uv export --no-dev` packages, so there's no bundle
+size to protect. Geometry is projected into Massachusetts State Plane (EPSG:26986, metres)
+with `pyproj`, cut with `shapely.ops.substring`, and reprojected back to WGS84 lon/lat for
+storage; GeoParquet is written by `geopandas.GeoDataFrame.to_parquet`. An earlier version
+hand-rolled all of this (a local equirectangular approximation and WKB written by hand) to
+avoid the dependency while still deploying through Lambda -- that version was validated
+against GeoPandas at a median 0.21m (0.085%) discrepancy in `segment_length_m`, which is why
+EPSG:26986 was kept as the reference CRS here.

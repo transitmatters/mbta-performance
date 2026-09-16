@@ -17,25 +17,33 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+from pyproj import Transformer
+from shapely.geometry import LineString
+from shapely.ops import substring
 
 from .constants import GTFS_ARCHIVE_URL_TEMPLATE
 from .remote_parquet import HttpRangeFile
 
 logger = logging.getLogger(__name__)
 
-# Equirectangular projection about Boston. Over a single bus route the distortion is far
-# below the ~6m median stop-to-shape offset we already tolerate, and it keeps the module
-# free of a geo dependency (pyproj/shapely would bloat the Lambda bundle).
-_REFERENCE_LATITUDE = 42.35
-_EARTH_RADIUS_M = 6371000.0
-_COS_REFERENCE = np.cos(np.radians(_REFERENCE_LATITUDE))
+# NAD83 / Massachusetts Mainland, in metres -- accurate across the whole feed's service
+# area, unlike an equirectangular approximation about a single reference point.
+_LONLAT_CRS = "EPSG:4326"
+_PROJECTED_CRS = "EPSG:26986"
+_TO_XY = Transformer.from_crs(_LONLAT_CRS, _PROJECTED_CRS, always_xy=True)
+_TO_LONLAT = Transformer.from_crs(_PROJECTED_CRS, _LONLAT_CRS, always_xy=True)
 
 
 def to_local_xy(latitude: np.ndarray, longitude: np.ndarray) -> np.ndarray:
     """Project lat/lon to local metres. Returns an (n, 2) array of (x, y)."""
-    x = np.radians(longitude) * _EARTH_RADIUS_M * _COS_REFERENCE
-    y = np.radians(latitude) * _EARTH_RADIUS_M
+    x, y = _TO_XY.transform(longitude, latitude)
     return np.column_stack([x, y])
+
+
+def to_lonlat(xy: np.ndarray) -> np.ndarray:
+    """Inverse of `to_local_xy`. Returns an (n, 2) array of (longitude, latitude)."""
+    longitude, latitude = _TO_LONLAT.transform(xy[:, 0], xy[:, 1])
+    return np.column_stack([longitude, latitude])
 
 
 def _dateint(service_date: date) -> int:
@@ -223,31 +231,17 @@ def project_stops_onto_shape(
     return distances, offsets
 
 
-def slice_shape(shape_lonlat: np.ndarray, cumulative: np.ndarray, start_m: float, end_m: float) -> list[tuple]:
-    """Cut the polyline between two distances, returning [(lon, lat), ...].
+def cut_segment(line_xy: LineString, start_m: float, end_m: float) -> LineString | None:
+    """Cut `line_xy` between two distances along its own length.
 
-    The cut ends are interpolated so the segment starts and finishes exactly at the
-    projected stop positions rather than at the nearest shape vertex.
+    `line_xy` must be in the same projected metres as `start_m`/`end_m` (e.g. from
+    `to_local_xy`). Returns None if the cut is non-advancing or degenerate -- callers should
+    reproject a real result back to lon/lat with `to_lonlat` before storing it, since GTFS
+    shapes and GeoParquet output are both lon/lat.
     """
     if end_m <= start_m:
-        return []
-
-    def interpolate(distance: float) -> tuple[float, float]:
-        index = int(np.searchsorted(cumulative, distance, side="right") - 1)
-        index = min(max(index, 0), len(cumulative) - 2)
-        span = cumulative[index + 1] - cumulative[index]
-        fraction = 0.0 if span <= 0 else (distance - cumulative[index]) / span
-        point = shape_lonlat[index] + fraction * (shape_lonlat[index + 1] - shape_lonlat[index])
-        return (float(point[0]), float(point[1]))
-
-    interior = shape_lonlat[(cumulative > start_m) & (cumulative < end_m)]
-    coordinates = [interpolate(start_m)]
-    coordinates.extend((float(lon), float(lat)) for lon, lat in interior)
-    coordinates.append(interpolate(end_m))
-
-    # Drop any duplicate consecutive vertices introduced by the cuts.
-    deduplicated = [coordinates[0]]
-    for coordinate in coordinates[1:]:
-        if coordinate != deduplicated[-1]:
-            deduplicated.append(coordinate)
-    return deduplicated
+        return None
+    cut = substring(line_xy, start_m, end_m)
+    if not isinstance(cut, LineString) or cut.is_empty or len(cut.coords) < 2:
+        return None
+    return cut

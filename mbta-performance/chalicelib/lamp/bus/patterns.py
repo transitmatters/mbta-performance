@@ -10,8 +10,9 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+from shapely.geometry import LineString
 
-from .gtfs_geo import load_gtfs_slice, project_stops_onto_shape, slice_shape, to_local_xy, _cumulative_distance
+from .gtfs_geo import cut_segment, load_gtfs_slice, project_stops_onto_shape, to_local_xy, to_lonlat
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +70,8 @@ def build_pattern_geometry(service_date: date, route_pattern_ids: set[str] | Non
             skip("fewer than two locatable stops")
             continue
 
-        shape_lonlat = np.column_stack([shape.shape_pt_lon.to_numpy(), shape.shape_pt_lat.to_numpy()])
         shape_xy = to_local_xy(shape.shape_pt_lat.to_numpy(), shape.shape_pt_lon.to_numpy())
-        cumulative = _cumulative_distance(shape_xy)
+        shape_line_xy = LineString(shape_xy)
 
         stops_xy = to_local_xy(located.stop_lat.to_numpy(), located.stop_lon.to_numpy())
         distances, offsets = project_stops_onto_shape(stops_xy, shape_xy)
@@ -97,10 +97,11 @@ def build_pattern_geometry(service_date: date, route_pattern_ids: set[str] | Non
             if length <= 0:
                 skip("non-advancing segment")
                 continue
-            coordinates = slice_shape(shape_lonlat, cumulative, distances[i], distances[i + 1])
-            if len(coordinates) < 2:
+            cut = cut_segment(shape_line_xy, distances[i], distances[i + 1])
+            if cut is None:
                 skip("degenerate geometry")
                 continue
+            coordinates = [tuple(point) for point in to_lonlat(np.asarray(cut.coords))]
             segment_rows.append(
                 {
                     "route_pattern_id": pattern_id,
