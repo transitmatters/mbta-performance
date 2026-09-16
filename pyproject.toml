@@ -21,6 +21,14 @@ dev = [
     "pytest~=9.0.2",
     "pre-commit>=4.4.0",
 ]
+# Kept out of the base dependencies so the Lambda deployment (packaged via `uv export
+# --no-dev`, which only pulls in explicitly-requested groups) never bundles them. Only
+# needed by code paths that run outside Lambda, e.g. a k8s cron job -- `uv sync --group geo`.
+geo = [
+    "shapely~=2.0",
+    "geopandas~=1.0",
+    "pyproj~=3.6",
+]
 
 [tool.uv]
 package = false
