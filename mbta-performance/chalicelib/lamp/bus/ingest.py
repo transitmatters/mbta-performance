@@ -26,9 +26,10 @@ from .constants import (
 )
 from .daily_metrics import write_daily_route_metrics
 from .geoparquet import write_geoparquet
+from .leaderboard import build_leaderboard
 from .patterns import build_pattern_geometry
 from .remote_parquet import read_service_date
-from .s3_writer import upload_pmtiles, upload_speed_segments
+from .s3_writer import upload_leaderboard, upload_pmtiles, upload_speed_segments
 from .segments import (
     aggregate_segments,
     attach_shape_distance,
@@ -87,6 +88,7 @@ def generate_speed_segments(
     upload: bool = False,
     write_to_dynamo: bool = False,
     write_pmtiles: bool = False,
+    write_leaderboard: bool = False,
 ) -> pd.DataFrame:
     """Build the aggregated speed-segment table for one service date.
 
@@ -103,6 +105,10 @@ def generate_speed_segments(
     it alongside the GeoParquet, under the same S3 prefix -- this is what the live map
     actually reads. Also opt-in and independent of `upload`, and requires tippecanoe on
     PATH (see pmtiles.py).
+
+    `write_leaderboard` additionally ranks segments slowest-first within each time band
+    (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles --
+    also opt-in and independent of `upload`.
     """
     logger.info(f"Generating bus speed segments for {service_date}")
 
@@ -125,6 +131,8 @@ def generate_speed_segments(
         upload_speed_segments(result, service_date)
     if write_pmtiles:
         upload_pmtiles(result, service_date)
+    if write_leaderboard:
+        upload_leaderboard(build_leaderboard(result), service_date)
     return result
 
 
@@ -133,11 +141,12 @@ def generate_yesterday_speed_segments(
     upload: bool = True,
     write_to_dynamo: bool = True,
     write_pmtiles: bool = True,
+    write_leaderboard: bool = True,
 ) -> pd.DataFrame:
     """Yesterday's service date is the first one LAMP has finished writing.
 
-    This is the production entry point, so it publishes, writes daily metrics, and builds
-    PMTiles by default.
+    This is the production entry point, so it publishes, writes daily metrics, builds
+    PMTiles, and builds the leaderboard by default.
     """
     return generate_speed_segments(
         get_current_service_date() - timedelta(days=1),
@@ -145,6 +154,7 @@ def generate_yesterday_speed_segments(
         upload=upload,
         write_to_dynamo=write_to_dynamo,
         write_pmtiles=write_pmtiles,
+        write_leaderboard=write_leaderboard,
     )
 
 
@@ -162,6 +172,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--write-pmtiles", action="store_true", help="Also build and publish a PMTiles tileset (requires tippecanoe)"
     )
+    parser.add_argument(
+        "--write-leaderboard", action="store_true", help="Also build and publish the slowest-segments leaderboard JSON"
+    )
     arguments = parser.parse_args()
 
     target = arguments.date or (get_current_service_date() - timedelta(days=1))
@@ -171,4 +184,5 @@ if __name__ == "__main__":
         upload=arguments.upload,
         write_to_dynamo=arguments.write_to_dynamo,
         write_pmtiles=arguments.write_pmtiles,
+        write_leaderboard=arguments.write_leaderboard,
     )

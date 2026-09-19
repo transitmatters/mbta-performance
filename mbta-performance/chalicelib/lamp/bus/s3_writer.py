@@ -6,6 +6,7 @@ uses: a map view needs every segment at once, and fetching 10.8k objects to draw
 would be far slower and more expensive than a single GET.
 """
 
+import json
 import logging
 from datetime import date
 
@@ -13,11 +14,14 @@ import pandas as pd
 
 from ... import s3
 from .constants import (
+    LEADERBOARD_KEY_TEMPLATE,
+    MONTHLY_LEADERBOARD_KEY_TEMPLATE,
     MONTHLY_PMTILES_KEY_TEMPLATE,
     MONTHLY_S3_KEY_TEMPLATE,
     PMTILES_KEY_TEMPLATE,
     S3_BUCKET,
     S3_KEY_TEMPLATE,
+    WEEKLY_LEADERBOARD_KEY_TEMPLATE,
     WEEKLY_PMTILES_KEY_TEMPLATE,
     WEEKLY_S3_KEY_TEMPLATE,
 )
@@ -57,6 +61,21 @@ def monthly_pmtiles_key_for(year: int, month: int) -> str:
     return MONTHLY_PMTILES_KEY_TEMPLATE.format(year=year, month=month)
 
 
+def leaderboard_key_for(service_date: date) -> str:
+    """Build the object key for a service date's slowest-segments leaderboard."""
+    return LEADERBOARD_KEY_TEMPLATE.format(YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
+
+
+def weekly_leaderboard_key_for(year: int, week: int) -> str:
+    """Build the object key for an ISO (year, week)'s leaderboard."""
+    return WEEKLY_LEADERBOARD_KEY_TEMPLATE.format(year=year, week=week)
+
+
+def monthly_leaderboard_key_for(year: int, month: int) -> str:
+    """Build the object key for a (year, month)'s leaderboard."""
+    return MONTHLY_LEADERBOARD_KEY_TEMPLATE.format(year=year, month=month)
+
+
 def _upload_geoparquet(segments: pd.DataFrame, key: str) -> str:
     data = build_geoparquet_bytes(segments)
     logger.info(f"Uploading {len(segments)} segment rows ({len(data) / 1048576:.2f}MB) to s3://{S3_BUCKET}/{key}")
@@ -68,6 +87,13 @@ def _upload_pmtiles(segments: pd.DataFrame, key: str) -> str:
     data = build_pmtiles_bytes(segments)
     logger.info(f"Uploading PMTiles ({len(data) / 1048576:.2f}MB) to s3://{S3_BUCKET}/{key}")
     s3.upload_pmtiles(S3_BUCKET, key, data)
+    return key
+
+
+def _upload_leaderboard(leaderboard: dict, key: str) -> str:
+    data = json.dumps(leaderboard).encode("utf-8")
+    logger.info(f"Uploading leaderboard ({len(data)} bytes) to s3://{S3_BUCKET}/{key}")
+    s3.upload_json(S3_BUCKET, key, data)
     return key
 
 
@@ -118,3 +144,27 @@ def upload_monthly_pmtiles(segments: pd.DataFrame, year: int, month: int) -> str
     Returns the key written. Requires tippecanoe on PATH -- see pmtiles.py.
     """
     return _upload_pmtiles(segments, monthly_pmtiles_key_for(year, month))
+
+
+def upload_leaderboard(leaderboard: dict, service_date: date) -> str:
+    """Serialise a day's slowest-segments leaderboard (leaderboard.py) and publish it.
+
+    Returns the key written. Re-running a date overwrites it in place.
+    """
+    return _upload_leaderboard(leaderboard, leaderboard_key_for(service_date))
+
+
+def upload_weekly_leaderboard(leaderboard: dict, year: int, week: int) -> str:
+    """Serialise a week's slowest-segments leaderboard and publish it.
+
+    Returns the key written. Re-running a week overwrites it in place.
+    """
+    return _upload_leaderboard(leaderboard, weekly_leaderboard_key_for(year, week))
+
+
+def upload_monthly_leaderboard(leaderboard: dict, year: int, month: int) -> str:
+    """Serialise a month's slowest-segments leaderboard and publish it.
+
+    Returns the key written. Re-running a month overwrites it in place.
+    """
+    return _upload_leaderboard(leaderboard, monthly_leaderboard_key_for(year, month))

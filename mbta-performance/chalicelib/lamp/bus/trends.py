@@ -32,10 +32,13 @@ from .constants import S3_BUCKET
 from .day_type import day_type_for
 from .geoparquet import write_geoparquet
 from .ingest import build_traversals_for_date
+from .leaderboard import build_leaderboard
 from .periods import dates_in_range, month_range, week_range
 from .s3_writer import (
+    upload_monthly_leaderboard,
     upload_monthly_pmtiles,
     upload_monthly_speed_segments,
+    upload_weekly_leaderboard,
     upload_weekly_pmtiles,
     upload_weekly_speed_segments,
 )
@@ -91,6 +94,7 @@ def generate_weekly_speed_segments(
     output_path: str | None = None,
     upload: bool = False,
     write_pmtiles: bool = False,
+    write_leaderboard: bool = False,
 ) -> pd.DataFrame:
     """Build the aggregated speed-segment table across every service date in ISO week (year, week).
 
@@ -98,13 +102,15 @@ def generate_weekly_speed_segments(
     containing EARLIEST_LAMP_BUS_DATA (2025-12-24) is ISO year 2025, week 52. Dates in the
     week that fall outside LAMP's coverage, or haven't happened yet, are skipped rather than
     erroring, so this can be run for the current in-progress week to get a partial-week trend.
+
+    `write_leaderboard` ranks segments slowest-first within each (day_type, time_band) slice
+    (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles. Also
+    opt-in and independent of `upload`/`write_pmtiles`.
     """
     start, end = week_range(year, week)
     service_dates = dates_in_range(start, end, not_after=get_current_service_date() - timedelta(days=1))
     if not service_dates:
-        raise ValueError(
-            f"{year}-W{week:02d} ({start}..{end}) has no service dates with available LAMP bus data yet"
-        )
+        raise ValueError(f"{year}-W{week:02d} ({start}..{end}) has no service dates with available LAMP bus data yet")
 
     logger.info(f"Generating bus speed segments for {year}-W{week:02d} ({service_dates[0]}..{service_dates[-1]})")
     result = _build_period_result(service_dates)
@@ -115,6 +121,8 @@ def generate_weekly_speed_segments(
         upload_weekly_speed_segments(result, year, week)
     if write_pmtiles:
         upload_weekly_pmtiles(result, year, week)
+    if write_leaderboard:
+        upload_weekly_leaderboard(build_leaderboard(result), year, week)
     return result
 
 
@@ -124,11 +132,13 @@ def generate_monthly_speed_segments(
     output_path: str | None = None,
     upload: bool = False,
     write_pmtiles: bool = False,
+    write_leaderboard: bool = False,
 ) -> pd.DataFrame:
     """Build the aggregated speed-segment table across every service date in calendar (year, month).
 
     Dates in the month that fall outside LAMP's coverage, or haven't happened yet, are
-    skipped rather than erroring.
+    skipped rather than erroring. `write_leaderboard` behaves as in
+    `generate_weekly_speed_segments`.
     """
     start, end = month_range(year, month)
     service_dates = dates_in_range(start, end, not_after=get_current_service_date() - timedelta(days=1))
@@ -144,6 +154,8 @@ def generate_monthly_speed_segments(
         upload_monthly_speed_segments(result, year, month)
     if write_pmtiles:
         upload_monthly_pmtiles(result, year, month)
+    if write_leaderboard:
+        upload_monthly_leaderboard(build_leaderboard(result), year, month)
     return result
 
 
@@ -161,11 +173,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--write-pmtiles", action="store_true", help="Also build and publish a PMTiles tileset (requires tippecanoe)"
     )
+    parser.add_argument(
+        "--write-leaderboard", action="store_true", help="Also build and publish the slowest-segments leaderboard JSON"
+    )
     arguments = parser.parse_args()
 
     if arguments.week is not None:
         generate_weekly_speed_segments(
-            arguments.year, arguments.week, arguments.out, upload=arguments.upload, write_pmtiles=arguments.write_pmtiles
+            arguments.year,
+            arguments.week,
+            arguments.out,
+            upload=arguments.upload,
+            write_pmtiles=arguments.write_pmtiles,
+            write_leaderboard=arguments.write_leaderboard,
         )
     else:
         generate_monthly_speed_segments(
@@ -174,4 +194,5 @@ if __name__ == "__main__":
             arguments.out,
             upload=arguments.upload,
             write_pmtiles=arguments.write_pmtiles,
+            write_leaderboard=arguments.write_leaderboard,
         )

@@ -38,11 +38,13 @@ class TestBackfillWeeks(unittest.TestCase):
     def test_upload_and_pmtiles_are_opt_in_and_forwarded(self):
         with mock.patch.object(trends_backfill, "generate_weekly_speed_segments") as generate:
             trends_backfill.backfill_weeks(date(2026, 1, 5), date(2026, 1, 5))
-        generate.assert_called_once_with(2026, 2, upload=False, write_pmtiles=False)
+        generate.assert_called_once_with(2026, 2, upload=False, write_pmtiles=False, write_leaderboard=False)
 
         with mock.patch.object(trends_backfill, "generate_weekly_speed_segments") as generate:
-            trends_backfill.backfill_weeks(date(2026, 1, 5), date(2026, 1, 5), upload=True, write_pmtiles=True)
-        generate.assert_called_once_with(2026, 2, upload=True, write_pmtiles=True)
+            trends_backfill.backfill_weeks(
+                date(2026, 1, 5), date(2026, 1, 5), upload=True, write_pmtiles=True, write_leaderboard=True
+            )
+        generate.assert_called_once_with(2026, 2, upload=True, write_pmtiles=True, write_leaderboard=True)
 
     def test_a_bad_week_does_not_stop_the_rest_of_the_range(self):
         # Mondays 1/5, 1/12, 1/19 are ISO weeks 2026-W02, W03, W04.
@@ -87,11 +89,13 @@ class TestBackfillMonths(unittest.TestCase):
     def test_upload_and_pmtiles_are_opt_in_and_forwarded(self):
         with mock.patch.object(trends_backfill, "generate_monthly_speed_segments") as generate:
             trends_backfill.backfill_months(date(2026, 1, 1), date(2026, 1, 31))
-        generate.assert_called_once_with(2026, 1, upload=False, write_pmtiles=False)
+        generate.assert_called_once_with(2026, 1, upload=False, write_pmtiles=False, write_leaderboard=False)
 
         with mock.patch.object(trends_backfill, "generate_monthly_speed_segments") as generate:
-            trends_backfill.backfill_months(date(2026, 1, 1), date(2026, 1, 31), upload=True, write_pmtiles=True)
-        generate.assert_called_once_with(2026, 1, upload=True, write_pmtiles=True)
+            trends_backfill.backfill_months(
+                date(2026, 1, 1), date(2026, 1, 31), upload=True, write_pmtiles=True, write_leaderboard=True
+            )
+        generate.assert_called_once_with(2026, 1, upload=True, write_pmtiles=True, write_leaderboard=True)
 
     def test_a_bad_month_does_not_stop_the_rest_of_the_range(self):
         def side_effect(year, month, **kwargs):

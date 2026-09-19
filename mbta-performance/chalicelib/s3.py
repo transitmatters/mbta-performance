@@ -48,6 +48,17 @@ def upload_parquet(bucket, key, data: bytes):
     s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/vnd.apache.parquet")
 
 
+def upload_json(bucket, key, data: bytes):
+    """Upload already-serialised JSON bytes.
+
+    Not zlib-wrapped, like upload_parquet/upload_pmtiles: this is fetched directly by a
+    browser's `fetch()` and parsed as-is, so wrapping it in a stream-level compression layer
+    would make it unreadable without first knowing to inflate it.
+    """
+    key = str(key)
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/json")
+
+
 def upload_pmtiles(bucket, key, data: bytes):
     """Upload an already-built PMTiles tileset.
 

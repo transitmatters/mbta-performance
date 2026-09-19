@@ -16,6 +16,9 @@ uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 -
 
 # Also build and publish PMTiles for the live map (see "PMTiles" below; requires tippecanoe).
 uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --write-pmtiles
+
+# Also build and publish the slowest-segments leaderboard (see "Slowest-segments leaderboard" below).
+uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --write-leaderboard
 ```
 
 One row per `(route, direction, from_stop, to_stop, service_date, time_band)`. A typical
@@ -154,6 +157,63 @@ dates-so-far rather than requiring a wait until it ends. Only a period with *no*
 dates at all (entirely in the future, or entirely before `EARLIEST_LAMP_BUS_DATA`) raises. A
 single unusable date inside an otherwise-good range (a gap in LAMP's export) is logged and
 skipped instead, matching `backfill.py`.
+
+## Slowest-segments leaderboard
+
+The route-level "how fast is this route" leaderboard on the dashboard (`bus_speed_leaderboard`
+in t-performance-dash) ranks ~150-200 routes by summing `miles_covered`/`total_time` out of a
+DynamoDB scan over the requested date range -- cheap because the table is small enough that a
+full scan is fine. Segments don't fit that shape: there are ~10.8k of them a day, and the
+numbers already published for each one (`p50_speed_mph`) are percentiles, not summable
+totals, so there's no cheap way to combine several days' rows after the fact the way
+`miles_covered`/`total_time` can be summed for routes.
+
+Rather than build a new segment-grain DynamoDB table and a route-leaderboard-style scan
+against it, `leaderboard.py` ranks directly from the same aggregated table `ingest.py` and
+`trends.py` already hold in memory when they build the GeoParquet/PMTiles -- there's nothing
+left to compute at request time, so the ranked list is just published as JSON alongside those
+siblings and fetched directly by the frontend, the same way PMTiles are:
+
+```
+s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/leaderboard.json
+s3://tm-mbta-performance/BusSpeedSegments/weekly/Year=2026/Week=6/leaderboard.json
+s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=2/leaderboard.json
+```
+
+Segments are ranked slowest-first (by `p50_speed_mph`) **within each time band**, not blended
+across them -- a segment that's slow at 7am rush and one that's slow at midnight aren't
+comparable, the same reasoning behind splitting by time band and `day_type` everywhere else
+in this pipeline. The result is a dict keyed by `time_band`, e.g. `{"am_peak": [...]}`; on the
+weekly/monthly files, which also carry `day_type`, it's nested one level deeper:
+`{"business_day": {"am_peak": [...]}, "weekend_or_holiday": {...}}`. A daily file has no
+`day_type` key at all, matching how it's absent from the PMTiles properties for the same
+reason.
+
+Each entry carries only what a leaderboard row needs to display -- `route_id`, `direction_id`,
+`from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`
+(`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of explicit allowlist as
+`pmtiles.TILE_PROPERTIES`, so geometry and the p90/moving-speed columns never leak into a
+public file by accident. Each slice is capped at `LEADERBOARD_SIZE` (100) entries: this is a
+display list, not an analytical export, so it's kept well below the ~10.8k distinct
+segments/day rather than dumping the whole aggregated table.
+
+**Segments below `LEADERBOARD_MIN_TRAVERSALS` (20) traversals in a slice are dropped before
+ranking** -- higher than the map's `MIN_TRAVERSALS_HINT` (3), and deliberately a separate
+constant. Verified against real data (2026-09-17/18): on the daily file, 90-100% of the top 10
+slowest entries per time band had fewer than 10 traversals -- a single bus stuck at a red
+light, not a systematically slow segment. `MIN_TRAVERSALS_HINT` is fine for the map, where a
+thin segment is one faint line among thousands; a leaderboard entry is a much louder claim
+("the #1 slowest segment"), so it needs a real sample behind it. A single day often can't
+clear this bar for every band -- some may come back sparse or empty, since a route may only
+run a handful of trips through a given segment in a 2-hour window -- but the weekly/monthly
+rollups pool traversals across many days and comfortably clear it (checked against the
+in-progress 2026-W38 rollup: business-day AM peak alone had 24-42 segments still qualifying
+at thresholds of 20-30).
+
+Writing is opt-in (`--write-leaderboard`, or `write_leaderboard=True`) and independent of
+`--upload`/`--write-pmtiles`/`--write-to-dynamo`. `generate_yesterday_speed_segments()` writes
+it by default; the weekly/monthly generators and `trends_backfill.py` take the same flag but
+default it to off, matching `--write-pmtiles`'s existing opt-in convention there.
 
 ## Daily route metrics
 

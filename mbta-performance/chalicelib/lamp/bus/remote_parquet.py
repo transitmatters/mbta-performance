@@ -7,6 +7,7 @@ roughly 35MB for a day, rather than the whole file.
 
 import io
 import logging
+import time
 from datetime import date
 
 import pandas as pd
@@ -17,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 HEAD_TIMEOUT_SECONDS = 30
 RANGE_TIMEOUT_SECONDS = 120
+
+# LAMP_RECENT_Bus_Events.parquet is rewritten by MBTA on a rolling basis (it's the live
+# seven-day export, unlike the static all-time archive). A read that spans the moment it's
+# replaced can pair a footer parsed from the old file with byte ranges served from the new
+# one -- surfacing as a truncated HTTP read (requests.exceptions.ChunkedEncodingError) or a
+# corrupt parquet footer (pyarrow raises a plain OSError, e.g. "Couldn't deserialize
+# thrift"). Both are IOError/OSError under the hood. Retrying re-opens the file and re-reads
+# the footer from scratch, which self-heals once the rewrite finishes -- observed in
+# practice needing at most one retry once the file has settled.
+MAX_READ_ATTEMPTS = 4
+READ_RETRY_DELAY_SECONDS = 5
 
 
 class HttpRangeFile(io.RawIOBase):
@@ -87,7 +99,27 @@ def _row_group_for_date(parquet_file: pq.ParquetFile, column: str, service_date:
 
 
 def read_service_date(url: str, service_date: date, columns: list[str]) -> pd.DataFrame:
-    """Read one service date out of a remote, date-partitioned parquet file."""
+    """Read one service date out of a remote, date-partitioned parquet file.
+
+    Retried a few times on a network or parquet-parsing error -- see MAX_READ_ATTEMPTS above
+    for why a live, actively-rewritten export needs this and a static one is just being
+    handled defensively.
+    """
+    for attempt in range(1, MAX_READ_ATTEMPTS + 1):
+        try:
+            return _read_service_date_once(url, service_date, columns)
+        except OSError as error:
+            if attempt == MAX_READ_ATTEMPTS:
+                raise
+            logger.warning(
+                f"Attempt {attempt}/{MAX_READ_ATTEMPTS} to read {service_date} from {url} failed "
+                f"({error!r}); retrying in {READ_RETRY_DELAY_SECONDS}s"
+            )
+            time.sleep(READ_RETRY_DELAY_SECONDS)
+    raise AssertionError("unreachable")  # loop always returns or raises
+
+
+def _read_service_date_once(url: str, service_date: date, columns: list[str]) -> pd.DataFrame:
     logger.info(f"Opening remote parquet {url}")
     parquet_file = pq.ParquetFile(HttpRangeFile(url))
 

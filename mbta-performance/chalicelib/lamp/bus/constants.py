@@ -90,6 +90,30 @@ WEEKLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/s
 MONTHLY_S3_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.parquet"
 MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.pmtiles"
 
+# Same keys again, but the "slowest segments" leaderboard as plain JSON -- see leaderboard.py.
+# Fetched directly by the frontend (same CloudFront-backed path as the GeoParquet/PMTiles
+# siblings above), unlike the route leaderboard's Dynamo-scan-and-cache-to-S3 approach: the
+# aggregated table is already in hand at generation time, so there's nothing to scan later.
+LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/leaderboard.json"
+WEEKLY_LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/leaderboard.json"
+MONTHLY_LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/leaderboard.json"
+
+# Entries kept per (day_type, time_band) slice of the leaderboard. This is a display list, not
+# an analytical export -- the full ranked table already exists as GeoParquet/PMTiles -- so it's
+# capped well below the ~10.8k distinct segments/day rather than dumping the whole table.
+LEADERBOARD_SIZE = 100
+
+# Higher than MIN_TRAVERSALS_HINT, and deliberately a separate constant: verified against real
+# data (2026-09-17/18), a segment's *slowest* end is dominated by 3-6-traversal noise (a single
+# bus stuck at a light) up through that threshold -- on the daily file, 90-100% of the top 10
+# slowest entries per band had fewer than 10 traversals. MIN_TRAVERSALS_HINT is fine for the
+# map, where a thin segment is one faint line among thousands; a leaderboard entry is a much
+# louder claim ("the #1 slowest segment"), so it needs a real sample behind it. A single day
+# only sees a handful of trips through most segments in a given time band, so this thins the
+# daily leaderboard considerably (some bands may have few or no qualifying entries) -- the
+# weekly/monthly rollups pool traversals across many days and comfortably clear this bar.
+LEADERBOARD_MIN_TRAVERSALS = 20
+
 # Daily per-route speed rollup, a coarser companion to the per-segment GeoParquet above --
 # one row per (route, service_date) rather than per segment, for the same kind of "how fast
 # is this route" line chart the dashboard already draws for rail from the DeliveredTripMetrics

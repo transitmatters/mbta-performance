@@ -1,4 +1,5 @@
 import io
+import json
 import unittest
 from datetime import date
 from unittest import mock
@@ -160,6 +161,54 @@ class TestUploadWeeklyMonthly(unittest.TestCase):
         self.assertEqual(upload.call_args[0][1], key)
 
 
+class TestLeaderboardKeys(unittest.TestCase):
+    def test_daily_key_is_month_and_day_not_zero_padded(self):
+        self.assertEqual(
+            s3_writer.leaderboard_key_for(date(2026, 9, 3)),
+            "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/leaderboard.json",
+        )
+
+    def test_weekly_and_monthly_keys_are_keyed_by_year_and_period_number(self):
+        self.assertEqual(
+            s3_writer.weekly_leaderboard_key_for(2026, 6), "BusSpeedSegments/weekly/Year=2026/Week=6/leaderboard.json"
+        )
+        self.assertEqual(
+            s3_writer.monthly_leaderboard_key_for(2026, 3),
+            "BusSpeedSegments/monthly/Year=2026/Month=3/leaderboard.json",
+        )
+
+
+class TestUploadLeaderboard(unittest.TestCase):
+    _leaderboard = {"am_peak": [{"route_id": "1", "p50_speed_mph": 5.0}]}
+
+    def test_uploads_json_bytes_to_the_dated_key(self):
+        with mock.patch.object(s3_writer.s3, "upload_json") as upload:
+            key = s3_writer.upload_leaderboard(self._leaderboard, date(2026, 9, 3))
+
+        self.assertEqual(key, "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/leaderboard.json")
+        upload.assert_called_once()
+        bucket, uploaded_key, data = upload.call_args[0]
+        self.assertEqual(bucket, "tm-mbta-performance")
+        self.assertEqual(uploaded_key, key)
+        self.assertEqual(json.loads(data), self._leaderboard)
+
+    def test_upload_weekly_leaderboard_writes_to_the_week_key(self):
+        with mock.patch.object(s3_writer.s3, "upload_json") as upload:
+            key = s3_writer.upload_weekly_leaderboard(self._leaderboard, 2026, 6)
+
+        self.assertEqual(key, "BusSpeedSegments/weekly/Year=2026/Week=6/leaderboard.json")
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args[0][1], key)
+
+    def test_upload_monthly_leaderboard_writes_to_the_month_key(self):
+        with mock.patch.object(s3_writer.s3, "upload_json") as upload:
+            key = s3_writer.upload_monthly_leaderboard(self._leaderboard, 2026, 3)
+
+        self.assertEqual(key, "BusSpeedSegments/monthly/Year=2026/Month=3/leaderboard.json")
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args[0][1], key)
+
+
 class TestUploadIsOptIn(unittest.TestCase):
     def test_generate_does_not_upload_unless_asked(self):
         from .. import ingest
@@ -168,6 +217,7 @@ class TestUploadIsOptIn(unittest.TestCase):
             mock.patch.object(ingest, "read_service_date") as read,
             mock.patch.object(ingest, "upload_speed_segments") as upload,
             mock.patch.object(ingest, "upload_pmtiles") as upload_pmtiles,
+            mock.patch.object(ingest, "upload_leaderboard") as upload_leaderboard,
             mock.patch.object(ingest, "build_pattern_geometry"),
         ):
             read.return_value = pd.DataFrame()
@@ -176,3 +226,4 @@ class TestUploadIsOptIn(unittest.TestCase):
 
         upload.assert_not_called()
         upload_pmtiles.assert_not_called()
+        upload_leaderboard.assert_not_called()
