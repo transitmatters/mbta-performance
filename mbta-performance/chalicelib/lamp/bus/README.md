@@ -87,24 +87,32 @@ slower-moving patterns -- a detour that lasts a season, a route that's consisten
 off-peak -- that would otherwise mean flipping through individual days.
 
 ```shell
-# Week/month numbers are sequential from 1, not a calendar date -- see below.
-uv run python -m mbta-performance.chalicelib.lamp.bus.trends --week 6 --upload --write-pmtiles
-uv run python -m mbta-performance.chalicelib.lamp.bus.trends --month 2 --upload --write-pmtiles
+# Weeks are ISO 8601 (year, week); months are plain calendar (year, month) -- see below.
+uv run python -m mbta-performance.chalicelib.lamp.bus.trends --year 2026 --week 6 --upload --write-pmtiles
+uv run python -m mbta-performance.chalicelib.lamp.bus.trends --year 2026 --month 2 --upload --write-pmtiles
+
+# Backfill every week/month LAMP has data for (default range: EARLIEST_LAMP_BUS_DATA..yesterday).
+uv run python -m mbta-performance.chalicelib.lamp.bus.trends_backfill --weeks --months --upload --write-pmtiles
 ```
 
 ```
-s3://tm-mbta-performance/BusSpeedSegments/weekly/Week=6/segments.pmtiles
-s3://tm-mbta-performance/BusSpeedSegments/monthly/Month=2/segments.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/weekly/Year=2026/Week=6/segments.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=2/segments.pmtiles
 ```
 
-**Weeks and months are keyed by a sequential integer, not a calendar date.** `periods.py`
-numbers them from 1, starting at the calendar week (Monday-Sunday) and month containing
-`EARLIEST_LAMP_BUS_DATA` -- week 1 is 2025-12-22..2025-12-28, month 1 is December 2025, week
-2/month 2 follow immediately after, and so on. A Year=/Week= or Year=/Month= key like the
-daily pipeline's would work just as well, but bus history is only a few months long, so a
-plain integer is simpler to key and fetch by. `week_range` / `month_range` convert a number
-back to its calendar boundaries; `dates_in_range` then clips that range to whatever LAMP data
-actually exists (before `EARLIEST_LAMP_BUS_DATA`, or later than yesterday).
+**Weeks use ISO 8601 (year, week); months use plain calendar (year, month).** `periods.py`
+computes both from `date.isocalendar()` and `date.year`/`date.month` respectively, rather
+than a single running integer -- a Year=/Week=/Month= key that means what it looks like
+(week 6 of 2026, not "the 37th week since some fixed start date") is worth the small extra
+key complexity once trend tiles span more than a year. The one surprise: ISO week dating
+assigns a week to whichever year contains its Thursday, so the very first week of LAMP bus
+data (Monday 2025-12-22 through Sunday 2025-12-28) is `Year=2025/Week=52`, not "2026 week 1"
+-- the following week is `Year=2026/Week=1`. `week_range(year, week)` / `month_range(year,
+month)` convert a key back to its calendar boundaries; `dates_in_range` then clips that range
+to whatever LAMP data actually exists (before `EARLIEST_LAMP_BUS_DATA`, or later than
+yesterday). `trends_backfill.py` walks calendar dates (one Monday at a time for weeks, one
+first-of-month at a time for months) rather than iterating an integer range, mirroring
+`backfill.py`'s `--start-date`/`--end-date` interface.
 
 **Percentiles are recomputed from every underlying traversal, not averaged from the daily
 p50/p90 already published by `ingest.py`.** A percentile of percentiles is a different (and

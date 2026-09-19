@@ -12,7 +12,7 @@ every date in the period and aggregates once across all of them. That costs one 
 day in the period (~25s/day per the bus README), so a week is a few minutes and a month
 roughly half an hour; there is no dependency on ingest.py having already run for those dates.
 
-Weeks and months are numbered sequentially from 1 rather than keyed by calendar date -- see
+Weeks are keyed by ISO 8601 (year, week) and months by calendar (year, month) -- see
 periods.py.
 
 Every date also gets a `day_type` (business_day or weekend_or_holiday, see day_type.py) that
@@ -86,61 +86,64 @@ def _build_period_result(service_dates: list[date]) -> pd.DataFrame:
 
 
 def generate_weekly_speed_segments(
+    year: int,
     week: int,
     output_path: str | None = None,
     upload: bool = False,
     write_pmtiles: bool = False,
 ) -> pd.DataFrame:
-    """Build the aggregated speed-segment table across every service date in calendar week `week`.
+    """Build the aggregated speed-segment table across every service date in ISO week (year, week).
 
-    `week` is 1-indexed from the calendar week (Mon-Sun) containing EARLIEST_LAMP_BUS_DATA --
-    see periods.py. Dates in the week that fall outside LAMP's coverage, or haven't happened
-    yet, are skipped rather than erroring, so this can be run for the current in-progress
-    week to get a partial-week trend.
+    `(year, week)` is the ISO 8601 week -- see periods.py, including the note that the week
+    containing EARLIEST_LAMP_BUS_DATA (2025-12-24) is ISO year 2025, week 52. Dates in the
+    week that fall outside LAMP's coverage, or haven't happened yet, are skipped rather than
+    erroring, so this can be run for the current in-progress week to get a partial-week trend.
     """
-    start, end = week_range(week)
+    start, end = week_range(year, week)
     service_dates = dates_in_range(start, end, not_after=get_current_service_date() - timedelta(days=1))
     if not service_dates:
-        raise ValueError(f"Week {week} ({start}..{end}) has no service dates with available LAMP bus data yet")
+        raise ValueError(
+            f"{year}-W{week:02d} ({start}..{end}) has no service dates with available LAMP bus data yet"
+        )
 
-    logger.info(f"Generating bus speed segments for week {week} ({service_dates[0]}..{service_dates[-1]})")
+    logger.info(f"Generating bus speed segments for {year}-W{week:02d} ({service_dates[0]}..{service_dates[-1]})")
     result = _build_period_result(service_dates)
 
     if output_path:
         write_geoparquet(result, output_path)
     if upload:
-        upload_weekly_speed_segments(result, week)
+        upload_weekly_speed_segments(result, year, week)
     if write_pmtiles:
-        upload_weekly_pmtiles(result, week)
+        upload_weekly_pmtiles(result, year, week)
     return result
 
 
 def generate_monthly_speed_segments(
+    year: int,
     month: int,
     output_path: str | None = None,
     upload: bool = False,
     write_pmtiles: bool = False,
 ) -> pd.DataFrame:
-    """Build the aggregated speed-segment table across every service date in calendar month `month`.
+    """Build the aggregated speed-segment table across every service date in calendar (year, month).
 
-    `month` is 1-indexed from the calendar month containing EARLIEST_LAMP_BUS_DATA -- see
-    periods.py. Dates in the month that fall outside LAMP's coverage, or haven't happened
-    yet, are skipped rather than erroring.
+    Dates in the month that fall outside LAMP's coverage, or haven't happened yet, are
+    skipped rather than erroring.
     """
-    start, end = month_range(month)
+    start, end = month_range(year, month)
     service_dates = dates_in_range(start, end, not_after=get_current_service_date() - timedelta(days=1))
     if not service_dates:
-        raise ValueError(f"Month {month} ({start}..{end}) has no service dates with available LAMP bus data yet")
+        raise ValueError(f"{year}-{month:02d} ({start}..{end}) has no service dates with available LAMP bus data yet")
 
-    logger.info(f"Generating bus speed segments for month {month} ({service_dates[0]}..{service_dates[-1]})")
+    logger.info(f"Generating bus speed segments for {year}-{month:02d} ({service_dates[0]}..{service_dates[-1]})")
     result = _build_period_result(service_dates)
 
     if output_path:
         write_geoparquet(result, output_path)
     if upload:
-        upload_monthly_speed_segments(result, month)
+        upload_monthly_speed_segments(result, year, month)
     if write_pmtiles:
-        upload_monthly_pmtiles(result, month)
+        upload_monthly_pmtiles(result, year, month)
     return result
 
 
@@ -149,9 +152,10 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Generate weekly or monthly LAMP bus speed trend tiles.")
+    parser.add_argument("--year", type=int, required=True, help="Calendar year for --week or --month")
     period = parser.add_mutually_exclusive_group(required=True)
-    period.add_argument("--week", type=int, help="Week number, 1-indexed from the week of EARLIEST_LAMP_BUS_DATA")
-    period.add_argument("--month", type=int, help="Month number, 1-indexed from the month of EARLIEST_LAMP_BUS_DATA")
+    period.add_argument("--week", type=int, help="ISO 8601 week number within --year")
+    period.add_argument("--month", type=int, help="Calendar month number within --year")
     parser.add_argument("--out", help="Output GeoParquet path")
     parser.add_argument("--upload", action="store_true", help=f"Also publish to s3://{S3_BUCKET}")
     parser.add_argument(
@@ -161,9 +165,13 @@ if __name__ == "__main__":
 
     if arguments.week is not None:
         generate_weekly_speed_segments(
-            arguments.week, arguments.out, upload=arguments.upload, write_pmtiles=arguments.write_pmtiles
+            arguments.year, arguments.week, arguments.out, upload=arguments.upload, write_pmtiles=arguments.write_pmtiles
         )
     else:
         generate_monthly_speed_segments(
-            arguments.month, arguments.out, upload=arguments.upload, write_pmtiles=arguments.write_pmtiles
+            arguments.year,
+            arguments.month,
+            arguments.out,
+            upload=arguments.upload,
+            write_pmtiles=arguments.write_pmtiles,
         )

@@ -37,24 +37,24 @@ def pmtiles_key_for(service_date: date) -> str:
     return PMTILES_KEY_TEMPLATE.format(YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
 
 
-def weekly_s3_key_for(week: int) -> str:
-    """Build the object key for a week number's segments (see periods.py)."""
-    return WEEKLY_S3_KEY_TEMPLATE.format(week=week)
+def weekly_s3_key_for(year: int, week: int) -> str:
+    """Build the object key for an ISO (year, week)'s segments (see periods.py)."""
+    return WEEKLY_S3_KEY_TEMPLATE.format(year=year, week=week)
 
 
-def weekly_pmtiles_key_for(week: int) -> str:
-    """Build the object key for a week number's PMTiles tileset."""
-    return WEEKLY_PMTILES_KEY_TEMPLATE.format(week=week)
+def weekly_pmtiles_key_for(year: int, week: int) -> str:
+    """Build the object key for an ISO (year, week)'s PMTiles tileset."""
+    return WEEKLY_PMTILES_KEY_TEMPLATE.format(year=year, week=week)
 
 
-def monthly_s3_key_for(month: int) -> str:
-    """Build the object key for a month number's segments (see periods.py)."""
-    return MONTHLY_S3_KEY_TEMPLATE.format(month=month)
+def monthly_s3_key_for(year: int, month: int) -> str:
+    """Build the object key for a (year, month)'s segments (see periods.py)."""
+    return MONTHLY_S3_KEY_TEMPLATE.format(year=year, month=month)
 
 
-def monthly_pmtiles_key_for(month: int) -> str:
-    """Build the object key for a month number's PMTiles tileset."""
-    return MONTHLY_PMTILES_KEY_TEMPLATE.format(month=month)
+def monthly_pmtiles_key_for(year: int, month: int) -> str:
+    """Build the object key for a (year, month)'s PMTiles tileset."""
+    return MONTHLY_PMTILES_KEY_TEMPLATE.format(year=year, month=month)
 
 
 def _upload_geoparquet(segments: pd.DataFrame, key: str) -> str:
@@ -88,33 +88,33 @@ def upload_pmtiles(segments: pd.DataFrame, service_date: date) -> str:
     return _upload_pmtiles(segments, pmtiles_key_for(service_date))
 
 
-def upload_weekly_speed_segments(segments: pd.DataFrame, week: int) -> str:
+def upload_weekly_speed_segments(segments: pd.DataFrame, year: int, week: int) -> str:
     """Serialise a week's rolled-up speed segments and put them in the performance bucket.
 
     Returns the key written. Re-running a week overwrites it in place.
     """
-    return _upload_geoparquet(segments, weekly_s3_key_for(week))
+    return _upload_geoparquet(segments, weekly_s3_key_for(year, week))
 
 
-def upload_weekly_pmtiles(segments: pd.DataFrame, week: int) -> str:
+def upload_weekly_pmtiles(segments: pd.DataFrame, year: int, week: int) -> str:
     """Build a week's PMTiles tileset and put it in the performance bucket.
 
     Returns the key written. Requires tippecanoe on PATH -- see pmtiles.py.
     """
-    return _upload_pmtiles(segments, weekly_pmtiles_key_for(week))
+    return _upload_pmtiles(segments, weekly_pmtiles_key_for(year, week))
 
 
-def upload_monthly_speed_segments(segments: pd.DataFrame, month: int) -> str:
+def upload_monthly_speed_segments(segments: pd.DataFrame, year: int, month: int) -> str:
     """Serialise a month's rolled-up speed segments and put them in the performance bucket.
 
     Returns the key written. Re-running a month overwrites it in place.
     """
-    return _upload_geoparquet(segments, monthly_s3_key_for(month))
+    return _upload_geoparquet(segments, monthly_s3_key_for(year, month))
 
 
-def upload_monthly_pmtiles(segments: pd.DataFrame, month: int) -> str:
+def upload_monthly_pmtiles(segments: pd.DataFrame, year: int, month: int) -> str:
     """Build a month's PMTiles tileset and put it in the performance bucket.
 
     Returns the key written. Requires tippecanoe on PATH -- see pmtiles.py.
     """
-    return _upload_pmtiles(segments, monthly_pmtiles_key_for(month))
+    return _upload_pmtiles(segments, monthly_pmtiles_key_for(year, month))

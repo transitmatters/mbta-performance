@@ -89,13 +89,13 @@ class TestBuildPeriodResult(unittest.TestCase):
 
 
 class TestGenerateWeeklySpeedSegments(unittest.TestCase):
-    def test_uses_the_calendar_week_range_for_the_given_week_number(self):
-        # Week 3 is 2026-01-05..2026-01-11 (Mondays: wk1=12/22, wk2=12/29, wk3=1/5).
+    def test_uses_the_iso_week_range_for_the_given_year_and_week(self):
+        # ISO 2026-W02 is 2026-01-05..2026-01-11.
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 10)),
             mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})) as build,
         ):
-            trends.generate_weekly_speed_segments(3)
+            trends.generate_weekly_speed_segments(2026, 2)
 
         called_dates = build.call_args[0][0]
         self.assertEqual(
@@ -110,7 +110,7 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
         ):
-            trends.generate_weekly_speed_segments(3)
+            trends.generate_weekly_speed_segments(2026, 2)
 
         upload_segments.assert_not_called()
         upload_pmtiles.assert_not_called()
@@ -122,26 +122,25 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
         ):
-            trends.generate_weekly_speed_segments(3, upload=True, write_pmtiles=True)
+            trends.generate_weekly_speed_segments(2026, 2, upload=True, write_pmtiles=True)
 
-        upload_segments.assert_called_once_with(mock.ANY, 3)
-        upload_pmtiles.assert_called_once_with(mock.ANY, 3)
+        upload_segments.assert_called_once_with(mock.ANY, 2026, 2)
+        upload_pmtiles.assert_called_once_with(mock.ANY, 2026, 2)
 
     def test_raises_for_a_week_with_no_available_dates_yet(self):
-        # "Yesterday" is before week 1 even starts, so there's nothing to aggregate.
+        # "Yesterday" is before this week even starts, so there's nothing to aggregate.
         with mock.patch.object(trends, "get_current_service_date", return_value=date(2025, 12, 20)):
             with self.assertRaises(ValueError):
-                trends.generate_weekly_speed_segments(1)
+                trends.generate_weekly_speed_segments(2025, 51)
 
 
 class TestGenerateMonthlySpeedSegments(unittest.TestCase):
-    def test_uses_the_calendar_month_range_for_the_given_month_number(self):
-        # Month 2 is January 2026 (month 1 is December 2025, the month EARLIEST_LAMP_BUS_DATA falls in).
+    def test_uses_the_calendar_month_range_for_the_given_year_and_month(self):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 15)),
             mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})) as build,
         ):
-            trends.generate_monthly_speed_segments(2)
+            trends.generate_monthly_speed_segments(2026, 1)
 
         called_dates = build.call_args[0][0]
         self.assertEqual(called_dates[0], date(2026, 1, 1))
@@ -154,12 +153,12 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
             mock.patch.object(trends, "upload_monthly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_monthly_pmtiles") as upload_pmtiles,
         ):
-            trends.generate_monthly_speed_segments(2, upload=True, write_pmtiles=True)
+            trends.generate_monthly_speed_segments(2026, 1, upload=True, write_pmtiles=True)
 
-        upload_segments.assert_called_once_with(mock.ANY, 2)
-        upload_pmtiles.assert_called_once_with(mock.ANY, 2)
+        upload_segments.assert_called_once_with(mock.ANY, 2026, 1)
+        upload_pmtiles.assert_called_once_with(mock.ANY, 2026, 1)
 
     def test_raises_for_a_month_with_no_available_dates_yet(self):
         with mock.patch.object(trends, "get_current_service_date", return_value=date(2025, 12, 20)):
             with self.assertRaises(ValueError):
-                trends.generate_monthly_speed_segments(1)
+                trends.generate_monthly_speed_segments(2025, 11)

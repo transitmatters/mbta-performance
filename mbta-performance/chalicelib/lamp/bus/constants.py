@@ -82,12 +82,13 @@ S3_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segmen
 # above -- see pmtiles.py.
 PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments.pmtiles"
 
-# Weekly/monthly trend rollups (trends.py), keyed by sequential integer rather than
-# Year=/Month=/Day= -- see periods.py for how week/month numbers are assigned.
-WEEKLY_S3_KEY_TEMPLATE = "BusSpeedSegments/weekly/Week={week}/segments.parquet"
-WEEKLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Week={week}/segments.pmtiles"
-MONTHLY_S3_KEY_TEMPLATE = "BusSpeedSegments/monthly/Month={month}/segments.parquet"
-MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Month={month}/segments.pmtiles"
+# Weekly/monthly trend rollups (trends.py), keyed by (year, period number) rather than a
+# single running integer -- see periods.py for how week (ISO 8601) and month (calendar)
+# numbers are assigned. Year/week/month are not zero-padded, matching the daily keys above.
+WEEKLY_S3_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/segments.parquet"
+WEEKLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/segments.pmtiles"
+MONTHLY_S3_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.parquet"
+MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.pmtiles"
 
 # Daily per-route speed rollup, a coarser companion to the per-segment GeoParquet above --
 # one row per (route, service_date) rather than per segment, for the same kind of "how fast
