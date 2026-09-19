@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -252,6 +253,46 @@ class TestTraversals(unittest.TestCase):
         traversals = segments.build_traversals(events, self._segments())
 
         self.assertEqual(len(traversals), 0)
+
+
+class TestAggregateSegments(unittest.TestCase):
+    def _traversals(self) -> pd.DataFrame:
+        rows = []
+        for service_date, times in [(date(2026, 9, 1), [100.0, 100.0]), (date(2026, 9, 2), [200.0, 200.0])]:
+            for total_time in times:
+                rows.append(
+                    {
+                        "route_id": "1",
+                        "direction_id": 0,
+                        "from_stop_id": "s1",
+                        "to_stop_id": "s2",
+                        "service_date": service_date,
+                        "depart_seconds": 8 * 3600,
+                        "total_time_seconds": total_time,
+                        "moving_time_seconds": total_time,
+                        "dwell_seconds": 0.0,
+                        "is_interpolated": False,
+                        "segment_length_m": 500.0,
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def test_default_groups_by_service_date(self):
+        aggregated = segments.aggregate_segments(self._traversals())
+
+        self.assertEqual(len(aggregated), 2)
+        self.assertEqual(set(aggregated.service_date), {date(2026, 9, 1), date(2026, 9, 2)})
+
+    def test_empty_extra_group_columns_rolls_every_date_together(self):
+        # For the weekly/monthly trend rollups in trends.py: percentiles are recomputed
+        # across every traversal in the period, not averaged from the per-date rows above.
+        aggregated = segments.aggregate_segments(self._traversals(), extra_group_columns=())
+
+        self.assertEqual(len(aggregated), 1)
+        self.assertNotIn("service_date", aggregated.columns)
+        row = aggregated.iloc[0]
+        self.assertEqual(row.n_traversals, 4)
+        self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
 
 
 class TestTimeBands(unittest.TestCase):

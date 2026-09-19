@@ -57,6 +57,30 @@ def source_url_for(service_date: date) -> str:
     return BUS_ALL_URL
 
 
+def build_traversals_for_date(service_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build per-traversal segment times for one service date.
+
+    Returns (traversals, segment geometry) -- the shared first half of the pipeline, reused
+    as-is by `generate_speed_segments` for a single date and by `trends.py` to roll several
+    dates together into a weekly or monthly trend tileset.
+    """
+    events = read_service_date(source_url_for(service_date), service_date, BUS_COLUMNS)
+    if events.empty:
+        raise ValueError(f"No LAMP bus events for {service_date}")
+
+    geometry = build_pattern_geometry(service_date, route_pattern_ids=set(events.route_pattern_id.dropna()))
+    if geometry.segments.empty:
+        raise ValueError(f"No route pattern geometry could be built for {service_date}")
+
+    events = attach_shape_distance(events, geometry.stop_positions)
+    events = interpolate_missing_times(events)
+
+    traversals = build_traversals(events, geometry.segments)
+    if traversals.empty:
+        raise ValueError(f"No usable segment traversals for {service_date}")
+    return traversals, geometry.segments
+
+
 def generate_speed_segments(
     service_date: date,
     output_path: str | None = None,
@@ -82,26 +106,13 @@ def generate_speed_segments(
     """
     logger.info(f"Generating bus speed segments for {service_date}")
 
-    events = read_service_date(source_url_for(service_date), service_date, BUS_COLUMNS)
-    if events.empty:
-        raise ValueError(f"No LAMP bus events for {service_date}")
-
-    geometry = build_pattern_geometry(service_date, route_pattern_ids=set(events.route_pattern_id.dropna()))
-    if geometry.segments.empty:
-        raise ValueError(f"No route pattern geometry could be built for {service_date}")
-
-    events = attach_shape_distance(events, geometry.stop_positions)
-    events = interpolate_missing_times(events)
-
-    traversals = build_traversals(events, geometry.segments)
-    if traversals.empty:
-        raise ValueError(f"No usable segment traversals for {service_date}")
+    traversals, segments = build_traversals_for_date(service_date)
 
     if write_to_dynamo:
         write_daily_route_metrics(traversals)
 
     aggregated = aggregate_segments(traversals)
-    chosen_geometry = select_segment_geometry(traversals, geometry.segments)
+    chosen_geometry = select_segment_geometry(traversals, segments)
 
     result = aggregated.merge(
         chosen_geometry, on=["route_id", "direction_id", "from_stop_id", "to_stop_id"], how="inner"

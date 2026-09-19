@@ -79,6 +79,74 @@ clear error if it's missing rather than a bare `FileNotFoundError`.
 Writing is opt-in (`--write-pmtiles`, or `write_pmtiles=True`) and independent of `--upload`
 and `--write-to-dynamo`. `generate_yesterday_speed_segments()` writes all three by default.
 
+## Weekly and monthly trend tiles
+
+The daily PMTiles above are for "how fast was the network on this specific day." `trends.py`
+builds the same kind of tileset rolled up across a calendar week or month instead, for
+slower-moving patterns -- a detour that lasts a season, a route that's consistently faster
+off-peak -- that would otherwise mean flipping through individual days.
+
+```shell
+# Week/month numbers are sequential from 1, not a calendar date -- see below.
+uv run python -m mbta-performance.chalicelib.lamp.bus.trends --week 6 --upload --write-pmtiles
+uv run python -m mbta-performance.chalicelib.lamp.bus.trends --month 2 --upload --write-pmtiles
+```
+
+```
+s3://tm-mbta-performance/BusSpeedSegments/weekly/Week=6/segments.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/monthly/Month=2/segments.pmtiles
+```
+
+**Weeks and months are keyed by a sequential integer, not a calendar date.** `periods.py`
+numbers them from 1, starting at the calendar week (Monday-Sunday) and month containing
+`EARLIEST_LAMP_BUS_DATA` -- week 1 is 2025-12-22..2025-12-28, month 1 is December 2025, week
+2/month 2 follow immediately after, and so on. A Year=/Week= or Year=/Month= key like the
+daily pipeline's would work just as well, but bus history is only a few months long, so a
+plain integer is simpler to key and fetch by. `week_range` / `month_range` convert a number
+back to its calendar boundaries; `dates_in_range` then clips that range to whatever LAMP data
+actually exists (before `EARLIEST_LAMP_BUS_DATA`, or later than yesterday).
+
+**Percentiles are recomputed from every underlying traversal, not averaged from the daily
+p50/p90 already published by `ingest.py`.** A percentile of percentiles is a different (and
+wrong) number from the true percentile across the period, so `trends.py` re-runs
+`build_traversals_for_date` (the same per-day pipeline `ingest.py` uses, shared via
+`ingest.build_traversals_for_date`) for every date in the week or month, concatenates the
+traversals, and aggregates once across all of them -- `aggregate_segments`'s
+`extra_group_columns` parameter, `("day_type",)` instead of the default `("service_date",)`,
+is what drops the per-date split while keeping the business-day/weekend split below. This
+means a weekly/monthly run costs one full day's ingest per day in the period (~25s/day): a
+few minutes for a week, up to half an hour for a month. There is no dependency on `ingest.py`
+having already run for those dates, and nothing here touches `DeliveredTripMetricsBus` --
+that daily per-route rollup is unaffected.
+
+**Every row is also split by `day_type`: `business_day` or `weekend_or_holiday`.** A week
+always blends weekday and weekend service, and a month blends both several times over, so
+without this split a Tuesday's rush-hour speed and a Saturday afternoon's would average into
+one meaningless number. `day_type.py` classifies each date -- Saturday and Sunday are always
+`weekend_or_holiday`; a weekday is too, if MBTA's own GTFS calendar says so.
+
+That check comes from the LAMP GTFS archive's `calendar_dates` parquet, which carries a
+`holiday_name` column MBTA curates itself (Christmas, MLK Day, Juneteenth, and so on) --
+`is_mbta_holiday` looks up whether the service date has a row there. This is deliberately not
+a hand-maintained US-holiday list: it can't drift out of date, it only flags a date MBTA
+itself schedules differently for, and it costs one more small per-date fetch alongside the
+trips/stop_times/stops/shapes reads `build_pattern_geometry` already does.
+
+`day_type` reaches the map the same way `time_band` does -- as a plain tile property
+(`pmtiles.TILE_PROPERTIES`) a consumer filters on client-side, not a second file or S3 key.
+It's absent from the daily pipeline's output entirely: a single date is already wholly one
+type or the other, so there's nothing to split there.
+
+Geometry is chosen the same way as the daily pipeline (`select_segment_geometry`): whichever
+pattern actually ran each segment most often across the *whole* period, not per day.
+
+A week or month that is only partially elapsed still builds -- from whatever dates in it have
+already happened -- so a currently-running week/month gets a trend tile from its
+dates-so-far rather than requiring a wait until it ends. Only a period with *no* available
+dates at all (entirely in the future, or entirely before `EARLIEST_LAMP_BUS_DATA`) raises. A
+single unusable date inside an otherwise-good range (a gap in LAMP's export) is logged and
+skipped instead, matching `backfill.py`.
+
 ## Daily route metrics
 
 The GeoParquet above is per-segment, for the map. `daily_metrics.py` additionally rolls the

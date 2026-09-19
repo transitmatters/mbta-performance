@@ -34,12 +34,19 @@ MAXIMUM_ZOOM = 16
 # What modules/busspeedmap/types.ts's BusSpeedSegmentProperties reads off a tile feature.
 # Selected explicitly, rather than handing tippecanoe the full GeoParquet schema, so a column
 # like p90_speed_mph or moving_speed_mph can never end up on the map by accident.
+#
+# day_type (business_day / weekend_or_holiday, see day_type.py) is only present on the
+# weekly/monthly trend rollups in trends.py -- a single day's file is already wholly one or
+# the other, so ingest.py's daily frames never carry the column. Listed here anyway: only
+# columns actually present in a given frame reach tippecanoe (see build_pmtiles_bytes), so
+# this is a no-op for daily and picks the column up automatically for trends.
 TILE_PROPERTIES = [
     "route_id",
     "direction_id",
     "from_stop_name",
     "to_stop_name",
     "time_band",
+    "day_type",
     "p50_speed_mph",
     "n_traversals",
     "n_interpolated",

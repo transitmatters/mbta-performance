@@ -194,13 +194,18 @@ def assign_time_band(departure_seconds: pd.Series) -> pd.Series:
     return band
 
 
-def aggregate_segments(traversals: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate traversals to one row per (segment, service_date, time band)."""
+def aggregate_segments(traversals: pd.DataFrame, extra_group_columns: tuple[str, ...] = ("service_date",)) -> pd.DataFrame:
+    """Aggregate traversals to one row per (segment, time band), plus any extra_group_columns.
+
+    Defaults to also grouping by service_date, for the daily pipeline in ingest.py where
+    `traversals` covers a single date. Pass `extra_group_columns=()` to roll every date in
+    `traversals` together instead, for the weekly/monthly trend rollups in trends.py.
+    """
     traversals = traversals.copy()
     traversals["time_band"] = assign_time_band(traversals.depart_seconds)
     traversals = traversals.dropna(subset=["time_band"])
 
-    group_key = SEGMENT_KEY + ["service_date", "time_band"]
+    group_key = SEGMENT_KEY + list(extra_group_columns) + ["time_band"]
     grouped = traversals.groupby(group_key, sort=False)
 
     aggregation = {
@@ -228,7 +233,7 @@ def aggregate_segments(traversals: pd.DataFrame) -> pd.DataFrame:
             aggregated.segment_length_m / aggregated[f"p{percentile}_moving_time_seconds"] * METERS_PER_SECOND_TO_MPH
         )
 
-    logger.info(f"Aggregated to {len(aggregated)} (segment, date, band) rows")
+    logger.info(f"Aggregated to {len(aggregated)} ({', '.join(group_key)}) rows")
     return aggregated
 
 

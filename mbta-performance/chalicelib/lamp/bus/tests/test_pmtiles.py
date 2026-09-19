@@ -11,27 +11,28 @@ import pandas as pd
 from .. import pmtiles
 
 
-def _segments() -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "route_id": "1",
-                "direction_id": 0,
-                "from_stop_id": "s1",
-                "to_stop_id": "s2",
-                "from_stop_name": "A",
-                "to_stop_name": "B",
-                "time_band": "am_peak",
-                "n_traversals": 12,
-                "n_interpolated": 1,
-                "segment_length_m": 500.0,
-                "p50_speed_mph": 11.5,
-                "p90_speed_mph": 8.0,
-                "moving_speed_mph": 20.0,
-                "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
-            }
-        ]
-    )
+def _segments(day_type: str | None = None) -> pd.DataFrame:
+    row = {
+        "route_id": "1",
+        "direction_id": 0,
+        "from_stop_id": "s1",
+        "to_stop_id": "s2",
+        "from_stop_name": "A",
+        "to_stop_name": "B",
+        "time_band": "am_peak",
+        "n_traversals": 12,
+        "n_interpolated": 1,
+        "segment_length_m": 500.0,
+        "p50_speed_mph": 11.5,
+        "p90_speed_mph": 8.0,
+        "moving_speed_mph": 20.0,
+        "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
+    }
+    # day_type is only present on the weekly/monthly trend rollups (trends.py), never on a
+    # daily frame -- most tests exercise the daily shape, so it's opt-in here.
+    if day_type is not None:
+        row["day_type"] = day_type
+    return pd.DataFrame([row])
 
 
 class TestRequireTippecanoe(unittest.TestCase):
@@ -65,7 +66,19 @@ class TestBuildPmtilesBytes(unittest.TestCase):
 
         self.assertEqual(data, b"PMTiles\x03fake")
         self.assertEqual(len(self.written_properties), 1)
-        self.assertEqual(set(self.written_properties[0]), set(pmtiles.TILE_PROPERTIES))
+        # day_type isn't in a daily-shaped frame -- absent columns are dropped, not required.
+        self.assertEqual(set(self.written_properties[0]), set(pmtiles.TILE_PROPERTIES) - {"day_type"})
+
+    def test_day_type_reaches_tippecanoe_when_present(self):
+        # Present on the weekly/monthly trend rollups (trends.py) -- confirms it isn't
+        # silently dropped like the columns TILE_PROPERTIES deliberately excludes.
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(_segments(day_type="business_day"))
+
+        self.assertEqual(self.written_properties[0]["day_type"], "business_day")
 
     def test_uses_the_segments_layer_and_configured_zoom_range(self):
         with (
@@ -102,7 +115,7 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
     developer's machine without it) still pass the rest of the suite."""
 
     def test_produces_a_segments_layer_with_only_tile_properties(self):
-        data = pmtiles.build_pmtiles_bytes(_segments())
+        data = pmtiles.build_pmtiles_bytes(_segments(day_type="business_day"))
 
         self.assertTrue(data.startswith(b"PMTiles"))
 

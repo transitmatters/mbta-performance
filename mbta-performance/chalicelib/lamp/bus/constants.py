@@ -56,6 +56,12 @@ TIME_BANDS = (
 MIN_PLAUSIBLE_SPEED_MPH = 0.5
 MAX_PLAUSIBLE_SPEED_MPH = 65.0
 
+# Two-way split of service dates for the weekly/monthly trend rollups in trends.py --
+# business_day is Monday-Friday minus MBTA-observed holidays, weekend_or_holiday is
+# Saturday, Sunday, and any weekday MBTA runs a holiday schedule for. See day_type.py.
+BUSINESS_DAY = "business_day"
+WEEKEND_OR_HOLIDAY = "weekend_or_holiday"
+
 # Percentiles reported per (segment, date, band).
 PERCENTILES = (50, 90)
 
@@ -75,6 +81,13 @@ S3_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segmen
 # Same key, but the PMTiles vector tileset the live map reads instead of the GeoParquet
 # above -- see pmtiles.py.
 PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments.pmtiles"
+
+# Weekly/monthly trend rollups (trends.py), keyed by sequential integer rather than
+# Year=/Month=/Day= -- see periods.py for how week/month numbers are assigned.
+WEEKLY_S3_KEY_TEMPLATE = "BusSpeedSegments/weekly/Week={week}/segments.parquet"
+WEEKLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Week={week}/segments.pmtiles"
+MONTHLY_S3_KEY_TEMPLATE = "BusSpeedSegments/monthly/Month={month}/segments.parquet"
+MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Month={month}/segments.pmtiles"
 
 # Daily per-route speed rollup, a coarser companion to the per-segment GeoParquet above --
 # one row per (route, service_date) rather than per segment, for the same kind of "how fast

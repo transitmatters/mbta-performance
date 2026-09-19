@@ -102,6 +102,56 @@ class TestUpload(unittest.TestCase):
         self.assertIn(b"geo", from_bytes.schema.metadata)
 
 
+class TestWeeklyMonthlyKeys(unittest.TestCase):
+    def test_weekly_keys_are_keyed_by_week_number(self):
+        self.assertEqual(s3_writer.weekly_s3_key_for(6), "BusSpeedSegments/weekly/Week=6/segments.parquet")
+        self.assertEqual(s3_writer.weekly_pmtiles_key_for(6), "BusSpeedSegments/weekly/Week=6/segments.pmtiles")
+
+    def test_monthly_keys_are_keyed_by_month_number(self):
+        self.assertEqual(s3_writer.monthly_s3_key_for(3), "BusSpeedSegments/monthly/Month=3/segments.parquet")
+        self.assertEqual(s3_writer.monthly_pmtiles_key_for(3), "BusSpeedSegments/monthly/Month=3/segments.pmtiles")
+
+
+class TestUploadWeeklyMonthly(unittest.TestCase):
+    def test_upload_weekly_speed_segments_writes_to_the_week_key(self):
+        with mock.patch.object(s3_writer.s3, "upload_parquet") as upload:
+            key = s3_writer.upload_weekly_speed_segments(_segments(), 6)
+
+        self.assertEqual(key, "BusSpeedSegments/weekly/Week=6/segments.parquet")
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args[0][1], key)
+
+    def test_upload_weekly_pmtiles_writes_to_the_week_key(self):
+        with (
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", return_value=b"PMTiles\x03fake"),
+            mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
+        ):
+            key = s3_writer.upload_weekly_pmtiles(_segments(), 6)
+
+        self.assertEqual(key, "BusSpeedSegments/weekly/Week=6/segments.pmtiles")
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args[0][1], key)
+
+    def test_upload_monthly_speed_segments_writes_to_the_month_key(self):
+        with mock.patch.object(s3_writer.s3, "upload_parquet") as upload:
+            key = s3_writer.upload_monthly_speed_segments(_segments(), 3)
+
+        self.assertEqual(key, "BusSpeedSegments/monthly/Month=3/segments.parquet")
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args[0][1], key)
+
+    def test_upload_monthly_pmtiles_writes_to_the_month_key(self):
+        with (
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", return_value=b"PMTiles\x03fake"),
+            mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
+        ):
+            key = s3_writer.upload_monthly_pmtiles(_segments(), 3)
+
+        self.assertEqual(key, "BusSpeedSegments/monthly/Month=3/segments.pmtiles")
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args[0][1], key)
+
+
 class TestUploadIsOptIn(unittest.TestCase):
     def test_generate_does_not_upload_unless_asked(self):
         from .. import ingest
