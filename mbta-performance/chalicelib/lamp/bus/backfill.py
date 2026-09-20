@@ -16,21 +16,33 @@ from .ingest import generate_speed_segments
 logger = logging.getLogger(__name__)
 
 
-def backfill_range(start_date: date, end_date: date, upload: bool = False, write_pmtiles: bool = False) -> None:
+def backfill_range(
+    start_date: date,
+    end_date: date,
+    upload: bool = False,
+    write_pmtiles: bool = False,
+    write_leaderboard: bool = False,
+) -> None:
     """Run the pipeline for each service date in [start_date, end_date] (inclusive).
 
-    Always writes daily per-route metrics to DynamoDB. `upload` and `write_pmtiles` are
-    opt-in and forwarded as-is to `generate_speed_segments` for every date, matching how
-    those flags behave for a single day. Any failure on a given date -- no LAMP events, a
-    transient S3/DynamoDB error, tippecanoe choking on an unusually dense day -- is logged
-    and skipped rather than aborting a run covering hundreds of dates.
+    Always writes daily per-route metrics to DynamoDB. `upload`, `write_pmtiles`, and
+    `write_leaderboard` are opt-in and forwarded as-is to `generate_speed_segments` for every
+    date, matching how those flags behave for a single day. Any failure on a given date -- no
+    LAMP events, a transient S3/DynamoDB error, tippecanoe choking on an unusually dense day
+    -- is logged and skipped rather than aborting a run covering hundreds of dates.
     """
     dynamo.create_table_if_not_exists(DYNAMO_TABLE_NAME, hash_key="route", range_key="date")
 
     current = start_date
     while current <= end_date:
         try:
-            generate_speed_segments(current, upload=upload, write_to_dynamo=True, write_pmtiles=write_pmtiles)
+            generate_speed_segments(
+                current,
+                upload=upload,
+                write_to_dynamo=True,
+                write_pmtiles=write_pmtiles,
+                write_leaderboard=write_leaderboard,
+            )
             logger.info(f"Loaded {current}")
         except Exception:
             logger.exception(f"Skipping {current}")
@@ -59,8 +71,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Also build and publish PMTiles for each date (requires tippecanoe)",
     )
+    parser.add_argument(
+        "--write-leaderboard",
+        action="store_true",
+        help="Also build and publish the slowest-segments leaderboard JSON for each date",
+    )
     arguments = parser.parse_args()
 
     backfill_range(
-        arguments.start_date, arguments.end_date, upload=arguments.upload, write_pmtiles=arguments.write_pmtiles
+        arguments.start_date,
+        arguments.end_date,
+        upload=arguments.upload,
+        write_pmtiles=arguments.write_pmtiles,
+        write_leaderboard=arguments.write_leaderboard,
     )

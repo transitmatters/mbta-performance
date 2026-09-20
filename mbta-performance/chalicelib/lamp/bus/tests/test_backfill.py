@@ -28,13 +28,19 @@ class TestBackfillRange(unittest.TestCase):
         with mock.patch.object(backfill, "generate_speed_segments") as generate:
             backfill.backfill_range(date(2026, 9, 1), date(2026, 9, 1))
 
-        generate.assert_called_once_with(date(2026, 9, 1), upload=False, write_to_dynamo=True, write_pmtiles=False)
+        generate.assert_called_once_with(
+            date(2026, 9, 1), upload=False, write_to_dynamo=True, write_pmtiles=False, write_leaderboard=False
+        )
 
     def test_upload_and_pmtiles_flags_are_forwarded(self):
         with mock.patch.object(backfill, "generate_speed_segments") as generate:
-            backfill.backfill_range(date(2026, 9, 1), date(2026, 9, 1), upload=True, write_pmtiles=True)
+            backfill.backfill_range(
+                date(2026, 9, 1), date(2026, 9, 1), upload=True, write_pmtiles=True, write_leaderboard=True
+            )
 
-        generate.assert_called_once_with(date(2026, 9, 1), upload=True, write_to_dynamo=True, write_pmtiles=True)
+        generate.assert_called_once_with(
+            date(2026, 9, 1), upload=True, write_to_dynamo=True, write_pmtiles=True, write_leaderboard=True
+        )
 
     def test_a_bad_date_does_not_stop_the_rest_of_the_range(self):
         def side_effect(service_date, **kwargs):
