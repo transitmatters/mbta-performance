@@ -60,6 +60,7 @@ def process_daily_bus_lamp(event):
 
     lamp.ingest_today_bus_data()
 
+
 # Runs daily at 11:00 UTC (6-7 AM Boston depending on DST), after the LAMP alerts
 # parquet has settled for the prior service day.
 @app.schedule(Cron("0", "11", "*", "*", "?", "*"))

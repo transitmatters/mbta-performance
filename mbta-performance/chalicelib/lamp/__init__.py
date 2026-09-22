@@ -6,6 +6,7 @@ __all__ = [
 ]
 
 from .bus_ingest import ingest_today_bus_data, ingest_yesterday_bus_data
+
 __all__ = ["ingest_today_lamp_data", "ingest_yesterday_lamp_data", "ingest_lamp_alerts"]
 
 from .alerts import ingest_lamp_alerts
