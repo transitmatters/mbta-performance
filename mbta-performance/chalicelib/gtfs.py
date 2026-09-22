@@ -97,7 +97,12 @@ def fetch_stop_times_from_gtfs(
         gtfs_stops.append(
             pd.read_sql(
                 session.query(
-                    StopTime.trip_id, StopTime.stop_id, StopTime.arrival_time, Trip.route_id, Trip.direction_id
+                    StopTime.trip_id,
+                    StopTime.stop_id,
+                    StopTime.arrival_time,
+                    StopTime.stop_sequence,
+                    Trip.route_id,
+                    Trip.direction_id,
                 )
                 .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
                 .join(Trip, Trip.trip_id == StopTime.trip_id)
