@@ -48,6 +48,19 @@ def regenerate_tm_benchmarks(event):
     benchmarks.generate_travel_time_benchmarks()
 
 
+# Bus LAMP data processing
+# Runs every 30 minutes from either 5 AM -> 2:30AM or 6 AM -> 3:30 AM depending on DST
+@app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
+def process_daily_bus_lamp(event):
+    """Ingest today's bus LAMP data."""
+    now_boston = datetime.now(ZoneInfo("US/Eastern"))
+
+    if now_boston.hour >= 3 and now_boston.hour < 6:
+        return
+
+    lamp.ingest_today_bus_data()
+
+
 # Runs daily at 11:00 UTC (6-7 AM Boston depending on DST), after the LAMP alerts
 # parquet has settled for the prior service day.
 @app.schedule(Cron("0", "11", "*", "*", "?", "*"))

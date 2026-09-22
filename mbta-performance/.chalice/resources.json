@@ -60,6 +60,29 @@
         }
       }
     },
+    "ProcessDailyBusLamp": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Description": "Ingests today's bus LAMP data, regularly throughout the day",
+        "Environment": {
+          "Variables": {
+            "DD_LAMBDA_HANDLER": "app.process_daily_bus_lamp",
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        },
+        "EphemeralStorage": {
+          "Size": 2048
+        }
+      }
+    },
     "ProcessLampAlerts": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
