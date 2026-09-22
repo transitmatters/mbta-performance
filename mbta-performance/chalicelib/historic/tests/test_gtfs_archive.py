@@ -307,6 +307,62 @@ class TestGTFSArchive(unittest.TestCase):
         with self.assertRaises(ValueError):
             gtfs_archive.add_gtfs_headways(events_df)
 
+    def test_add_gtfs_headways_no_matching_routes(self):
+        """add_gtfs_headways skips a date when no GTFS trips match the events' route."""
+        events_df = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-02-07")],
+                "route_id": ["NonExistentRoute"],
+                "direction_id": [0],
+                "stop_id": ["stop1"],
+                "trip_id": ["trip1"],
+                "event_time": [pd.Timestamp("2024-02-07 08:00:00")],
+            }
+        )
+
+        mock_trips = pd.DataFrame(
+            {
+                "trip_id": ["sched1"],
+                "route_id": ["Red"],  # does not match events_df
+                "direction_id": [0],
+            }
+        )
+        mock_stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"],
+                "stop_id": ["stop1"],
+                "arrival_time": [pd.Timedelta(hours=8)],
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
+            # All dates are skipped (empty gtfs_stops_clean) → results list is empty → ValueError on concat
+            with self.assertRaises(ValueError):
+                gtfs_archive.add_gtfs_headways(events_df)
+
+    def test_add_gtfs_headways_null_event_times(self):
+        """add_gtfs_headways skips a date when all event_times are null (arrival_time becomes NaT)."""
+        events_df = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-02-07")],
+                "route_id": ["Red"],
+                "direction_id": [0],
+                "stop_id": ["stop1"],
+                "trip_id": ["trip1"],
+                "event_time": [pd.NaT],  # null event_time → arrival_time = NaT after subtraction
+            }
+        )
+
+        mock_trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["Red"], "direction_id": [0]})
+        mock_stops = pd.DataFrame(
+            {"trip_id": ["sched1"], "stop_id": ["stop1"], "arrival_time": [pd.Timedelta(hours=8)]}
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
+            # days_events_clean becomes empty after dropna on arrival_time → results list empty → ValueError
+            with self.assertRaises(ValueError):
+                gtfs_archive.add_gtfs_headways(events_df)
+
     def test_to_dateint_integration(self):
         """Test that to_dateint function is available and works correctly."""
         test_date = datetime.date(2024, 2, 7)

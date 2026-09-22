@@ -60,9 +60,9 @@ def process_daily_bus_lamp(event):
 
     lamp.ingest_today_bus_data()
 
-
-# Runs once the next day at 11am or 12pm depending on DST
-@app.schedule(Cron("0", "15", "*", "*", "?", "*"))
-def process_yesterday_bus_lamp(event):
-    """Process yesterday's bus LAMP data, to ensure we have everything we need."""
-    lamp.ingest_yesterday_bus_data()
+# Runs daily at 11:00 UTC (6-7 AM Boston depending on DST), after the LAMP alerts
+# parquet has settled for the prior service day.
+@app.schedule(Cron("0", "11", "*", "*", "?", "*"))
+def process_lamp_alerts(event):
+    """Rebuild the rolling window of Alerts/lamp/{date}.json.gz day files from the LAMP alerts archive."""
+    lamp.ingest_lamp_alerts()
