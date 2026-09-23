@@ -41,13 +41,14 @@ uv run python -m mbta-performance.chalicelib.historic.backfill.main --year 2026
 # Bus, current year (~180 MB download, ~1.5 GB unzipped; ~2 min per month to process)
 uv run python -m mbta-performance.chalicelib.historic.backfill.bus --year 2026
 
-# Ferry (the whole history is one file; filter with --start-date/--end-date if you like)
-uv run python -m mbta-performance.chalicelib.historic.backfill.ferry
+# Ferry: the whole history (2018+) is one file, so ALWAYS pass --start-date
+# (the first month after "latest in S3" from step 1)
+uv run python -m mbta-performance.chalicelib.historic.backfill.ferry --start-date 2025-11-01
 ```
 
 Things to expect:
 
-- The first run downloads GTFS archives into `data/gtfs_archives/`, which are used for scheduled headways. They are cached after that.
+- GTFS archives for scheduled headways are downloaded into `data/gtfs_archives/` and cached there. There is one archive per feed version, at roughly 100 MB unzipped each. If you process the whole ferry history without `--start-date`, it downloads hundreds of them (50+ GB) and takes hours.
 - A year of processed rapid transit and bus data is several GB. `data/` is gitignored.
 - `backfill.main` also accepts `--start-date/--end-date` to process only part of a year.
 - Every backfill command accepts `--upload` to go straight to step 3. For a normal update it's safer to process first, then dry-run the upload.
