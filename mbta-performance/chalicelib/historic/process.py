@@ -221,6 +221,26 @@ def process_ferry(
     to_disk_ferry(df, outdir, nozip)
 
 
+# Below this many rows the hour-of-day signal is too thin to trust; fall back to the known UTC window
+MIN_ROWS_FOR_TZ_DETECTION = 10_000
+# MBTA published true UTC times from June 2024 through January 2026, and Eastern times labelled "Z" otherwise
+BUS_UTC_WINDOW = (datetime(2024, 6, 1), datetime(2026, 2, 1))
+
+
+def bus_times_are_utc(actual: pd.Series, first_service_date) -> bool:
+    """
+    Whether a bus file's "Z"-suffixed times are really UTC, or Eastern wall-clock times mislabelled as UTC.
+
+    The MBTA has switched between the two without notice (UTC from June 2024, back to Eastern in February 2026),
+    so detect it from the data: bus service is quietest around 2-4am local. If the times are UTC, that lull shows
+    up at 7-9Z; if they are Eastern, it shows up at 2-4.
+    """
+    if len(actual) >= MIN_ROWS_FOR_TZ_DETECTION:
+        hours = actual.dt.hour
+        return hours.between(7, 9).sum() < hours.between(2, 4).sum()
+    return BUS_UTC_WINDOW[0] <= first_service_date < BUS_UTC_WINDOW[1]
+
+
 def load_bus_data(input_csv: str, routes: list = None):
     """
     Loads in the below format and makes some adjustments for processing.
@@ -266,23 +286,19 @@ def load_bus_data(input_csv: str, routes: list = None):
     # We need to keep both "Headway" AND "Schedule": both can have timepoint data.
     df = df.loc[df.actual.notnull()]
 
+    df.service_date = pd.to_datetime(df.service_date).dt.tz_localize(None)
+
+    # Parse scheduled/actual times - they have 'Z' suffix, which may or may not mean UTC (see bus_times_are_utc)
+    df.scheduled = pd.to_datetime(df.scheduled, utc=True)
+    df.actual = pd.to_datetime(df.actual, utc=True)
+
+    # Detect on the whole file, before route filtering, so there are enough rows to be conclusive
+    is_utc_format = bus_times_are_utc(df.actual, df.service_date.min())
+
     df.route_id = df.route_id.str.lstrip("0")
     if routes:
         df = df.loc[df.route_id.isin(routes)]
     df.stop_id = df.stop_id.astype(str)
-
-    # Convert dates
-    # Note: Starting June 2024, MBTA changed the data format from Eastern Time to UTC
-    # We need to detect this and convert UTC times to Eastern Time
-    df.service_date = pd.to_datetime(df.service_date).dt.tz_localize(None)
-
-    # Parse scheduled/actual times - they have 'Z' suffix
-    df.scheduled = pd.to_datetime(df.scheduled, utc=True)
-    df.actual = pd.to_datetime(df.actual, utc=True)
-
-    # Check if this is post-June 2024 data (UTC format) by looking at the first service_date
-    first_service_date = df.service_date.min()
-    is_utc_format = first_service_date >= datetime(2024, 6, 1)
 
     # Extract time components and days offset from the 1900-01-0X placeholder dates
     # Days offset handles after-midnight times (1900-01-02 = +1 day from service_date)

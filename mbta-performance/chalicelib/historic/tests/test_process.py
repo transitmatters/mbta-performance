@@ -647,3 +647,55 @@ class TestProcess(unittest.TestCase):
 
         self.assertEqual(df.iloc[0]["actual"], expected_time_1)
         self.assertEqual(df.iloc[1]["actual"], expected_time_2)
+
+    @staticmethod
+    def _service_day_times(utc_offset_hours: int, n: int = 12_000) -> pd.Series:
+        """A day of bus times spread over 5am-1am Eastern, expressed in a clock shifted by utc_offset_hours."""
+        eastern_minutes = [(5 * 60 + i * (20 * 60) // n) for i in range(n)]
+        return pd.to_datetime(
+            [f"1900-01-01T{((m // 60) + utc_offset_hours) % 24:02d}:{m % 60:02d}:00Z" for m in eastern_minutes],
+            utc=True,
+        )
+
+    def test_bus_times_are_utc_detects_utc_from_data(self):
+        """True UTC times (Eastern + 5h) have their overnight lull at 7-9Z, regardless of service date."""
+        times = pd.Series(self._service_day_times(utc_offset_hours=5))
+        self.assertTrue(process.bus_times_are_utc(times, datetime.datetime(2026, 3, 1)))
+
+    def test_bus_times_are_utc_detects_eastern_labelled_z(self):
+        """From Feb 2026 MBTA went back to Eastern times with a Z suffix; the lull is at 2-4 so it's not UTC."""
+        times = pd.Series(self._service_day_times(utc_offset_hours=0))
+        self.assertFalse(process.bus_times_are_utc(times, datetime.datetime(2025, 1, 1)))
+
+    def test_bus_times_are_utc_small_input_falls_back_to_known_window(self):
+        times = pd.Series(pd.to_datetime(["1900-01-01T10:06:00Z"], utc=True))
+        self.assertFalse(process.bus_times_are_utc(times, datetime.datetime(2024, 5, 31)))
+        self.assertTrue(process.bus_times_are_utc(times, datetime.datetime(2024, 6, 1)))
+        self.assertTrue(process.bus_times_are_utc(times, datetime.datetime(2026, 1, 31)))
+        self.assertFalse(process.bus_times_are_utc(times, datetime.datetime(2026, 2, 1)))
+
+    def test_load_bus_data_feb_2026_z_suffix_treated_as_eastern(self):
+        """Feb 2026+ bus data is Eastern wall-clock time again despite the Z suffix: no UTC shift."""
+        bus_data = pd.DataFrame(
+            {
+                "service_date": ["2026-03-01"],
+                "route_id": ["01"],
+                "direction": ["Outbound"],
+                "half_trip_id": ["70049836"],
+                "stop_id": ["110"],
+                "time_point_id": ["hhgat"],
+                "time_point_order": [9],
+                "point_type": ["Endpoint"],
+                "standard_type": ["Schedule"],
+                "scheduled": ["1900-01-01T06:21:00Z"],
+                "actual": ["1900-01-01T06:21:12Z"],
+                "scheduled_headway": [None],
+                "headway": [None],
+            }
+        )
+        bus_csv = pathlib.Path(self.temp_dir) / "bus_2026_03.csv"
+        bus_data.to_csv(bus_csv, index=False)
+
+        result = process.load_bus_data(str(bus_csv))
+
+        self.assertEqual(result.iloc[0]["actual"], datetime.datetime(2026, 3, 1, 6, 21, 12))
