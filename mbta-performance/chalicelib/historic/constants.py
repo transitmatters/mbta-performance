@@ -54,8 +54,21 @@ HISTORIC_COLUMNS_LAMP = [
 
 
 #  Ferry Section
-FERRY_UPDATE_CACHE_URL = "https://hub.arcgis.com/api/download/v1/items/ae21643bbe60488db8520cc694f882aa/csv?redirect=false&layers=0&updateCache=true"
-FERRY_RIDERSHIP_ARCGIS_URL = "https://hub.arcgis.com/api/v3/datasets/ae21643bbe60488db8520cc694f882aa_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1"
+FERRY_ARCGIS_ID = "ae21643bbe60488db8520cc694f882aa"
+FERRY_UPDATE_CACHE_URL = (
+    f"https://hub.arcgis.com/api/download/v1/items/{FERRY_ARCGIS_ID}/csv?redirect=false&layers=0&updateCache=true"
+)
+FERRY_RIDERSHIP_ARCGIS_URL = f"https://hub.arcgis.com/api/v3/datasets/{FERRY_ARCGIS_ID}_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1"
+
+# Where processed monthly outputs are uploaded. Local files under data/output/ map 1:1 to keys in this bucket.
+HISTORIC_S3_BUCKET = "tm-mbta-performance"
+
+# Output folder (under Events/) for each mode, as written by process.to_disk / to_disk_bus / to_disk_ferry
+MODE_FOLDERS = {
+    "rapid": "monthly-data",
+    "bus": "monthly-bus-data",
+    "ferry": "monthly-ferry-data",
+}
 
 
 CSV_FIELDS = [

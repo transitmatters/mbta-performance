@@ -40,7 +40,7 @@ def unzip_historic_data(zip_file: str, output_dir: str):
     except NotImplementedError:
         print("Zip file extraction failed. Likely due to unsupported compression method.")
         print("Attempting to extract using unzip")
-        subprocess.Popen(["unzip", "-o", "-d", output_dir, zip_file])
+        subprocess.run(["unzip", "-o", "-d", output_dir, zip_file], check=True)
 
     return output_dir
 
@@ -172,12 +172,15 @@ def clean_unicode_bom(file_path: str):
         f.write(content)
 
 
-def download_all_bus_data():
-    """Download all bus data files for every year in BUS_ARCGIS_IDS."""
+def download_all_bus_data(years: list = None):
+    """Download bus data files for the given years (default: every year in BUS_ARCGIS_IDS)."""
     prep_local_dir()
 
+    if years is None:
+        years = list(BUS_ARCGIS_IDS.keys())
+
     # Download bus data for each year
-    for year in BUS_ARCGIS_IDS.keys():
+    for year in [str(y) for y in years]:
         print(f"Downloading bus data for {year}...")
         zip_file = download_bus_data(year)
         year_dir = f"data/input/bus/{year}"

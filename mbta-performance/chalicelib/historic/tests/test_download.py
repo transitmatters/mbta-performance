@@ -94,12 +94,13 @@ class TestDownload(unittest.TestCase):
 
         with mock.patch("pathlib.Path.mkdir"):
             with mock.patch("chalicelib.historic.download.ZipFile", return_value=mock_zip_context):
-                with mock.patch("subprocess.Popen") as mock_popen:
+                with mock.patch("subprocess.run") as mock_run:
                     _ = download.unzip_historic_data(zip_file, output_dir)
 
-                    # Verify subprocess was called with unzip
-                    mock_popen.assert_called_once()
-                    call_args = mock_popen.call_args[0][0]
+                    # Verify subprocess was called with unzip, and waited on
+                    mock_run.assert_called_once()
+                    self.assertTrue(mock_run.call_args.kwargs.get("check"))
+                    call_args = mock_run.call_args[0][0]
                     self.assertEqual(call_args[0], "unzip")
 
     def test_list_files_in_dir(self):
@@ -307,6 +308,19 @@ class TestDownload(unittest.TestCase):
                                 # Mock the clean_unicode_bom to avoid file operations
                                 with mock.patch("chalicelib.historic.download.clean_unicode_bom"):
                                     download.download_all_bus_data()
+
+    def test_download_all_bus_data_only_requested_years(self):
+        """download_all_bus_data(years) downloads just those years instead of every year."""
+        with mock.patch("chalicelib.historic.download.prep_local_dir"):
+            with mock.patch(
+                "chalicelib.historic.download.download_bus_data", return_value="/fake/path.zip"
+            ) as mock_download:
+                with mock.patch("chalicelib.historic.download.unzip_bus_data"):
+                    with mock.patch("chalicelib.historic.download.process_bus_file_names"):
+                        with mock.patch("pathlib.Path.exists", return_value=False):
+                            download.download_all_bus_data([2026])
+
+        mock_download.assert_called_once_with("2026")
 
     def test_download_all_bus_data_cleans_unicode_bom(self):
         """Test download_all_bus_data calls clean_unicode_bom when 2020-Q3.csv exists."""
