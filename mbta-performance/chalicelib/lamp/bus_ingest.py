@@ -52,40 +52,81 @@ def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
     1. Convert to Eastern Time
     2. Create separate ARR/DEP event rows
     3. For DEP events, use previous_stop_id as the stop_id
+    4. Tag each row with visit_rank: which occurrence of this stop_id within this trip it is,
+       so a loop/circulator route that revisits a stop can later be matched (in
+       _recalculate_bus_fields_from_gtfs) to the correct scheduled visit instead of collapsing
+       every visit onto the same GTFS stop_time.
     """
     logger.debug(f"Processing arrival/departure times for {len(df)} rows")
 
-    # Arrivals: use stop_arrival_dt and the current stop_id
+    df = df.sort_values(["trip_id", "stop_sequence"])
+    df["visit_rank"] = df.groupby(["trip_id", "stop_id"]).cumcount()
+
+    # Arrivals: use stop_arrival_dt and the current stop_id. This row's own visit_rank applies
+    # directly, since it was computed against this same stop_id.
     arr_df = df[df["stop_arrival_dt"].notna()].copy()
     arr_df["event_type"] = "ARR"
     arr_df["event_time"] = arr_df["stop_arrival_dt"].dt.tz_convert(EASTERN_TIME)
-    arr_df = arr_df[BUS_S3_COLUMNS]
+    arr_df = arr_df[BUS_S3_COLUMNS + ["visit_rank"]]
 
-    # Departures: use stop_departure_dt and previous_stop_id
+    # Departures: use stop_departure_dt and previous_stop_id. The visit_rank we want belongs to
+    # previous_stop_id's own last visit, not this row's -- found via a backward merge_asof
+    # rather than assuming it's the immediately preceding row, since stop_sequence steps aren't
+    # guaranteed contiguous (same reasoning as rail's ingest.py backward merge_asof).
     dep_df = df[df["stop_departure_dt"].notna() & df["previous_stop_id"].notna()].copy()
     dep_df["event_type"] = "DEP"
     dep_df["event_time"] = dep_df["stop_departure_dt"].dt.tz_convert(EASTERN_TIME)
-    dep_df["stop_id"] = dep_df["previous_stop_id"]
-    dep_df = dep_df[BUS_S3_COLUMNS]
 
-    result = pd.concat([arr_df, dep_df])
+    visited_stops = df[["trip_id", "stop_id", "stop_sequence", "visit_rank"]].rename(
+        columns={"stop_id": "previous_stop_id", "visit_rank": "_prev_visit_rank"}
+    )
+    dep_df = pd.merge_asof(
+        dep_df.sort_values("stop_sequence"),
+        visited_stops.sort_values("stop_sequence"),
+        on="stop_sequence",
+        by=["trip_id", "previous_stop_id"],
+        direction="backward",
+        allow_exact_matches=False,
+    )
+    dep_df["visit_rank"] = dep_df["_prev_visit_rank"]
+    dep_df["stop_id"] = dep_df["previous_stop_id"]
+    dep_df = dep_df[BUS_S3_COLUMNS + ["visit_rank"]]
+
+    result = pd.concat([arr_df, dep_df]).reset_index(drop=True)
     logger.debug(f"Processed: {len(arr_df)} arrivals, {len(dep_df)} departures")
     return result
 
 
 def _recalculate_bus_fields_from_gtfs(
-    pq_df: pd.DataFrame, service_date: date, local_archive_path: str | None = None
+    pq_df: pd.DataFrame,
+    service_date: date,
+    local_archive_path: str | None = None,
+    allow_build: bool = False,
 ) -> pd.DataFrame:
     """Enrich bus LAMP data with GTFS scheduled travel times.
 
     Replaces LAMP's plan_travel_time_seconds with a scheduled_tt computed from
     GTFS (arrival_time - trip start time), matching each LAMP trip to its
     nearest scheduled GTFS trip by route/direction/stop.
+
+    Args:
+        allow_build: Whether this caller may build a missing GTFS feed itself. False in
+            Lambda, where a build cannot fit; True for the backfill script. See
+            chalicelib/gtfs.py.
     """
     trip_ids = pq_df["trip_id"].unique()
     logger.info(f"Enriching bus LAMP data with GTFS for {len(trip_ids)} unique trips on {service_date}")
-    gtfs_stops = fetch_stop_times_from_gtfs(trip_ids, service_date, local_archive_path=local_archive_path)
+    gtfs_stops = fetch_stop_times_from_gtfs(
+        trip_ids, service_date, local_archive_path=local_archive_path, allow_build=allow_build
+    )
     logger.debug(f"Fetched {len(gtfs_stops)} GTFS stop times")
+
+    # visit_rank: which occurrence of this stop_id within this scheduled trip, so a loop/
+    # circulator route that revisits a stop matches the correct GTFS stop_time below instead of
+    # fanning out into one output row per (LAMP visit x GTFS visit) pair.
+    gtfs_stops = gtfs_stops.sort_values(by=["trip_id", "stop_sequence"])
+    gtfs_stops["visit_rank"] = gtfs_stops.groupby(["trip_id", "stop_id"]).cumcount()
+
     gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
 
     # Normalize merge-key dtypes so pd.merge_asof's strict by= check doesn't reject string vs. object.
@@ -119,10 +160,12 @@ def _recalculate_bus_fields_from_gtfs(
     pq_df["scheduled_trip_id"] = pq_df.trip_id.map(trip_id_map)
     pq_df = pd.merge(
         pq_df,
-        gtfs_stops[["trip_id", "stop_id", "scheduled_tt"]],
+        gtfs_stops[["trip_id", "stop_id", "visit_rank", "scheduled_tt"]].drop_duplicates(
+            subset=["trip_id", "stop_id", "visit_rank"]
+        ),
         how="left",
-        left_on=["scheduled_trip_id", "stop_id"],
-        right_on=["trip_id", "stop_id"],
+        left_on=["scheduled_trip_id", "stop_id", "visit_rank"],
+        right_on=["trip_id", "stop_id", "visit_rank"],
         suffixes=["", "_gtfs"],
     )
 
@@ -176,8 +219,18 @@ def _average_bus_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> 
     return pd.concat(_enriched)[BUS_S3_COLUMNS]
 
 
-def ingest_bus_pq_file(df: pd.DataFrame, service_date: date, local_archive_path: str | None = None) -> pd.DataFrame:
-    """Process and transform columns for a full day's bus events."""
+def ingest_bus_pq_file(
+    df: pd.DataFrame,
+    service_date: date,
+    local_archive_path: str | None = None,
+    allow_build: bool = False,
+) -> pd.DataFrame:
+    """Process and transform columns for a full day's bus events.
+
+    Args:
+        allow_build: Passed through to the GTFS fetch. Only the backfill script sets this --
+            Lambda cannot fit a feed build. See chalicelib/gtfs.py.
+    """
     logger.info(f"Processing {len(df)} raw bus events for service date {service_date}")
 
     rows_before = len(df)
@@ -185,6 +238,12 @@ def ingest_bus_pq_file(df: pd.DataFrame, service_date: date, local_archive_path:
     rows_dropped = rows_before - len(df)
     if rows_dropped > 0:
         logger.warning(f"Dropped {rows_dropped} rows with null direction_id")
+
+    rows_before = len(df)
+    df = df[df["is_full_trip"].fillna(True)]
+    rows_dropped = rows_before - len(df)
+    if rows_dropped > 0:
+        logger.warning(f"Dropped {rows_dropped} rows with is_full_trip=False (partial/deadhead trips)")
 
     df["direction_id"] = df["direction_id"].astype("int16")
     df["service_date"] = df["service_date"].astype(str)
@@ -199,7 +258,7 @@ def ingest_bus_pq_file(df: pd.DataFrame, service_date: date, local_archive_path:
         logger.warning(f"Dropped {events_dropped} events with null stop_id")
 
     logger.info("Recalculating fields from GTFS")
-    processed = _recalculate_bus_fields_from_gtfs(processed, service_date, local_archive_path)
+    processed = _recalculate_bus_fields_from_gtfs(processed, service_date, local_archive_path, allow_build=allow_build)
 
     logger.info("Averaging scheduled headways")
     processed = _average_bus_scheduled_headways(processed, service_date)

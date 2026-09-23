@@ -20,6 +20,16 @@ app = Chalice(app_name="mbta-performance")
 app.register_middleware(ConvertToMiddleware(datadog_lambda_wrapper))
 
 
+def _in_dst_dead_zone(now_boston: datetime) -> bool:
+    """True between 3-6 AM Boston time, when the 30-minute schedule shouldn't run yet.
+
+    The schedule itself spans 0-7 and 10-23 UTC to cover both DST offsets (5 AM/6 AM start
+    depending on time of year); this narrows that down to "6 AM or later Boston time" so we
+    don't run before service starts on whichever side of DST we're currently on.
+    """
+    return 3 <= now_boston.hour < 6
+
+
 # Runs every 30 minutes from either 5 AM -> 2:30AM or 6 AM -> 3:30 AM depending on DST
 @app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
 def process_daily_lamp(event):
@@ -27,7 +37,7 @@ def process_daily_lamp(event):
     now_boston = datetime.now(ZoneInfo("US/Eastern"))
 
     # If it's before 6 AM Boston time, exit early to avoid errors
-    if now_boston.hour >= 3 and now_boston.hour < 6:
+    if _in_dst_dead_zone(now_boston):
         return
 
     lamp.ingest_today_lamp_data()
@@ -48,17 +58,27 @@ def regenerate_tm_benchmarks(event):
     benchmarks.generate_travel_time_benchmarks()
 
 
-# Bus LAMP data processing
+# Bus LAMP data processing.
+# process_daily_bus_lamp and process_yesterday_bus_lamp's timeout/memory in .chalice/config.json
+# are copied from the rail jobs' pre-#96 defaults, not measured -- this pipeline hasn't run in
+# production yet. Right-size both after a few days of real runs, the way #96 did for rail.
 # Runs every 30 minutes from either 5 AM -> 2:30AM or 6 AM -> 3:30 AM depending on DST
 @app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
 def process_daily_bus_lamp(event):
     """Ingest today's bus LAMP data."""
     now_boston = datetime.now(ZoneInfo("US/Eastern"))
 
-    if now_boston.hour >= 3 and now_boston.hour < 6:
+    if _in_dst_dead_zone(now_boston):
         return
 
     lamp.ingest_today_bus_data()
+
+
+# Runs once the next day at 11am or 12pm depending on DST
+@app.schedule(Cron("0", "15", "*", "*", "?", "*"))
+def process_yesterday_bus_lamp(event):
+    """Process yesterday's bus LAMP data, to ensure we have everything we need."""
+    lamp.ingest_yesterday_bus_data()
 
 
 # Runs daily at 11:00 UTC (6-7 AM Boston depending on DST), after the LAMP alerts

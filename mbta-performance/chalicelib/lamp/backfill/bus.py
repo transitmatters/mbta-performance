@@ -4,14 +4,15 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from ... import parallel
-from ..bus_ingest import RTE_DIR_STOP, fetch_bus_pq_file_from_remote, ingest_bus_pq_file, upload_bus_to_s3
+from ..bus_ingest import RTE_DIR_STOP, _parallel_upload, fetch_bus_pq_file_from_remote, ingest_bus_pq_file
 
 logger = logging.getLogger(__name__)
 
-_parallel_upload = parallel.make_parallel(upload_bus_to_s3)
-
-EARLIEST_BUS_LAMP_DATA = date(2020, 1, 8)
+# The bus LAMP parquet schema added previous_stop_id, is_full_trip, and stopped_duration_seconds
+# on 2025-07-30; earlier files don't have those columns at all, so reading them with
+# BUS_LAMP_COLUMNS raises pyarrow.lib.ArrowInvalid instead of a clean 404. Confirmed by
+# downloading and diffing schemas across dates -- don't move this earlier without re-checking.
+EARLIEST_BUS_LAMP_DATA = date(2025, 7, 30)
 
 LOCAL_ARCHIVE_PATH = os.environ.get("LOCAL_ARCHIVE_PATH", "./feeds")
 
@@ -45,7 +46,7 @@ def backfill_all_bus_dates(start_date: date = EARLIEST_BUS_LAMP_DATA):
             continue
 
         logger.info(f"Processing {date_to_backfill}")
-        processed = ingest_bus_pq_file(pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH)
+        processed = ingest_bus_pq_file(pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH, allow_build=True)
 
         group_event_groups = processed.groupby(RTE_DIR_STOP)
         logger.info(f"Uploading events for {len(group_event_groups)} route-direction-stop groups to S3")
