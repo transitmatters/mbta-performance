@@ -11,6 +11,9 @@ MAIN_DIR.mkdir(parents=True, exist_ok=True)
 
 ARCHIVES = pd.read_csv("https://cdn.mbta.com/archive/archived_feeds.txt")
 
+# Files read_gtfs needs; an archive dir missing any of them is treated as a partial download
+REQUIRED_ARCHIVE_FILES = ["calendar.txt", "calendar_dates.txt", "stop_times.txt", "trips.txt"]
+
 
 def get_gtfs_archive(dateint: int):
     """
@@ -21,19 +24,28 @@ def get_gtfs_archive(dateint: int):
     archive_url = matches.iloc[0].archive_url
 
     archive_name = pathlib.Path(archive_url).stem
+    archive_dir = MAIN_DIR / archive_name
 
-    if (MAIN_DIR / archive_name).exists():
-        print(f"Archive for {dateint} already exists: {archive_name}")
-        return MAIN_DIR / archive_name
+    if archive_dir.exists():
+        if all((archive_dir / f).exists() for f in REQUIRED_ARCHIVE_FILES):
+            print(f"Archive for {dateint} already exists: {archive_name}")
+            return archive_dir
+        # A partial extraction from an interrupted run; without this check that date silently loses its events
+        print(f"Archive for {dateint} is incomplete, re-downloading: {archive_name}")
+        shutil.rmtree(archive_dir)
 
     # else we have to download it
     print(f"Downloading archive for {dateint}: {archive_url}")
     zipfile, _ = urllib.request.urlretrieve(archive_url)
-    shutil.unpack_archive(zipfile, extract_dir=(MAIN_DIR / archive_name), format="zip")
+    # Extract to a temp dir and rename, so an interrupted extraction never looks like a complete archive
+    partial_dir = MAIN_DIR / f".{archive_name}.partial"
+    shutil.rmtree(partial_dir, ignore_errors=True)
+    shutil.unpack_archive(zipfile, extract_dir=partial_dir, format="zip")
+    partial_dir.rename(archive_dir)
     # remove temporary zipfile
     urllib.request.urlcleanup()
 
-    return MAIN_DIR / archive_name
+    return archive_dir
 
 
 def get_services(date: datetime.date, archive_dir: pathlib.Path):
@@ -133,7 +145,9 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
         # Skip this date if GTFS data is incomplete
         if all_trips is None or all_stops is None:
-            print(f"Skipping service date {service_date.date()} due to incomplete GTFS data")
+            # Keep the day's events, just without scheduled headways/travel times, rather than dropping them
+            print(f"Incomplete GTFS data for {service_date.date()}; keeping its events without scheduled values")
+            results.append(days_events)
             continue
 
         # filter out the trips of interest
