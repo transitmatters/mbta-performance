@@ -10,6 +10,21 @@ _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 EARLIEST_LAMP_DATA = date(2019, 9, 15)
 
+# GTFS feeds are cached here between runs, which matters more than it looks:
+# objects in s3://tm-gtfs transition to Glacier Instant Retrieval 180 days after
+# upload, and retrieval is billed at $0.03/GB against ~450MB per feed. Access is
+# still millisecond -- there is no restore step and nothing to wait for -- but
+# you pay per read, and an object is NOT promoted back to Standard by being read.
+#
+# Keeping this directory populated means a repeated backfill over the same
+# stretch of history pays retrieval once rather than once per run. If you are
+# about to do several passes over data older than ~6 months, either preserve
+# ./feeds between runs or promote the feeds you need back to Standard first:
+#
+#   aws s3 cp s3://tm-gtfs/<feed_key>/ s3://tm-gtfs/<feed_key>/ \
+#       --recursive --storage-class STANDARD
+#
+# For scale: re-reading the entire 205GB archive once costs about $6.
 LOCAL_ARCHIVE_PATH = os.environ.get("LOCAL_ARCHIVE_PATH", "./feeds")
 
 
@@ -36,7 +51,11 @@ def backfill_all_in_index():
             print(f"Failed to fetch {date_to_backfill}: {e}")
             continue
         print(f"Processing {date_to_backfill}")
-        processed_daily_events = ingest_pq_file(pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH)
+        # allow_build: this runs on a laptop, so it can build a missing feed and
+        # publish it. Lambda cannot -- see chalicelib/gtfs.py.
+        processed_daily_events = ingest_pq_file(
+            pq_df, date_to_backfill, local_archive_path=LOCAL_ARCHIVE_PATH, allow_build=True
+        )
 
         # split daily events by stop_id and parallel upload to s3
         stop_event_groups = processed_daily_events.groupby("stop_id")

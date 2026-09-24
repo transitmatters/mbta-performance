@@ -2,6 +2,7 @@ import argparse
 from datetime import datetime
 from ..process import process_ferry
 from ..arcgis import download_latest_ferry_data, ferry_update_cache
+from ..upload import upload_monthly_outputs
 
 
 def backfill_ferry_data(start_date=None, end_date=None):
@@ -39,6 +40,7 @@ if __name__ == "__main__":
         type=parse_date,
         help="End date for processing (YYYY-MM-DD format). If not specified, all dates are processed.",
     )
+    parser.add_argument("--upload", action="store_true", help="Upload changed outputs for the processed range to S3.")
 
     args = parser.parse_args()
 
@@ -47,3 +49,6 @@ if __name__ == "__main__":
         parser.error("Start date must be before or equal to end date")
 
     backfill_ferry_data(start_date=args.start_date, end_date=args.end_date)
+
+    if args.upload:
+        upload_monthly_outputs(modes=("ferry",), start=args.start_date, end=args.end_date)

@@ -21,17 +21,27 @@
         "process_daily_lamp": {
           "iam_policy_file": "policy-lamp-ingest.json",
           "lambda_timeout": 60,
-          "lambda_memory_size": 4096
+          "lambda_memory_size": 2048
         },
         "process_yesterday_lamp": {
           "iam_policy_file": "policy-lamp-ingest.json",
-          "lambda_timeout": 900,
-          "lambda_memory_size": 4096
+          "lambda_timeout": 90,
+          "lambda_memory_size": 2048
+        },
+        "process_yesterday_bus_lamp": {
+          "iam_policy_file": "policy-bus-lamp-ingest.json",
+          "lambda_timeout": 300,
+          "lambda_memory_size": 2048
         },
         "regenerate_tm_benchmarks": {
           "iam_policy_file": "policy-tm-benchmarks.json",
           "lambda_timeout": 300,
           "lambda_memory_size": 1024
+        },
+        "process_lamp_alerts": {
+          "iam_policy_file": "policy-lamp-alerts.json",
+          "lambda_timeout": 900,
+          "lambda_memory_size": 4096
         }
       }
     }

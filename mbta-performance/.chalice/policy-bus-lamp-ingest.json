@@ -13,7 +13,7 @@
     {
       "Action": ["s3:GetObject", "s3:PutObject"],
       "Effect": "Allow",
-      "Resource": ["arn:aws:s3:::tm-mbta-performance/Events-lamp/daily-data/*"]
+      "Resource": ["arn:aws:s3:::tm-mbta-performance/Events-lamp/bus-daily-data/*"]
     },
     {
       "Effect": "Allow",

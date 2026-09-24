@@ -1,4 +1,6 @@
 import io
+import os
+import tempfile
 import unittest
 import zlib
 from unittest import mock
@@ -152,6 +154,52 @@ class TestS3(unittest.TestCase):
             result = s3_module.ls("my-bucket", "prefix/")
 
         self.assertEqual(result, ["prefix/file1.csv", "prefix/file2.csv", "prefix/file3.csv"])
+
+    # --- upload_file ---
+
+    def test_upload_file_puts_bytes_unmodified(self):
+        with tempfile.NamedTemporaryFile(suffix=".csv.gz", delete=False) as f:
+            f.write(b"\x1f\x8bgzipped")
+            path = f.name
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            s3_module.upload_file("my-bucket", "Events/k/events.csv.gz", path)
+
+        self.mock_s3.put_object.assert_called_once_with(
+            Bucket="my-bucket", Key="Events/k/events.csv.gz", Body=b"\x1f\x8bgzipped", ContentType="text/csv"
+        )
+        os.remove(path)
+
+    # --- ls_etags ---
+
+    def test_ls_etags_strips_quotes_and_handles_empty_pages(self):
+        mock_paginator = mock.Mock()
+        mock_paginator.paginate.return_value = [
+            {"Contents": [{"Key": "p/a", "ETag": '"abc"'}]},
+            {},
+            {"Contents": [{"Key": "p/b", "ETag": '"def"'}]},
+        ]
+        self.mock_s3.get_paginator.return_value = mock_paginator
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            result = s3_module.ls_etags("my-bucket", "p/")
+
+        self.assertEqual(result, {"p/a": "abc", "p/b": "def"})
+
+    # --- ls_prefixes ---
+
+    def test_ls_prefixes(self):
+        mock_paginator = mock.Mock()
+        mock_paginator.paginate.return_value = [
+            {"CommonPrefixes": [{"Prefix": "s/Year=2025/"}, {"Prefix": "s/Year=2026/"}]}
+        ]
+        self.mock_s3.get_paginator.return_value = mock_paginator
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            result = s3_module.ls_prefixes("my-bucket", "s/")
+
+        mock_paginator.paginate.assert_called_once_with(Bucket="my-bucket", Prefix="s/", Delimiter="/")
+        self.assertEqual(result, ["s/Year=2025/", "s/Year=2026/"])
 
     # --- clear_cf_cache ---
 

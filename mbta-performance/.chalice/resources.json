@@ -59,6 +59,52 @@
           "Size": 2048
         }
       }
+    },
+    "ProcessYesterdayBusLamp": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Description": "Ingests yesterday's bus LAMP data, once in the morning to catch any cleaned data",
+        "Environment": {
+          "Variables": {
+            "DD_LAMBDA_HANDLER": "app.process_yesterday_bus_lamp",
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        },
+        "EphemeralStorage": {
+          "Size": 2048
+        }
+      }
+    },
+    "ProcessLampAlerts": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Description": "Rebuilds the rolling window of Alerts/lamp/{date}.json.gz day files from the LAMP alerts archive",
+        "Environment": {
+          "Variables": {
+            "DD_LAMBDA_HANDLER": "app.process_lamp_alerts",
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        },
+        "EphemeralStorage": {
+          "Size": 2048
+        }
+      }
     }
   }
 }
