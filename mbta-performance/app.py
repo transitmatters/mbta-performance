@@ -58,26 +58,11 @@ def regenerate_tm_benchmarks(event):
     benchmarks.generate_travel_time_benchmarks()
 
 
-# Bus LAMP data processing.
-#
-# Paused 2026-09-23: every run timed out at 60s. Processing takes ~21s, but the upload is
-# 10,520 route-direction-stop CSVs (rail uploads ~473), and at a 30-minute cadence finishing
-# them would be ~13.9M S3 PUTs/month (~$69). Left deployed but unscheduled until the cadence
-# and object layout are revisited; to resume, swap the decorator back to
-# @app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*")).
-@app.lambda_function()
-def process_daily_bus_lamp(event, context=None):
-    """Ingest today's bus LAMP data."""
-    now_boston = datetime.now(ZoneInfo("US/Eastern"))
-
-    if _in_dst_dead_zone(now_boston):
-        return
-
-    lamp.ingest_today_bus_data()
-
-
-# Runs once the next day at 11am or 12pm depending on DST. The 300s timeout is a guess sized
-# for one full day of uploads, not a measurement -- right-size it from real runs, as #96 did.
+# Bus LAMP data processing. Once a day only: there is no same-day bus job, because bus uploads
+# ~10,500 route-direction-stop CSVs per run (rail uploads ~473), which at rail's 30-minute cadence
+# would be ~13.9M S3 PUTs/month. The 300s timeout is a guess sized for one full day of uploads, not
+# a measurement -- right-size it from real runs, as #96 did for rail.
+# Runs once the next day at 11am or 12pm depending on DST
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_bus_lamp(event):
     """Process yesterday's bus LAMP data, to ensure we have everything we need."""

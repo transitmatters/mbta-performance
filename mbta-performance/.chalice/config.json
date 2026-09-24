@@ -28,11 +28,6 @@
           "lambda_timeout": 90,
           "lambda_memory_size": 2048
         },
-        "process_daily_bus_lamp": {
-          "iam_policy_file": "policy-bus-lamp-ingest.json",
-          "lambda_timeout": 60,
-          "lambda_memory_size": 2048
-        },
         "process_yesterday_bus_lamp": {
           "iam_policy_file": "policy-bus-lamp-ingest.json",
           "lambda_timeout": 300,
