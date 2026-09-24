@@ -59,12 +59,14 @@ def regenerate_tm_benchmarks(event):
 
 
 # Bus LAMP data processing.
-# process_daily_bus_lamp and process_yesterday_bus_lamp's timeout/memory in .chalice/config.json
-# are copied from the rail jobs' pre-#96 defaults, not measured -- this pipeline hasn't run in
-# production yet. Right-size both after a few days of real runs, the way #96 did for rail.
-# Runs every 30 minutes from either 5 AM -> 2:30AM or 6 AM -> 3:30 AM depending on DST
-@app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
-def process_daily_bus_lamp(event):
+#
+# Paused 2026-09-23: every run timed out at 60s. Processing takes ~21s, but the upload is
+# 10,520 route-direction-stop CSVs (rail uploads ~473), and at a 30-minute cadence finishing
+# them would be ~13.9M S3 PUTs/month (~$69). Left deployed but unscheduled until the cadence
+# and object layout are revisited; to resume, swap the decorator back to
+# @app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*")).
+@app.lambda_function()
+def process_daily_bus_lamp(event, context=None):
     """Ingest today's bus LAMP data."""
     now_boston = datetime.now(ZoneInfo("US/Eastern"))
 
@@ -74,7 +76,8 @@ def process_daily_bus_lamp(event):
     lamp.ingest_today_bus_data()
 
 
-# Runs once the next day at 11am or 12pm depending on DST
+# Runs once the next day at 11am or 12pm depending on DST. The 300s timeout is a guess sized
+# for one full day of uploads, not a measurement -- right-size it from real runs, as #96 did.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_bus_lamp(event):
     """Process yesterday's bus LAMP data, to ensure we have everything we need."""
