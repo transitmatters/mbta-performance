@@ -44,6 +44,8 @@ class TestGTFSArchive(unittest.TestCase):
             with mock.patch.object(gtfs_archive, "MAIN_DIR", pathlib.Path(self.temp_dir)):
                 # Create the archive directory
                 (pathlib.Path(self.temp_dir) / archive_name).mkdir()
+                for f in gtfs_archive.REQUIRED_ARCHIVE_FILES:
+                    (pathlib.Path(self.temp_dir) / archive_name / f).touch()
 
                 result = gtfs_archive.get_gtfs_archive(dateint)
 
@@ -58,19 +60,50 @@ class TestGTFSArchive(unittest.TestCase):
             with mock.patch.object(gtfs_archive, "MAIN_DIR", pathlib.Path(self.temp_dir)):
                 with mock.patch("urllib.request.urlretrieve") as mock_retrieve:
                     with mock.patch("urllib.request.urlcleanup") as mock_cleanup:
-                        with mock.patch("shutil.unpack_archive") as mock_unpack:
+                        with mock.patch(
+                            "shutil.unpack_archive",
+                            side_effect=lambda _zip, extract_dir, format: pathlib.Path(extract_dir).mkdir(),
+                        ) as mock_unpack:
                             mock_retrieve.return_value = (f"{self.temp_dir}/temp.zip", None)
 
-                            _ = gtfs_archive.get_gtfs_archive(dateint)
+                            result = gtfs_archive.get_gtfs_archive(dateint)
 
                             # Verify download was attempted
                             mock_retrieve.assert_called_once()
                             mock_unpack.assert_called_once()
                             mock_cleanup.assert_called_once()
 
+                            # Extracted to a temp dir, then renamed into place
+                            self.assertIn(".partial", str(mock_unpack.call_args.kwargs["extract_dir"]))
+                            self.assertEqual(result, pathlib.Path(self.temp_dir) / "20240201")
+                            self.assertTrue(result.is_dir())
+                            self.assertFalse((pathlib.Path(self.temp_dir) / ".20240201.partial").exists())
+
                             # Verify correct archive URL was used
                             call_args = mock_retrieve.call_args[0]
                             self.assertIn("20240201.zip", call_args[0])
+
+    def test_get_gtfs_archive_redownloads_incomplete_archive(self):
+        """An archive dir left half-extracted by an interrupted run is replaced, not reused."""
+        dateint = 20240207
+        partial = pathlib.Path(self.temp_dir) / "20240201"
+        partial.mkdir()
+        (partial / "calendar.txt").touch()  # no trips.txt / stop_times.txt
+
+        def unpack(_zip, extract_dir, format):
+            pathlib.Path(extract_dir).mkdir()
+            for f in gtfs_archive.REQUIRED_ARCHIVE_FILES:
+                (pathlib.Path(extract_dir) / f).touch()
+
+        with mock.patch.object(gtfs_archive, "ARCHIVES", self.mock_archives):
+            with mock.patch.object(gtfs_archive, "MAIN_DIR", pathlib.Path(self.temp_dir)):
+                with mock.patch("urllib.request.urlretrieve", return_value=(f"{self.temp_dir}/t.zip", None)):
+                    with mock.patch("urllib.request.urlcleanup"):
+                        with mock.patch("shutil.unpack_archive", side_effect=unpack) as mock_unpack:
+                            result = gtfs_archive.get_gtfs_archive(dateint)
+
+        mock_unpack.assert_called_once()
+        self.assertTrue((result / "trips.txt").exists())
 
     def test_get_services(self):
         """Test get_services returns correct service IDs for a date."""
@@ -272,7 +305,7 @@ class TestGTFSArchive(unittest.TestCase):
             self.assertIn("scheduled_tt", result.columns)
 
     def test_add_gtfs_headways_with_incomplete_gtfs(self):
-        """Test add_gtfs_headways skips dates with incomplete GTFS."""
+        """add_gtfs_headways keeps events for dates with incomplete GTFS, without scheduled values."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07"), pd.Timestamp("2024-02-08")],
@@ -286,9 +319,10 @@ class TestGTFSArchive(unittest.TestCase):
 
         # Return None for incomplete GTFS
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(None, None)):
-            # This should raise an IndexError when trying to concat empty list
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(list(result.trip_id), ["trip1", "trip2"])
 
     def test_add_gtfs_headways_empty_events(self):
         """Test add_gtfs_headways with empty events dataframe."""

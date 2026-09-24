@@ -68,8 +68,10 @@ uv run python -m mbta-performance.chalicelib.lamp.ingest
 uv run python -m mbta-performance.chalicelib.lamp.backfill.main
 ```
 
-### Backfill Historic
+### Monthly (historic) data
+
+Monthly updates for rapid transit, bus, and ferry use their own runbook, covering processing, S3 upload, verification, and the dashboard follow-ups. See [`mbta-performance/chalicelib/historic/README.md`](mbta-performance/chalicelib/historic/README.md).
 
 ```shell
-uv run python -m mbta-performance.chalicelib.historic.backfill.main
+uv run python -m mbta-performance.chalicelib.historic.status
 ```

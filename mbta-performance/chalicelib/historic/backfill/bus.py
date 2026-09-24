@@ -1,8 +1,11 @@
-from ..constants import BUS_ARCGIS_IDS
-from ..process import process_bus_events
-
-from ..download import download_all_bus_data
+import argparse
 import pathlib
+from datetime import date
+
+from ..constants import BUS_ARCGIS_IDS
+from ..download import download_all_bus_data
+from ..process import process_bus_events
+from ..upload import upload_monthly_outputs
 
 
 def backfill_bus_data(years: list = None, routes: list = None, output_dir: str = "data/output", nozip: bool = False):
@@ -48,5 +51,24 @@ def backfill_bus_data(years: list = None, routes: list = None, output_dir: str =
 
 
 if __name__ == "__main__":
-    download_all_bus_data()
-    backfill_bus_data()
+    parser = argparse.ArgumentParser(
+        description="Download and process monthly bus data. With no arguments, backfills every year."
+    )
+    parser.add_argument(
+        "--year",
+        action="append",
+        choices=list(BUS_ARCGIS_IDS.keys()),
+        help="Year to backfill (repeatable). The monthly update is usually just the current year.",
+    )
+    parser.add_argument("--upload", action="store_true", help="Upload changed outputs for the processed years to S3.")
+    args = parser.parse_args()
+
+    download_all_bus_data(args.year)
+    backfill_bus_data([int(y) for y in args.year] if args.year else None)
+
+    if args.upload:
+        if args.year:
+            upload_start, upload_end = date(int(min(args.year)), 1, 1), date(int(max(args.year)), 12, 31)
+        else:
+            upload_start, upload_end = None, None
+        upload_monthly_outputs(modes=("bus",), start=upload_start, end=upload_end)

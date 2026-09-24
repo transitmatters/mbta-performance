@@ -55,6 +55,31 @@ def ls(bucket, prefix):
     return all_keys
 
 
+def upload_file(bucket, key, path, content_type="text/csv"):
+    """Upload a local file as-is (no re-compression) in a single PUT, so the ETag is its MD5."""
+    with open(path, "rb") as f:
+        s3.put_object(Bucket=bucket, Key=str(key), Body=f.read(), ContentType=content_type)
+
+
+def ls_etags(bucket, prefix):
+    """Return {key: etag} for every object under prefix (ETag quotes stripped). Empty dict if none."""
+    paginator = s3.get_paginator("list_objects_v2")
+    etags = {}
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            etags[obj["Key"]] = obj["ETag"].strip('"')
+    return etags
+
+
+def ls_prefixes(bucket, prefix):
+    """Return the immediate "subdirectory" prefixes under prefix (e.g. Year=2026/ under a stop)."""
+    paginator = s3.get_paginator("list_objects_v2")
+    prefixes = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        prefixes.extend(p["Prefix"] for p in page.get("CommonPrefixes", []))
+    return prefixes
+
+
 def clear_cf_cache(distribution, keys):
     cloudfront.create_invalidation(
         DistributionId=distribution,
