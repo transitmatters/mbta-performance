@@ -93,7 +93,9 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
         # ISO 2026-W02 is 2026-01-05..2026-01-11.
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 10)),
-            mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})) as build,
+            mock.patch.object(
+                trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})
+            ) as build,
         ):
             trends.generate_weekly_speed_segments(2026, 2)
 
@@ -144,7 +146,9 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
     def test_uses_the_calendar_month_range_for_the_given_year_and_month(self):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 15)),
-            mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})) as build,
+            mock.patch.object(
+                trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})
+            ) as build,
         ):
             trends.generate_monthly_speed_segments(2026, 1)
 

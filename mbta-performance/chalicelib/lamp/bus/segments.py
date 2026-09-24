@@ -194,7 +194,9 @@ def assign_time_band(departure_seconds: pd.Series) -> pd.Series:
     return band
 
 
-def aggregate_segments(traversals: pd.DataFrame, extra_group_columns: tuple[str, ...] = ("service_date",)) -> pd.DataFrame:
+def aggregate_segments(
+    traversals: pd.DataFrame, extra_group_columns: tuple[str, ...] = ("service_date",)
+) -> pd.DataFrame:
     """Aggregate traversals to one row per (segment, time band), plus any extra_group_columns.
 
     Defaults to also grouping by service_date, for the daily pipeline in ingest.py where

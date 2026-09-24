@@ -102,9 +102,7 @@ class TestBackfillMonths(unittest.TestCase):
             if (year, month) == (2026, 1):
                 raise ValueError("no service dates with available LAMP bus data yet")
 
-        with mock.patch.object(
-            trends_backfill, "generate_monthly_speed_segments", side_effect=side_effect
-        ) as generate:
+        with mock.patch.object(trends_backfill, "generate_monthly_speed_segments", side_effect=side_effect) as generate:
             trends_backfill.backfill_months(date(2025, 12, 24), date(2026, 2, 15))
 
         self.assertEqual(generate.call_count, 3)
