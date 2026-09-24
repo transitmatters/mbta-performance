@@ -1,6 +1,6 @@
 import boto3
 
-dynamodb = boto3.resource("dynamodb")
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
 
 def dynamo_batch_write(items: list[dict], table_name: str) -> None:
