@@ -60,13 +60,13 @@
         }
       }
     },
-    "ProcessDailyBusLamp": {
+    "ProcessYesterdayBusLamp": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
-        "Description": "Ingests today's bus LAMP data, regularly throughout the day",
+        "Description": "Ingests yesterday's bus LAMP data, once in the morning to catch any cleaned data",
         "Environment": {
           "Variables": {
-            "DD_LAMBDA_HANDLER": "app.process_daily_bus_lamp",
+            "DD_LAMBDA_HANDLER": "app.process_yesterday_bus_lamp",
             "DD_API_KEY": {
               "Ref": "DDApiKey"
             },

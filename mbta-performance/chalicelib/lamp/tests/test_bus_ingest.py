@@ -287,18 +287,6 @@ class TestBusIngest(unittest.TestCase):
             # Should not raise - logs error and returns
             bus_ingest.ingest_bus_data(date(2026, 4, 7))
 
-    def test_ingest_today_bus_data(self):
-        mock_response = mock.Mock(status_code=200, content=self.data)
-        with mock.patch("requests.get", return_value=mock_response):
-            with mock.patch("chalicelib.lamp.bus_ingest._parallel_upload"):
-                with mock.patch(
-                    "chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data
-                ):
-                    with mock.patch(
-                        "chalicelib.lamp.bus_ingest.get_current_service_date", return_value=date(2026, 4, 7)
-                    ):
-                        bus_ingest.ingest_today_bus_data()
-
     def test_ingest_yesterday_bus_data(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
         with mock.patch("requests.get", return_value=mock_response):

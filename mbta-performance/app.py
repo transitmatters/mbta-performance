@@ -58,22 +58,10 @@ def regenerate_tm_benchmarks(event):
     benchmarks.generate_travel_time_benchmarks()
 
 
-# Bus LAMP data processing.
-# process_daily_bus_lamp and process_yesterday_bus_lamp's timeout/memory in .chalice/config.json
-# are copied from the rail jobs' pre-#96 defaults, not measured -- this pipeline hasn't run in
-# production yet. Right-size both after a few days of real runs, the way #96 did for rail.
-# Runs every 30 minutes from either 5 AM -> 2:30AM or 6 AM -> 3:30 AM depending on DST
-@app.schedule(Cron("*/30", "0-7,10-23", "*", "*", "?", "*"))
-def process_daily_bus_lamp(event):
-    """Ingest today's bus LAMP data."""
-    now_boston = datetime.now(ZoneInfo("US/Eastern"))
-
-    if _in_dst_dead_zone(now_boston):
-        return
-
-    lamp.ingest_today_bus_data()
-
-
+# Bus LAMP data processing. Once a day only: there is no same-day bus job, because bus uploads
+# ~10,500 route-direction-stop CSVs per run (rail uploads ~473), which at rail's 30-minute cadence
+# would be ~13.9M S3 PUTs/month. The 300s timeout is a guess sized for one full day of uploads, not
+# a measurement -- right-size it from real runs, as #96 did for rail.
 # Runs once the next day at 11am or 12pm depending on DST
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_bus_lamp(event):

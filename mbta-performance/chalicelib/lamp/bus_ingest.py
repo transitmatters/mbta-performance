@@ -321,13 +321,6 @@ def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
     logger.info(f"Bus LAMP data ingestion complete for service date {service_date}")
 
 
-def ingest_today_bus_data():
-    """Ingest and upload today's bus LAMP data."""
-    service_date = get_current_service_date()
-    logger.info(f"Ingesting today's bus data (service date: {service_date})")
-    ingest_bus_data(service_date)
-
-
 def ingest_yesterday_bus_data():
     """Ingest and upload yesterday's bus LAMP data."""
     service_date = get_current_service_date() - pd.Timedelta(days=1)
@@ -344,4 +337,4 @@ if __name__ == "__main__":
         format="%(asctime)s - %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    ingest_today_bus_data()
+    ingest_yesterday_bus_data()
