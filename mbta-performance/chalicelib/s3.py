@@ -37,6 +37,40 @@ def upload_df_as_csv(bucket, key, df):
     s3.upload_fileobj(buffer, bucket, Key=key, ExtraArgs={"ContentType": "text/csv"})
 
 
+def upload_parquet(bucket, key, data: bytes):
+    """Upload already-serialised parquet bytes.
+
+    Deliberately not zlib-wrapped the way upload() is: parquet carries its own internal
+    compression, and readers (pandas, GeoPandas, DuckDB, the dashboard) expect to open the
+    object directly rather than having to inflate it first.
+    """
+    key = str(key)
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/vnd.apache.parquet")
+
+
+def upload_json(bucket, key, data: bytes):
+    """Upload already-serialised JSON bytes.
+
+    Not zlib-wrapped, like upload_parquet/upload_pmtiles: this is fetched directly by a
+    browser's `fetch()` and parsed as-is, so wrapping it in a stream-level compression layer
+    would make it unreadable without first knowing to inflate it.
+    """
+    key = str(key)
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/json")
+
+
+def upload_pmtiles(bucket, key, data: bytes):
+    """Upload an already-built PMTiles tileset.
+
+    Not zlib-wrapped, and for a stricter reason than upload_parquet: a PMTiles reader fetches
+    individual tiles with HTTP Range requests directly against this object, so wrapping the
+    whole file in a stream-level compression layer would make every ranged read return
+    garbage instead of a valid tile.
+    """
+    key = str(key)
+    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/vnd.pmtiles")
+
+
 def download_csv_as_df(bucket, key):
     key = str(key)
     obj = s3.get_object(Bucket=bucket, Key=key)
