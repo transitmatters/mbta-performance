@@ -82,6 +82,37 @@ clear error if it's missing rather than a bare `FileNotFoundError`.
 Writing is opt-in (`--write-pmtiles`, or `write_pmtiles=True`) and independent of `--upload`
 and `--write-to-dynamo`. `generate_yesterday_speed_segments()` writes all three by default.
 
+## Reference layer: stops and stations
+
+A separate, rarely-changing PMTiles file of bus stops and rapid transit stations, drawn under
+the speed segments so a viewer can tell where in the system they're looking. It is built
+independently of the segment tiles because stops only move when the GTFS feed does --
+rebuild it when a new feed goes live, not with every daily ingest.
+
+```shell
+# Uses the GTFS feed active on --date (default yesterday).
+uv run python -m mbta-performance.chalicelib.lamp.bus.reference_tiles --date 2026-09-20 --upload
+```
+
+```
+s3://tm-mbta-performance/BusSpeedSegments/reference/stops.pmtiles
+```
+
+One file, two layers (`reference_tiles.py`):
+
+- `stations` -- rapid transit parent stations (subway, light rail, Mattapan) with `lines`
+  (`"Red,Green"`; Green-B..E collapse to `Green`) and `routes` (`"Red,Green-B,Green-C"`).
+  MBTA parent stations have no `vehicle_type` of their own, so which lines serve a station
+  is rolled up from its platforms' trips. Present from zoom 4, the segment tiles' minimum.
+- `bus_stops` -- bus stop poles with `routes` (`"1,47"`). Present from zoom 11 only, via
+  tippecanoe's per-feature `minzoom`; ~7k points would be noise any further out.
+
+Both lists are comma-joined in GTFS `route_sort_order`. Routes with MBTA's `listed_route = 1`
+(the ~200 Rail Replacement Bus shuttles, which are `route_type` 3 and would otherwise look like
+bus routes) are left out, and a bus stop that only such routes serve -- or nothing does -- is
+dropped. Every point is kept at every zoom it's visible at (`--drop-rate 1`); the whole file is
+~100KB.
+
 ## Weekly and monthly trend tiles
 
 The daily PMTiles above are for "how fast was the network on this specific day." `trends.py`

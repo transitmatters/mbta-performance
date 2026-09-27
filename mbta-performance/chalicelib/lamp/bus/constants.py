@@ -90,6 +90,11 @@ WEEKLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/s
 MONTHLY_S3_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.parquet"
 MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.pmtiles"
 
+# Bus stops and rapid transit stations as a context layer under the speed map -- see
+# reference_tiles.py. One fixed key rather than one per date: stops only move when the GTFS
+# feed does, and the frontend wants a single URL it never has to compute.
+REFERENCE_PMTILES_KEY = "BusSpeedSegments/reference/stops.pmtiles"
+
 # Same keys again, but the "slowest segments" leaderboard as plain JSON -- see leaderboard.py.
 # Fetched directly by the frontend (same CloudFront-backed path as the GeoParquet/PMTiles
 # siblings above), unlike the route leaderboard's Dynamo-scan-and-cache-to-S3 approach: the
