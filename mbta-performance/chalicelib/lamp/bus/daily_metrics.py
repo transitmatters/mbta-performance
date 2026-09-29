@@ -68,12 +68,15 @@ def prepare_dynamo_items(daily: pd.DataFrame) -> list[dict]:
 
 
 def write_daily_route_metrics(traversals: pd.DataFrame) -> int:
-    """Aggregate a day of traversals to per-route metrics and batch-write them to DynamoDB.
+    """Aggregate a day of traversals to per-route metrics and upsert them into DynamoDB.
+
+    Only these speed fields are SET on each row; other fields on the same (route, date) row,
+    such as the fleet stats data-ingestion writes, are left alone.
 
     Returns the number of route rows written.
     """
     daily = build_daily_route_metrics(traversals)
     items = prepare_dynamo_items(daily)
     logger.info(f"Writing {len(items)} daily route speed rows to {DYNAMO_TABLE_NAME}")
-    dynamo.dynamo_batch_write(items, DYNAMO_TABLE_NAME)
+    dynamo.dynamo_update_items(items, DYNAMO_TABLE_NAME)
     return len(items)

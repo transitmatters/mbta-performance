@@ -250,7 +250,7 @@ default it to off, matching `--write-pmtiles`'s existing opt-in convention there
 
 The GeoParquet above is per-segment, for the map. `daily_metrics.py` additionally rolls the
 same traversals up to one row per `(route, service_date)` -- both directions combined -- and
-batch-writes them to a `DeliveredTripMetricsBus` DynamoDB table (`route` partition key,
+upserts them into a `DeliveredTripMetricsBus` DynamoDB table (`route` partition key,
 `date` sort key):
 
 | Field | Meaning |
@@ -269,6 +269,13 @@ multiplies a nominal round-trip length by an observed trip count, `miles_covered
 `total_time` here are summed directly from what LAMP actually recorded, so they're already
 directly comparable via `miles_covered / (total_time / 3600)` without a `speed.py`-style
 API round trip.
+
+The same rows also carry bus fleet stats (battery-electric share, propulsion mix, average
+bus age), written by data-ingestion's fleet job (transitmatters/data-ingestion#203) under the
+same GTFS route id keys, plus a system-wide row under `route = "all"`. Both jobs write with
+UpdateItem and SET only their own fields, so they can run in either order without wiping
+each other. Fleet history starts 2023-12-14, before LAMP bus data, so rows before
+2025-12-24 carry fleet fields only.
 
 Writing is opt-in (`--write-to-dynamo`, or `write_to_dynamo=True`) and independent of
 `--upload`: turning one on doesn't turn on the other. `generate_yesterday_speed_segments()`

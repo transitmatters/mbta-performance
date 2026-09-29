@@ -113,8 +113,8 @@ class TestPrepareDynamoItems(unittest.TestCase):
 
 
 class TestWriteDailyRouteMetrics(unittest.TestCase):
-    def test_batch_writes_one_item_per_route_to_the_bus_table(self):
-        with mock.patch.object(daily_metrics.dynamo, "dynamo_batch_write") as write:
+    def test_upserts_one_item_per_route_to_the_bus_table(self):
+        with mock.patch.object(daily_metrics.dynamo, "dynamo_update_items") as write:
             written = daily_metrics.write_daily_route_metrics(_traversals())
 
         self.assertEqual(written, 2)

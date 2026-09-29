@@ -4,28 +4,53 @@ from unittest import mock
 from .. import dynamo as dynamo_module
 
 
-class TestDynamoBatchWrite(unittest.TestCase):
+class TestDynamoUpdateItems(unittest.TestCase):
     def setUp(self):
         self.mock_dynamodb = mock.MagicMock()
         self.mock_table = mock.MagicMock()
         self.mock_dynamodb.Table.return_value = self.mock_table
-        self.mock_batch = mock.MagicMock()
-        self.mock_table.batch_writer.return_value.__enter__.return_value = self.mock_batch
 
-    def test_writes_each_item_through_the_batch_writer(self):
-        items = [{"route": "1", "date": "2026-09-03"}, {"route": "2", "date": "2026-09-03"}]
+    def test_sets_only_the_non_key_fields_of_each_item(self):
+        items = [
+            {"route": "1", "date": "2026-09-03", "count": 10, "total_time": 600},
+            {"route": "2", "date": "2026-09-03", "count": 4, "total_time": 240},
+        ]
 
         with mock.patch("chalicelib.dynamo.dynamodb", self.mock_dynamodb):
-            dynamo_module.dynamo_batch_write(items, "SomeTable")
+            dynamo_module.dynamo_update_items(items, "SomeTable")
 
         self.mock_dynamodb.Table.assert_called_once_with("SomeTable")
-        self.assertEqual(self.mock_batch.put_item.call_count, 2)
-        self.mock_batch.put_item.assert_any_call(Item=items[0])
-        self.mock_batch.put_item.assert_any_call(Item=items[1])
+        self.mock_table.put_item.assert_not_called()
+        self.assertEqual(self.mock_table.update_item.call_count, 2)
+        self.mock_table.update_item.assert_any_call(
+            Key={"route": "1", "date": "2026-09-03"},
+            UpdateExpression="SET #f0 = :v0, #f1 = :v1",
+            ExpressionAttributeNames={"#f0": "count", "#f1": "total_time"},
+            ExpressionAttributeValues={":v0": 10, ":v1": 600},
+        )
+
+    def test_custom_key_fields_are_kept_out_of_the_update(self):
+        items = [{"stop": "place-sstat", "day": "2026-09-03", "value": 1}]
+
+        with mock.patch("chalicelib.dynamo.dynamodb", self.mock_dynamodb):
+            dynamo_module.dynamo_update_items(items, "SomeTable", key_fields=("stop", "day"))
+
+        self.mock_table.update_item.assert_called_once_with(
+            Key={"stop": "place-sstat", "day": "2026-09-03"},
+            UpdateExpression="SET #f0 = :v0",
+            ExpressionAttributeNames={"#f0": "value"},
+            ExpressionAttributeValues={":v0": 1},
+        )
+
+    def test_an_item_with_only_key_fields_is_skipped(self):
+        with mock.patch("chalicelib.dynamo.dynamodb", self.mock_dynamodb):
+            dynamo_module.dynamo_update_items([{"route": "1", "date": "2026-09-03"}], "SomeTable")
+
+        self.mock_table.update_item.assert_not_called()
 
     def test_empty_items_does_not_touch_dynamo(self):
         with mock.patch("chalicelib.dynamo.dynamodb", self.mock_dynamodb):
-            dynamo_module.dynamo_batch_write([], "SomeTable")
+            dynamo_module.dynamo_update_items([], "SomeTable")
 
         self.mock_dynamodb.Table.assert_not_called()
 

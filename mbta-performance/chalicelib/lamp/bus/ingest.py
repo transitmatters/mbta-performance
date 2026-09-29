@@ -96,7 +96,7 @@ def generate_speed_segments(
     `upload` is set. Uploading is opt-in so a local run never touches the bucket.
 
     `write_to_dynamo` additionally rolls the same traversals up to one row per (route,
-    service_date) -- miles covered, total time, trip count -- and batch-writes them to the
+    service_date) -- miles covered, total time, trip count -- and upserts them into the
     DeliveredTripMetricsBus table, for the same kind of daily speed chart the dashboard
     already draws for rail. Also opt-in, and independent of `upload`: this is a per-route
     daily summary alongside the per-segment map data, not a replacement for it.
