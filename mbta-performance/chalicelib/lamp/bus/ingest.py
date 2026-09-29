@@ -25,6 +25,7 @@ from .constants import (
     S3_KEY_TEMPLATE,
 )
 from .daily_metrics import write_daily_route_metrics
+from .day_type import day_type_for
 from .geoparquet import write_geoparquet
 from .leaderboard import build_leaderboard
 from .patterns import build_pattern_geometry
@@ -96,7 +97,8 @@ def generate_speed_segments(
     `upload` is set. Uploading is opt-in so a local run never touches the bucket.
 
     `write_to_dynamo` additionally rolls the same traversals up to one row per (route,
-    service_date) -- miles covered, total time, trip count -- and upserts them into the
+    service_date) -- miles covered, total time, trip count, overall and per time band, plus
+    the date's day_type -- and upserts them into the
     DeliveredTripMetricsBus table, for the same kind of daily speed chart the dashboard
     already draws for rail. Also opt-in, and independent of `upload`: this is a per-route
     daily summary alongside the per-segment map data, not a replacement for it.
@@ -115,7 +117,9 @@ def generate_speed_segments(
     traversals, segments = build_traversals_for_date(service_date)
 
     if write_to_dynamo:
-        write_daily_route_metrics(traversals)
+        # On a copy: a daily segment frame must not carry day_type, or it would reach the daily
+        # PMTiles through pmtiles.TILE_PROPERTIES.
+        write_daily_route_metrics(traversals.assign(day_type=day_type_for(service_date)))
 
     aggregated = aggregate_segments(traversals)
     chosen_geometry = select_segment_geometry(traversals, segments)
