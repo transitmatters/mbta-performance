@@ -6,6 +6,7 @@ import pandas as pd
 from shapely.geometry import LineString
 
 from .. import geoparquet, gtfs_geo, segments
+from ..constants import ALL_DAY_BAND, TIME_BANDS
 
 
 class TestProjection(unittest.TestCase):
@@ -279,20 +280,111 @@ class TestAggregateSegments(unittest.TestCase):
 
     def test_default_groups_by_service_date(self):
         aggregated = segments.aggregate_segments(self._traversals())
+        am_peak = aggregated[aggregated.time_band == "am_peak"]
 
-        self.assertEqual(len(aggregated), 2)
-        self.assertEqual(set(aggregated.service_date), {date(2026, 9, 1), date(2026, 9, 2)})
+        self.assertEqual(len(am_peak), 2)
+        self.assertEqual(set(am_peak.service_date), {date(2026, 9, 1), date(2026, 9, 2)})
+        # Each date also gets its own all_day row.
+        self.assertEqual(len(aggregated), 4)
 
     def test_empty_extra_group_columns_rolls_every_date_together(self):
         # For the weekly/monthly trend rollups in trends.py: percentiles are recomputed
         # across every traversal in the period, not averaged from the per-date rows above.
         aggregated = segments.aggregate_segments(self._traversals(), extra_group_columns=())
 
-        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(len(aggregated), 2)
         self.assertNotIn("service_date", aggregated.columns)
-        row = aggregated.iloc[0]
+        row = aggregated[aggregated.time_band == "am_peak"].iloc[0]
         self.assertEqual(row.n_traversals, 4)
         self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
+
+
+class TestAllDayBand(unittest.TestCase):
+    """The all_day rows the map's "All day" filter reads (see ALL_DAY_BAND in constants.py)."""
+
+    def _traversal(self, depart_hour: float, total_time: float, is_interpolated: bool = False) -> dict:
+        return {
+            "route_id": "1",
+            "direction_id": 0,
+            "from_stop_id": "s1",
+            "to_stop_id": "s2",
+            "service_date": date(2026, 9, 3),
+            "depart_seconds": depart_hour * 3600,
+            "total_time_seconds": total_time,
+            "moving_time_seconds": total_time * 0.8,
+            "dwell_seconds": total_time * 0.2,
+            "is_interpolated": is_interpolated,
+            "segment_length_m": 500.0,
+        }
+
+    def _traversals(self) -> pd.DataFrame:
+        # Skewed on purpose: am_peak has 3 fast traversals, midday 2 slow ones. The band p50s
+        # are 60 and 300, so the median of band medians (180) and the traversal-weighted mean
+        # of them (156) are both wrong -- the true all-day p50 of the 5 traversals is 70.
+        return pd.DataFrame(
+            [
+                self._traversal(8, 60.0),
+                self._traversal(8, 50.0, is_interpolated=True),
+                self._traversal(8.5, 70.0),
+                self._traversal(12, 200.0, is_interpolated=True),
+                self._traversal(13, 400.0),
+            ]
+        )
+
+    def test_all_day_is_aggregated_from_every_traversal_not_from_the_band_rows(self):
+        traversals = self._traversals()
+
+        aggregated = segments.aggregate_segments(traversals)
+        all_day = aggregated[aggregated.time_band == ALL_DAY_BAND]
+        bands = aggregated[aggregated.time_band != ALL_DAY_BAND]
+
+        self.assertEqual(len(all_day), 1)
+        row = all_day.iloc[0]
+        for percentile in (50, 90):
+            for measure in ("total_time_seconds", "moving_time_seconds"):
+                self.assertAlmostEqual(
+                    row[f"p{percentile}_{measure}"], np.percentile(traversals[measure], percentile), msg=measure
+                )
+        self.assertAlmostEqual(row.p50_total_time_seconds, 70.0)
+        self.assertNotAlmostEqual(row.p50_total_time_seconds, bands.p50_total_time_seconds.median())
+        self.assertAlmostEqual(row.p50_speed_mph, 500.0 / 70.0 * 2.2369362920544)
+        self.assertEqual(row.n_traversals, 5)
+        self.assertEqual(row.n_interpolated, 2)
+        self.assertAlmostEqual(row.median_dwell_seconds, np.median(traversals.dwell_seconds))
+
+    def test_all_day_rows_carry_the_same_columns_as_band_rows(self):
+        aggregated = segments.aggregate_segments(self._traversals())
+
+        all_day = aggregated[aggregated.time_band == ALL_DAY_BAND]
+        self.assertFalse(all_day.drop(columns=["time_band"]).isna().any().any())
+        self.assertEqual(set(aggregated.time_band), {"am_peak", "midday", ALL_DAY_BAND})
+
+    def test_a_traversal_outside_every_band_is_in_neither_the_bands_nor_all_day(self):
+        # 33h into the service date is past late_night's 32h end, so assign_time_band leaves it
+        # unlabelled -- it must not sneak into all_day through a separate path.
+        traversals = pd.concat([self._traversals(), pd.DataFrame([self._traversal(33, 9999.0)])], ignore_index=True)
+
+        aggregated = segments.aggregate_segments(traversals)
+        all_day = aggregated[aggregated.time_band == ALL_DAY_BAND].iloc[0]
+
+        self.assertEqual(all_day.n_traversals, 5)
+        self.assertEqual(aggregated[aggregated.time_band != ALL_DAY_BAND].n_traversals.sum(), 5)
+
+    def test_all_day_splits_by_extra_group_columns(self):
+        # trends.py groups by day_type, so each day type gets its own all_day row.
+        traversals = self._traversals()
+        traversals["day_type"] = ["business_day"] * 3 + ["weekend_or_holiday"] * 2
+
+        aggregated = segments.aggregate_segments(traversals, extra_group_columns=("day_type",))
+        all_day = aggregated[aggregated.time_band == ALL_DAY_BAND].set_index("day_type")
+
+        self.assertEqual(all_day.loc["business_day"].n_traversals, 3)
+        self.assertEqual(all_day.loc["weekend_or_holiday"].n_traversals, 2)
+
+    def test_all_day_is_not_a_departure_window(self):
+        self.assertNotIn(ALL_DAY_BAND, [name for name, _, _ in TIME_BANDS])
+        departures = pd.Series(np.arange(0, 32 * 3600, 900))
+        self.assertNotIn(ALL_DAY_BAND, set(segments.assign_time_band(departures)))
 
 
 class TestTimeBands(unittest.TestCase):

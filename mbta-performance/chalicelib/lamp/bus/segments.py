@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .constants import (
+    ALL_DAY_BAND,
     MAX_PLAUSIBLE_SPEED_MPH,
     METERS_PER_SECOND_TO_MPH,
     MIN_PLAUSIBLE_SPEED_MPH,
@@ -202,12 +203,32 @@ def aggregate_segments(
     Defaults to also grouping by service_date, for the daily pipeline in ingest.py where
     `traversals` covers a single date. Pass `extra_group_columns=()` to roll every date in
     `traversals` together instead, for the weekly/monthly trend rollups in trends.py.
+
+    Alongside the TIME_BANDS rows, each segment also gets an ALL_DAY_BAND row (one per
+    combination of extra_group_columns, so one per day_type in trends.py) aggregated from
+    every traversal that landed in any band. It's computed from the traversals themselves,
+    never from the band rows: a percentile of percentiles is not the day's percentile.
+    Traversals that departed outside every band are dropped before either aggregation, so
+    all_day covers exactly the traversals the bands do.
     """
     traversals = traversals.copy()
     traversals["time_band"] = assign_time_band(traversals.depart_seconds)
     traversals = traversals.dropna(subset=["time_band"])
 
-    group_key = SEGMENT_KEY + list(extra_group_columns) + ["time_band"]
+    segment_key = SEGMENT_KEY + list(extra_group_columns)
+    by_band = _aggregate(traversals, segment_key + ["time_band"])
+    all_day = _aggregate(traversals, segment_key).assign(time_band=ALL_DAY_BAND)
+    aggregated = pd.concat([by_band, all_day[by_band.columns]], ignore_index=True)
+
+    logger.info(
+        f"Aggregated to {len(by_band)} ({', '.join(segment_key + ['time_band'])}) rows "
+        f"plus {len(all_day)} {ALL_DAY_BAND} rows"
+    )
+    return aggregated
+
+
+def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
+    """Percentile times and speeds for each group of traversals."""
     grouped = traversals.groupby(group_key, sort=False)
 
     aggregation = {
@@ -235,7 +256,6 @@ def aggregate_segments(
             aggregated.segment_length_m / aggregated[f"p{percentile}_moving_time_seconds"] * METERS_PER_SECOND_TO_MPH
         )
 
-    logger.info(f"Aggregated to {len(aggregated)} ({', '.join(group_key)}) rows")
     return aggregated
 
 

@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 from .. import geoparquet, s3_writer
 
 
-def _segments() -> pd.DataFrame:
+def _segments(time_bands: tuple[str, ...] = ("am_peak",)) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
@@ -19,14 +19,20 @@ def _segments() -> pd.DataFrame:
                 "from_stop_id": "s1",
                 "to_stop_id": "s2",
                 "service_date": date(2026, 9, 3),
-                "time_band": "am_peak",
+                "time_band": time_band,
                 "n_traversals": 12,
                 "segment_length_m": 500.0,
                 "p50_speed_mph": 11.5,
                 "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
             }
+            for time_band in time_bands
         ]
     )
+
+
+def _fake_build(frame) -> bytes:
+    """Stands in for tippecanoe: encodes which bands a tileset was built from."""
+    return ("PMTiles:" + ",".join(sorted(frame.time_band))).encode()
 
 
 class TestS3Key(unittest.TestCase):
@@ -49,22 +55,31 @@ class TestPmtilesKey(unittest.TestCase):
 
         self.assertEqual(key, "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles")
 
+    def test_all_day_key_sits_beside_the_band_key(self):
+        self.assertEqual(
+            s3_writer.all_day_pmtiles_key_for(date(2026, 9, 3)),
+            "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments_all_day.pmtiles",
+        )
+
 
 class TestUploadPmtiles(unittest.TestCase):
-    def test_uploads_built_pmtiles_bytes_to_the_dated_key(self):
+    def test_bands_and_all_day_are_built_and_uploaded_as_separate_archives(self):
         with (
-            mock.patch.object(s3_writer, "build_pmtiles_bytes", return_value=b"PMTiles\x03fake") as build,
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", side_effect=_fake_build),
             mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
         ):
-            key = s3_writer.upload_pmtiles(_segments(), date(2026, 9, 3))
+            keys = s3_writer.upload_pmtiles(_segments(("am_peak", "midday", "all_day")), date(2026, 9, 3))
 
-        build.assert_called_once()
-        upload.assert_called_once()
-        bucket, uploaded_key, data = upload.call_args[0]
-        self.assertEqual(bucket, "tm-mbta-performance")
-        self.assertEqual(uploaded_key, key)
-        self.assertEqual(uploaded_key, "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles")
-        self.assertEqual(data, b"PMTiles\x03fake")
+        uploaded = {call.args[1]: call.args[2] for call in upload.call_args_list}
+        self.assertEqual({call.args[0] for call in upload.call_args_list}, {"tm-mbta-performance"})
+        self.assertEqual(
+            uploaded,
+            {
+                "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles": b"PMTiles:am_peak,midday",
+                "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments_all_day.pmtiles": b"PMTiles:all_day",
+            },
+        )
+        self.assertEqual(keys, tuple(uploaded))
 
 
 class TestUpload(unittest.TestCase):
@@ -111,6 +126,10 @@ class TestWeeklyMonthlyKeys(unittest.TestCase):
         self.assertEqual(
             s3_writer.weekly_pmtiles_key_for(2026, 6), "BusSpeedSegments/weekly/Year=2026/Week=6/segments.pmtiles"
         )
+        self.assertEqual(
+            s3_writer.weekly_all_day_pmtiles_key_for(2026, 6),
+            "BusSpeedSegments/weekly/Year=2026/Week=6/segments_all_day.pmtiles",
+        )
 
     def test_monthly_keys_are_keyed_by_year_and_month_number(self):
         self.assertEqual(
@@ -118,6 +137,10 @@ class TestWeeklyMonthlyKeys(unittest.TestCase):
         )
         self.assertEqual(
             s3_writer.monthly_pmtiles_key_for(2026, 3), "BusSpeedSegments/monthly/Year=2026/Month=3/segments.pmtiles"
+        )
+        self.assertEqual(
+            s3_writer.monthly_all_day_pmtiles_key_for(2026, 3),
+            "BusSpeedSegments/monthly/Year=2026/Month=3/segments_all_day.pmtiles",
         )
 
 
@@ -130,16 +153,24 @@ class TestUploadWeeklyMonthly(unittest.TestCase):
         upload.assert_called_once()
         self.assertEqual(upload.call_args[0][1], key)
 
-    def test_upload_weekly_pmtiles_writes_to_the_week_key(self):
+    def test_upload_weekly_pmtiles_writes_to_the_week_keys(self):
         with (
-            mock.patch.object(s3_writer, "build_pmtiles_bytes", return_value=b"PMTiles\x03fake"),
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", side_effect=_fake_build),
             mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
         ):
-            key = s3_writer.upload_weekly_pmtiles(_segments(), 2026, 6)
+            keys = s3_writer.upload_weekly_pmtiles(_segments(("am_peak", "all_day")), 2026, 6)
 
-        self.assertEqual(key, "BusSpeedSegments/weekly/Year=2026/Week=6/segments.pmtiles")
-        upload.assert_called_once()
-        self.assertEqual(upload.call_args[0][1], key)
+        self.assertEqual(
+            keys,
+            (
+                "BusSpeedSegments/weekly/Year=2026/Week=6/segments.pmtiles",
+                "BusSpeedSegments/weekly/Year=2026/Week=6/segments_all_day.pmtiles",
+            ),
+        )
+        self.assertEqual(
+            [(call.args[1], call.args[2]) for call in upload.call_args_list],
+            list(zip(keys, [b"PMTiles:am_peak", b"PMTiles:all_day"])),
+        )
 
     def test_upload_monthly_speed_segments_writes_to_the_month_key(self):
         with mock.patch.object(s3_writer.s3, "upload_parquet") as upload:
@@ -149,16 +180,24 @@ class TestUploadWeeklyMonthly(unittest.TestCase):
         upload.assert_called_once()
         self.assertEqual(upload.call_args[0][1], key)
 
-    def test_upload_monthly_pmtiles_writes_to_the_month_key(self):
+    def test_upload_monthly_pmtiles_writes_to_the_month_keys(self):
         with (
-            mock.patch.object(s3_writer, "build_pmtiles_bytes", return_value=b"PMTiles\x03fake"),
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", side_effect=_fake_build),
             mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
         ):
-            key = s3_writer.upload_monthly_pmtiles(_segments(), 2026, 3)
+            keys = s3_writer.upload_monthly_pmtiles(_segments(("am_peak", "all_day")), 2026, 3)
 
-        self.assertEqual(key, "BusSpeedSegments/monthly/Year=2026/Month=3/segments.pmtiles")
-        upload.assert_called_once()
-        self.assertEqual(upload.call_args[0][1], key)
+        self.assertEqual(
+            keys,
+            (
+                "BusSpeedSegments/monthly/Year=2026/Month=3/segments.pmtiles",
+                "BusSpeedSegments/monthly/Year=2026/Month=3/segments_all_day.pmtiles",
+            ),
+        )
+        self.assertEqual(
+            [(call.args[1], call.args[2]) for call in upload.call_args_list],
+            list(zip(keys, [b"PMTiles:am_peak", b"PMTiles:all_day"])),
+        )
 
 
 class TestLeaderboardKeys(unittest.TestCase):
