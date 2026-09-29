@@ -1,9 +1,10 @@
 import json
 import unittest
+from datetime import date
 
 import pandas as pd
 
-from .. import leaderboard
+from .. import leaderboard, segments
 
 
 def _row(
@@ -141,3 +142,50 @@ class TestBuildLeaderboardWithDayType(unittest.TestCase):
         self.assertEqual(set(result.keys()), {"business_day", "weekend_or_holiday"})
         self.assertEqual(result["business_day"]["am_peak"][0]["p50_speed_mph"], 20.0)
         self.assertEqual(result["weekend_or_holiday"]["am_peak"][0]["p50_speed_mph"], 5.0)
+
+
+def _aggregated(day_types: list[str] | None = None) -> pd.DataFrame:
+    """Real aggregate_segments output: 25 traversals at 8am and 25 at 1pm per day type."""
+    rows = []
+    for day_type in day_types or [None]:
+        for depart_hour, total_time in [(8, 60.0)] * 25 + [(13, 120.0)] * 25:
+            row = {
+                "route_id": "1",
+                "direction_id": 0,
+                "from_stop_id": "s1",
+                "to_stop_id": "s2",
+                "service_date": date(2026, 9, 3),
+                "depart_seconds": depart_hour * 3600,
+                "total_time_seconds": total_time,
+                "moving_time_seconds": total_time,
+                "dwell_seconds": 0.0,
+                "is_interpolated": False,
+                "segment_length_m": 500.0,
+            }
+            if day_type is not None:
+                row["day_type"] = day_type
+            rows.append(row)
+    extra_group_columns = ("day_type",) if day_types else ("service_date",)
+    aggregated = segments.aggregate_segments(pd.DataFrame(rows), extra_group_columns=extra_group_columns)
+    return aggregated.assign(from_stop_name="A", to_stop_name="B")
+
+
+class TestBuildLeaderboardAllDay(unittest.TestCase):
+    """aggregate_segments' all_day rows reach the leaderboard as their own slice."""
+
+    def test_daily_leaderboard_has_a_top_level_all_day_key(self):
+        result = leaderboard.build_leaderboard(_aggregated())
+
+        self.assertEqual(set(result), {"am_peak", "midday", "all_day"})
+        entry = result["all_day"][0]
+        self.assertEqual(set(entry), set(leaderboard.LEADERBOARD_COLUMNS))
+        self.assertEqual(entry["n_traversals"], 50)
+        json.dumps(result)
+
+    def test_trend_leaderboard_has_all_day_under_each_day_type(self):
+        result = leaderboard.build_leaderboard(_aggregated(["business_day", "weekend_or_holiday"]))
+
+        self.assertEqual(set(result), {"business_day", "weekend_or_holiday"})
+        for day_type in result:
+            self.assertIn("all_day", result[day_type])
+            self.assertEqual(result[day_type]["all_day"][0]["n_traversals"], 50)
