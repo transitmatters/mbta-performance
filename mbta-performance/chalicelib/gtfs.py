@@ -101,6 +101,7 @@ def fetch_stop_times_from_gtfs(
                     StopTime.stop_id,
                     StopTime.arrival_time,
                     StopTime.stop_sequence,
+                    StopTime.checkpoint_id,
                     Trip.route_id,
                     Trip.direction_id,
                 )

@@ -20,8 +20,25 @@ def _empty_gtfs_mock() -> pd.DataFrame:
             "stop_id": pd.array([], dtype="string"),
             "arrival_time": pd.array([], dtype="Int64"),
             "stop_sequence": pd.array([], dtype="Int64"),
+            "checkpoint_id": pd.array([], dtype="string"),
             "route_id": pd.array([], dtype="string"),
             "direction_id": pd.array([], dtype="int16"),
+        }
+    )
+
+
+def _checkpoint_gtfs_mock(df: pd.DataFrame) -> pd.DataFrame:
+    """GTFS stop_times mock marking every route/direction/stop in df as a checkpoint."""
+    stops = df[["route_id", "direction_id", "stop_id"]].dropna().drop_duplicates().reset_index(drop=True)
+    return pd.DataFrame(
+        {
+            "trip_id": pd.array(["sched-1"] * len(stops), dtype="string"),
+            "stop_id": stops["stop_id"].astype("string"),
+            "arrival_time": pd.array(range(len(stops)), dtype="Int64"),
+            "stop_sequence": pd.array(range(len(stops)), dtype="Int64"),
+            "checkpoint_id": pd.array([f"cp{i}" for i in range(len(stops))], dtype="string"),
+            "route_id": stops["route_id"].astype("string"),
+            "direction_id": stops["direction_id"].astype("int16"),
         }
     )
 
@@ -215,6 +232,7 @@ class TestBusIngest(unittest.TestCase):
                 "stop_id": ["stop-A", "stop-B", "stop-A", "stop-C"],
                 "stop_sequence": [1, 2, 3, 4],
                 "arrival_time": pd.array([0, 300, 600, 900], dtype="Int64"),
+                "checkpoint_id": ["cpa", "cpb", "cpa", "cpc"],
                 "route_id": ["1"] * 4,
                 "direction_id": pd.array([0] * 4, dtype="int16"),
             }
@@ -250,12 +268,48 @@ class TestBusIngest(unittest.TestCase):
         """
         df_partial = self.sample_df.copy()
         df_partial.loc[df_partial.index[0], "is_full_trip"] = False
+        mock_gtfs = _checkpoint_gtfs_mock(self.sample_df)
 
-        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
+        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=mock_gtfs):
             result_full = bus_ingest.ingest_bus_pq_file(self.sample_df, date(2026, 4, 7))
             result_partial = bus_ingest.ingest_bus_pq_file(df_partial, date(2026, 4, 7))
 
         self.assertLess(len(result_partial), len(result_full))
+
+    def test_filter_to_checkpoints_is_per_route_direction(self):
+        """A stop is kept only on the route/direction whose GTFS trips mark it a checkpoint."""
+        events = pd.DataFrame(
+            {
+                "route_id": pd.array(["1", "1", "1", "47", "1"], dtype="string"),
+                "direction_id": pd.array([0, 0, 0, 0, 1], dtype="int16"),
+                "stop_id": pd.array(["A", "B", "C", "A", "A"], dtype="string"),
+            }
+        )
+        gtfs_stops = pd.DataFrame(
+            {
+                "route_id": pd.array(["1", "1", "1", "1", "47", "1"], dtype="string"),
+                "direction_id": pd.array([0, 0, 0, 0, 0, 1], dtype="int16"),
+                "stop_id": pd.array(["A", "B", "B", "C", "A", "A"], dtype="string"),
+                # B is a checkpoint on only one trip variant; C has an empty checkpoint_id
+                "checkpoint_id": pd.array(["cpa", None, "cpb", "", None, None], dtype="string"),
+            }
+        )
+        result = bus_ingest._filter_to_checkpoints(events, gtfs_stops)
+        self.assertEqual(
+            list(result[["route_id", "direction_id", "stop_id"]].itertuples(index=False, name=None)),
+            [("1", 0, "A"), ("1", 0, "B")],
+        )
+
+    def test_ingest_bus_pq_file_keeps_only_checkpoints(self):
+        stops = self.sample_df[["route_id", "direction_id", "stop_id"]].dropna().drop_duplicates()
+        mock_gtfs = _checkpoint_gtfs_mock(stops.iloc[::3])
+        expected_stops = set(mock_gtfs["stop_id"])
+
+        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=mock_gtfs):
+            result = bus_ingest.ingest_bus_pq_file(self.sample_df, date(2026, 4, 7))
+
+        self.assertGreater(len(result), 0)
+        self.assertLessEqual(set(result["stop_id"]), expected_stops)
 
     def test_upload_bus_to_s3_key_format(self):
         df = pd.DataFrame({col: ["test"] for col in bus_constants.BUS_S3_COLUMNS})
