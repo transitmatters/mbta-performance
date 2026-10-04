@@ -22,6 +22,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --group geo
+      - name: Install tippecanoe
+        run: sudo apt-get update && sudo apt-get install -y tippecanoe
       - name: test code with pytest
         run: uv run pytest mbta-performance
