@@ -14,7 +14,16 @@ logger = logging.getLogger(__name__)
 # downloading and diffing schemas across dates -- don't move this earlier without re-checking.
 EARLIEST_BUS_LAMP_DATA = date(2025, 7, 30)
 
-LOCAL_ARCHIVE_PATH = os.environ.get("LOCAL_ARCHIVE_PATH", "./feeds")
+# Set GTFS_DATA_DIR to share cached feeds between repos when running locally;
+# an explicit LOCAL_ARCHIVE_PATH still takes precedence.
+GTFS_DATA_DIR = os.environ.get("GTFS_DATA_DIR")
+LOCAL_ARCHIVE_PATH = os.environ.get(
+    "LOCAL_ARCHIVE_PATH",
+    os.path.join(os.path.expanduser(GTFS_DATA_DIR), "sqlite_feeds") if GTFS_DATA_DIR else "./feeds",
+)
+if GTFS_DATA_DIR:
+    # mbta-gtfs-sqlite only creates the last path component itself
+    os.makedirs(os.path.expanduser(GTFS_DATA_DIR), exist_ok=True)
 
 
 def backfill_all_bus_dates(start_date: date = EARLIEST_BUS_LAMP_DATA):

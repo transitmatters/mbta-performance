@@ -1,4 +1,5 @@
 import datetime
+import os
 import pandas as pd
 import pathlib
 import shutil
@@ -6,7 +7,8 @@ import urllib.request
 
 from ..date import to_dateint
 
-MAIN_DIR = pathlib.Path("./data/gtfs_archives/")
+# Set GTFS_DATA_DIR to share downloaded archives between repos when running locally
+MAIN_DIR = pathlib.Path(os.environ.get("GTFS_DATA_DIR", "./data")).expanduser() / "gtfs_archives"
 MAIN_DIR.mkdir(parents=True, exist_ok=True)
 
 ARCHIVES = pd.read_csv("https://cdn.mbta.com/archive/archived_feeds.txt")
@@ -37,13 +39,20 @@ def get_gtfs_archive(dateint: int):
     # else we have to download it
     print(f"Downloading archive for {dateint}: {archive_url}")
     zipfile, _ = urllib.request.urlretrieve(archive_url)
-    # Extract to a temp dir and rename, so an interrupted extraction never looks like a complete archive
-    partial_dir = MAIN_DIR / f".{archive_name}.partial"
+    # Extract to a temp dir and rename, so an interrupted extraction never looks like a complete archive.
+    # The pid suffix keeps repos sharing GTFS_DATA_DIR from extracting into the same temp dir at once.
+    partial_dir = MAIN_DIR / f".{archive_name}.partial-{os.getpid()}"
     shutil.rmtree(partial_dir, ignore_errors=True)
     shutil.unpack_archive(zipfile, extract_dir=partial_dir, format="zip")
-    partial_dir.rename(archive_dir)
     # remove temporary zipfile
     urllib.request.urlcleanup()
+    try:
+        partial_dir.rename(archive_dir)
+    except OSError:
+        # another process sharing GTFS_DATA_DIR extracted the same archive first
+        if not archive_dir.exists():
+            raise
+        shutil.rmtree(partial_dir, ignore_errors=True)
 
     return archive_dir
 
