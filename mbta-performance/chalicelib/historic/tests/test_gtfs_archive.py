@@ -77,7 +77,7 @@ class TestGTFSArchive(unittest.TestCase):
                             self.assertIn(".partial", str(mock_unpack.call_args.kwargs["extract_dir"]))
                             self.assertEqual(result, pathlib.Path(self.temp_dir) / "20240201")
                             self.assertTrue(result.is_dir())
-                            self.assertFalse((pathlib.Path(self.temp_dir) / ".20240201.partial").exists())
+                            self.assertEqual([p.name for p in pathlib.Path(self.temp_dir).iterdir()], ["20240201"])
 
                             # Verify correct archive URL was used
                             call_args = mock_retrieve.call_args[0]
@@ -104,6 +104,43 @@ class TestGTFSArchive(unittest.TestCase):
 
         mock_unpack.assert_called_once()
         self.assertTrue((result / "trips.txt").exists())
+
+    def test_get_gtfs_archive_concurrent_download(self):
+        """Test get_gtfs_archive when another process extracts the same archive first."""
+        dateint = 20240207
+        archive_dir = pathlib.Path(self.temp_dir) / "20240201"
+
+        def unpack(_zip, extract_dir, format):
+            pathlib.Path(extract_dir).mkdir()
+            # simulate another process finishing first
+            archive_dir.mkdir()
+            for f in gtfs_archive.REQUIRED_ARCHIVE_FILES:
+                (pathlib.Path(extract_dir) / f).touch()
+                (archive_dir / f).touch()
+
+        with mock.patch.object(gtfs_archive, "ARCHIVES", self.mock_archives):
+            with mock.patch.object(gtfs_archive, "MAIN_DIR", pathlib.Path(self.temp_dir)):
+                with mock.patch("urllib.request.urlretrieve", return_value=(f"{self.temp_dir}/temp.zip", None)):
+                    with mock.patch("urllib.request.urlcleanup"):
+                        with mock.patch("shutil.unpack_archive", side_effect=unpack):
+                            result = gtfs_archive.get_gtfs_archive(dateint)
+
+        self.assertEqual(result, archive_dir)
+        self.assertEqual([p.name for p in pathlib.Path(self.temp_dir).iterdir()], ["20240201"])
+
+    def test_main_dir_uses_gtfs_data_dir(self):
+        """Test MAIN_DIR honors the GTFS_DATA_DIR env var."""
+        import importlib
+
+        try:
+            with mock.patch.dict("os.environ", {"GTFS_DATA_DIR": self.temp_dir}):
+                with mock.patch("pandas.read_csv", return_value=self.mock_archives):
+                    importlib.reload(gtfs_archive)
+                self.assertEqual(gtfs_archive.MAIN_DIR, pathlib.Path(self.temp_dir) / "gtfs_archives")
+                self.assertTrue(gtfs_archive.MAIN_DIR.is_dir())
+        finally:
+            with mock.patch("pandas.read_csv", return_value=self.mock_archives):
+                importlib.reload(gtfs_archive)
 
     def test_get_services(self):
         """Test get_services returns correct service IDs for a date."""
