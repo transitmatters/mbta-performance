@@ -6,7 +6,7 @@ Scripts for processing MBTA performance data both from LAMP and from monthly his
 
 ### Requirements
 
-- Python 3.12
+- Python 3.12 (with [mise](https://mise.jdx.dev): `mise trust && mise install`, pinned in `.python-version`)
 - [uv](https://docs.astral.sh/uv/) - Fast Python package manager
   - Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
   - Verify: `uv --version`
