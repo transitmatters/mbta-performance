@@ -3,7 +3,7 @@ name = "mbta-performance"
 version = "0.1.0"
 description = "Processing of static MBTA performance data"
 authors = [{ name = "TransitMatters Labs Team" }]
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 license = "MIT"
 dependencies = [
     "requests>=2.32.3,<3",
@@ -44,4 +44,4 @@ build-backend = "hatchling.build"
 
 [tool.black]
 line-length = 120
-target-version = ['py312']
+target-version = ['py314']

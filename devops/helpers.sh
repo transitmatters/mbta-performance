@@ -250,12 +250,15 @@ function smoke_layer {
     layer_dir="$(mktemp -d)"
 
     unzip -q "$zipfile" -d "$layer_dir"
+    # Run in the image matching the Python version the layer was built for (python/lib/pythonX.Y)
+    local python_version
+    python_version="$(basename "$(ls -d "$layer_dir"/python/lib/python3.*)" | sed 's/^python//')"
     docker run --rm --platform linux/amd64 \
         -v "$layer_dir:/opt:ro" \
         -v "$helpers_dir/smoke_layer.py:/smoke_layer.py:ro" \
-        -e PYTHONPATH=/opt/python/lib/python3.12/site-packages \
+        -e PYTHONPATH="/opt/python/lib/python$python_version/site-packages" \
         --entrypoint python3 \
-        public.ecr.aws/lambda/python:3.12 /smoke_layer.py
+        "public.ecr.aws/lambda/python:$python_version" /smoke_layer.py
     local status=$?
     rm -rf "$layer_dir"
     return $status
