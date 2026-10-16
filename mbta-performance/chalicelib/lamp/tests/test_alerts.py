@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -65,6 +65,12 @@ SAMPLE_ALERTS_PATH = os.path.join(DATA_PREFIX, "lamp_alerts_sample.parquet")
 FULL_HISTORY_WINDOW = (date(2018, 1, 1), date(2028, 1, 1))
 
 
+def _days(start: date, end: date):
+    while start <= end:
+        yield start
+        start += timedelta(days=1)
+
+
 class TestAlerts(unittest.TestCase):
     def setUp(self):
         self.last_seen = alerts.last_seen_by_alert(SAMPLE_ALERTS_PATH)
@@ -120,6 +126,15 @@ class TestAlerts(unittest.TestCase):
             [{"start": "2019-09-16T17:02:04-04:00", "end": "2019-09-16T22:00:24-04:00"}],
         )
 
+    def test_build_v3_alerts_emits_closed_timestamp_from_final_version(self):
+        # The winning version's own closed_timestamp is null; the close time lives on
+        # the final, active_period-less version and must still reach the output.
+        df = self._read()
+        built, _ = alerts.build_v3_alerts(df, window=FULL_HISTORY_WINDOW)
+        self.assertEqual(built["332786"]["attributes"]["closed_timestamp"], alerts._iso(1568680543))
+        self.assertEqual(built["293631"]["attributes"]["closed_timestamp"], alerts._iso(1689769653))
+        self.assertIsNone(built["351440"]["attributes"]["closed_timestamp"])  # never closed
+
     def test_null_end_falls_back_to_closed_timestamp(self):
         df = self._read()
         built, _ = alerts.build_v3_alerts(df, window=FULL_HISTORY_WINDOW)
@@ -129,7 +144,8 @@ class TestAlerts(unittest.TestCase):
         self.assertIsNone(period["end"])
 
     def test_null_end_with_no_closed_timestamp_falls_back_to_last_modified(self):
-        # 351440 has one version, no closed_timestamp ever -- its effective end for
+        # 351440 has one version, no closed_timestamp ever, and was last revised in
+        # 2020 -- far past ONGOING_ALERT_MAX_AGE_SECONDS -- so its effective end for
         # bucketing purposes should be its own last_modified_timestamp, producing a
         # single-day active period rather than an unbounded one.
         df = self._read()
@@ -267,12 +283,76 @@ class TestAlerts(unittest.TestCase):
         finally:
             os.remove(path)
 
+    def _ongoing_alert_row(self, alert_id, start, last_modified):
+        return {
+            "id": alert_id,
+            "cause": "CONSTRUCTION",
+            "effect_detail": "DETOUR",
+            "severity": 3,
+            "alert_lifecycle": "ONGOING",
+            "header_text.translation.text": "Route 220 detoured due to construction.",
+            "service_effect_text.translation.text": "Route 220 detour",
+            "created_timestamp": int(start),
+            "last_modified_timestamp": int(last_modified),
+            "closed_timestamp": None,
+            "active_period.start_timestamp": int(start),
+            "active_period.end_timestamp": None,
+            "informed_entity.route_id": "220",
+            "informed_entity.route_type": 3,
+            "informed_entity.direction_id": None,
+            "informed_entity.stop_id": None,
+            "informed_entity.activities": "BOARD|EXIT|RIDE",
+        }
+
+    def test_recently_revised_unclosed_alert_stays_in_every_day_until_as_of(self):
+        # Regression: a long-running detour posted in July and never revised or
+        # closed dropped out of the day files once its last revision aged out.
+        start = datetime(2026, 7, 1, 9, 0, tzinfo=ET).timestamp()
+        as_of = int(datetime(2026, 10, 15, 7, 0, tzinfo=ET).timestamp())
+        path = _write_alerts_parquet([self._ongoing_alert_row(999003, start, start)])
+        try:
+            last_seen = alerts.last_seen_by_alert(path)
+            window = (date(2026, 9, 15), date(2026, 10, 14))
+            df = alerts.read_latest_versions(path, window, last_seen, as_of=as_of)
+            self.assertEqual(df.iloc[0]["eff_end"], as_of)
+            _, day_index = alerts.build_v3_alerts(df, window=window)
+            self.assertEqual([d for d, ids in day_index.items() if "999003" in ids], list(_days(*window)))
+        finally:
+            os.remove(path)
+
+    def test_long_unrevised_unclosed_alert_is_not_extended(self):
+        start = datetime(2024, 1, 10, 9, 0, tzinfo=ET).timestamp()
+        as_of = int(datetime(2026, 10, 15, 7, 0, tzinfo=ET).timestamp())
+        path = _write_alerts_parquet([self._ongoing_alert_row(999004, start, start)])
+        try:
+            last_seen = alerts.last_seen_by_alert(path)
+            df = alerts.read_latest_versions(path, (date(2026, 9, 15), date(2026, 10, 14)), last_seen, as_of=as_of)
+            self.assertTrue(df.empty)
+        finally:
+            os.remove(path)
+
     def test_select_winning_versions_is_reusable_across_calls(self):
         # backfill/alerts.py computes this once and passes it into every per-year
         # read_latest_versions call rather than recomputing it each time.
         winners = alerts.select_winning_versions(SAMPLE_ALERTS_PATH)
         df = alerts.read_latest_versions(SAMPLE_ALERTS_PATH, FULL_HISTORY_WINDOW, self.last_seen, winners=winners)
         self.assertEqual(set(df.id.unique()), {293631, 332786, 351440, 691095, 1028254, 1030402})
+
+    def test_ingest_lamp_alerts_window_ends_yesterday(self):
+        # Today's file must not exist, or t-performance-dash never falls back to the
+        # live v3 poller and today freezes at the 11:00 UTC snapshot.
+        with (
+            mock.patch("chalicelib.lamp.alerts.date") as mock_date,
+            mock.patch("chalicelib.lamp.alerts.fetch_alerts_parquet"),
+            mock.patch("chalicelib.lamp.alerts.last_seen_by_alert"),
+            mock.patch("chalicelib.lamp.alerts.read_latest_versions") as mock_read,
+            mock.patch("chalicelib.lamp.alerts.build_v3_alerts", return_value=({}, {})),
+            mock.patch("chalicelib.lamp.alerts._parallel_upload_days"),
+        ):
+            mock_date.today.return_value = date(2026, 10, 15)
+            alerts.ingest_lamp_alerts()
+        window = mock_read.call_args[0][1]
+        self.assertEqual(window, (date(2026, 9, 15), date(2026, 10, 14)))
 
     def test_upload_day_alerts_writes_expected_bucket_and_key(self):
         alerts_by_id = {"1": {"id": "1", "type": "alert", "attributes": {}}}
