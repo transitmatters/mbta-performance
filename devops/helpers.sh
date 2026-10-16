@@ -14,6 +14,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip '**/*.h' || true
     zip -d -qq cfn/layer-deployment.zip '**/*.pyx' || true
     zip -d -qq cfn/layer-deployment.zip '**/*.pxd' || true
+    # Type stubs, never imported at runtime
+    zip -d -qq cfn/layer-deployment.zip '**/*.pyi' || true
     # Numpy tests - delete test files but keep _natype.py (needed by numpy.testing at runtime)
     # Note: numpy/_core/tests/_natype.py must be preserved - it's imported by numpy/testing/_private/utils.py
     # Use explicit paths because wildcards with ** can match too broadly
@@ -128,6 +130,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Zulu || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/I* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/J* || true
+    # dateutil's own tz database; we resolve zones via zoneinfo + tzdata
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/dateutil/zoneinfo/*.tar.gz || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/examples/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/a*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/b*/* || true
@@ -255,4 +259,26 @@ function smoke_layer {
     local status=$?
     rm -rf "$layer_dir"
     return $status
+}
+
+# Strip debug symbols from the layer's compiled libraries. Wheels ship unstripped .so files;
+# --strip-unneeded keeps the dynamic symbol table the loader needs. ddtrace is left as shipped.
+# Needs GNU strip (binutils), so it's a no-op on macOS; deploys and layer.yml run on Linux.
+function strip_binaries {
+    local zipfile="${1:-cfn/layer-deployment.zip}"
+    if ! strip --version 2>/dev/null | grep -q GNU; then
+        echo "GNU strip not found, skipping strip_binaries"
+        return 0
+    fi
+
+    local zippath
+    zippath="$(cd "$(dirname "$zipfile")" && pwd)/$(basename "$zipfile")"
+    local workdir
+    workdir="$(mktemp -d)"
+
+    # *.libs/ holds auditwheel-vendored libraries rewritten by patchelf; stripping those corrupts
+    # their load segments ("ELF load command address/offset not page-aligned"), e.g. numpy's OpenBLAS
+    unzip -q "$zippath" '*.so' '*.so.*' -x '*/site-packages/ddtrace/*' '*.libs/*' -d "$workdir"
+    (cd "$workdir" && find . -type f -print0 | xargs -0 strip --strip-unneeded 2>/dev/null; zip -q -r "$zippath" .)
+    rm -rf "$workdir"
 }
