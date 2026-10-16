@@ -9,7 +9,7 @@ dependencies = [
     "requests>=2.32.3,<3",
     "boto3~=1.43",
     "pandas~=3.0",
-    "datadog_lambda==6.109.0",
+    "datadog_lambda==8.129.0",
     # Each pyarrow major has grown the Lambda layer; bump only once layer.yml's size and smoke checks pass.
     "pyarrow~=26.0",
     "mbta-gtfs-sqlite~=1.2.0",
