@@ -39,6 +39,7 @@ boto3.client("s3", region_name="us-east-1")
 boto3.client("cloudfront", region_name="us-east-1")
 boto3.resource("s3", region_name="us-east-1")
 boto3.resource("sqs", region_name="us-east-1")
+boto3.resource("dynamodb", region_name="us-east-1")
 
 # Timezones resolve from the layer's tzdata (shrink drops most zones but keeps US/*)
 ZoneInfo("US/Eastern")

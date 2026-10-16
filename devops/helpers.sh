@@ -137,7 +137,9 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clean*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloud9/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clouddirectory/* || true
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/d*/* || true
+    # Every d* service except dynamodb, which chalicelib/dynamo.py uses
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/d[a-xz]*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/dynamodbstreams/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/e*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/f*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/g*/* || true
@@ -167,8 +169,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/x*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/y*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/z*/* || true
-    # Service models the prefix rules above miss. Lambda only uses s3, cloudfront and sqs (dynamodb is
-    # already gone via d*). Note zip wildcards cross '/', so s3[a-z]* is used to spare s3 itself.
+    # Service models the prefix rules above miss. We keep s3, cloudfront, sqs and
+    # dynamodb. Note zip wildcards cross '/', so s3[a-z]* is used to spare s3 itself.
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/ce/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudc*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudformation/* || true
