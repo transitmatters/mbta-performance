@@ -187,3 +187,43 @@ function check_package_size {
     
     echo "$zipfile is under the maximum size of $maximumsize bytes, by $difference bytes"
 }
+
+# Check the layer's unzipped size, which is what Lambda actually enforces: 262144000 bytes for the
+# function code plus all layers combined. The limit leaves ~5MB for the app's own deployment.zip.
+function check_unzipped_size {
+    local zipfile="${1:-cfn/layer-deployment.zip}"
+    local maximumsize=257000000
+
+    unzippedsize=$(unzip -l "$zipfile" | tail -1 | awk '{print $1}')
+    difference=$(expr $unzippedsize - $maximumsize)
+
+    echo "$zipfile unzips to $unzippedsize bytes"
+
+    if [ $unzippedsize -ge $maximumsize ]; then
+        echo ""
+        echo "$zipfile unzips to over $maximumsize bytes. Shrink the package by $difference bytes to be able to deploy"
+        exit 1
+    fi
+
+    echo "$zipfile unzips to under the maximum size of $maximumsize bytes, by $difference bytes"
+}
+
+# Import the shrunk layer inside the Lambda Python runtime image, so a too-aggressive shrink fails here
+function smoke_layer {
+    local zipfile="${1:-cfn/layer-deployment.zip}"
+    local helpers_dir
+    helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local layer_dir
+    layer_dir="$(mktemp -d)"
+
+    unzip -q "$zipfile" -d "$layer_dir"
+    docker run --rm --platform linux/amd64 \
+        -v "$layer_dir:/opt:ro" \
+        -v "$helpers_dir/smoke_layer.py:/smoke_layer.py:ro" \
+        -e PYTHONPATH=/opt/python/lib/python3.12/site-packages \
+        --entrypoint python3 \
+        public.ecr.aws/lambda/python:3.12 /smoke_layer.py
+    local status=$?
+    rm -rf "$layer_dir"
+    return $status
+}
