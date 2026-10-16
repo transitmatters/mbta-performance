@@ -66,6 +66,22 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/include/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/src/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/src/* || true
+    # Pyarrow components we never load. Nothing we keep links these (checked DT_NEEDED), and
+    # pyarrow.fs / pyarrow.dataset import the optional modules inside try/except ImportError.
+    # We read S3 via boto3 and HTTP via HttpRangeFile, never pyarrow.fs.S3FileSystem.
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_flight.so* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python_flight.so* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_flight.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/flight.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_s3.so* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_s3fs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_orc.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_dataset_orc.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/orc.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_hdfs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_gcsfs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_azurefs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_pyarrow_cpp_tests.cpython* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/examples/**/* || true
