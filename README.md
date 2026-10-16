@@ -33,9 +33,10 @@ Scripts for processing MBTA performance data both from LAMP and from monthly his
 
 ### Testing
 
-Run tests with pytest:
+Run tests with pytest. The bus segment tests need the `geo` dependency group, and the PMTiles tests also need [tippecanoe](https://github.com/felt/tippecanoe) (they're skipped without it):
 
 ```shell
+uv sync --group dev --group geo
 uv run pytest mbta-performance
 ```
 
