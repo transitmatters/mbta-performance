@@ -10,10 +10,8 @@ dependencies = [
     "boto3~=1.43",
     "pandas~=3.0",
     "datadog_lambda==8.129.0",
-    # Each pyarrow major has grown the Lambda layer; bump only once layer.yml's size and smoke checks pass.
     "pyarrow~=26.0",
     "mbta-gtfs-sqlite~=1.2.0",
-    # pandas 3 only pulls tzdata on Windows; ZoneInfo("US/Eastern") needs it in Lambda
     "tzdata>=2026.1",
 ]
 
@@ -23,7 +21,6 @@ dev = [
     "ruff>=0.16.7",
     "pytest~=9.1.1",
     "pre-commit>=4.6.2",
-    # botocore needs CRT to use `aws login` profiles locally; dev-only so it never reaches the layer
     "botocore[crt]",
 ]
 # Kept out of the base dependencies so the Lambda deployment (packaged via `uv export
