@@ -8,7 +8,7 @@ so an over-eager trim fails CI instead of failing in production. Run via `smoke_
 import io
 from zoneinfo import ZoneInfo
 
-import boto3  # noqa: F401
+import boto3
 import datadog_lambda.wrapper  # noqa: F401
 import mbta_gtfs_sqlite  # noqa: F401
 import numpy  # noqa: F401
@@ -33,6 +33,12 @@ buffer.seek(0)
 table = pq.ParquetFile(buffer).read()
 filtered = table.filter(pc.field("ts") >= pa.scalar(2, pa.int64()))
 assert filtered.num_rows == 2, filtered
+
+# Clients for the services we call; shrink deletes every other botocore service model
+boto3.client("s3", region_name="us-east-1")
+boto3.client("cloudfront", region_name="us-east-1")
+boto3.resource("s3", region_name="us-east-1")
+boto3.resource("sqs", region_name="us-east-1")
 
 # Timezones resolve from the layer's tzdata (shrink drops most zones but keeps US/*)
 ZoneInfo("US/Eastern")

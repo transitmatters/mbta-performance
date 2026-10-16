@@ -167,6 +167,28 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/x*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/y*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/z*/* || true
+    # Service models the prefix rules above miss. Lambda only uses s3, cloudfront and sqs (dynamodb is
+    # already gone via d*). Note zip wildcards cross '/', so s3[a-z]* is used to spare s3 itself.
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/ce/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudc*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudformation/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudfront-*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudh*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clouds*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudt*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudw*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/s3[a-z]*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sc*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sd*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sh*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/si*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/so*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sw*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sy*/* || true
+    # Only a fallback for when certifi is missing, and certifi comes with requests
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/botocore/cacert.pem || true
+    # Install manifests, only read by pip uninstall and importlib.metadata.files()
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*.dist-info/RECORD || true
 }
 
 # Check if the layer deployment package is under the maximum size
