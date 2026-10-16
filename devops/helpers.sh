@@ -82,6 +82,11 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_gcsfs.cpython* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_azurefs.cpython* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_pyarrow_cpp_tests.cpython* || true
+    # The wheel ships real copies instead of symlinks; the loader only asks for the .so.NNNN SONAME
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python.so || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python.so.*.*.* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python_parquet_encryption.so || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python_parquet_encryption.so.*.*.* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/examples/**/* || true
