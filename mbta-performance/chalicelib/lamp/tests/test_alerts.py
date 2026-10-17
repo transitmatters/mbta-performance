@@ -331,6 +331,41 @@ class TestAlerts(unittest.TestCase):
         finally:
             os.remove(path)
 
+    def test_closed_alert_spans_until_close_in_a_large_file(self):
+        # Regression: last_seen's closed_timestamp is float (NaN for never-closed
+        # alerts), and coalescing it with the int64 period end promoted to double --
+        # which in pyarrow 17 turns a multi-chunk column's nulls into 0.0. The
+        # effective end then collapsed to the alert's start, so a closed alert with
+        # no period end showed up only on its first day. It takes enough rows for
+        # the join to produce multiple chunks.
+        start = datetime(2026, 9, 11, 16, 54, tzinfo=ET).timestamp()
+        closed = datetime(2026, 10, 13, 21, 44, tzinfo=ET).timestamp()
+        rows = []
+        for i in range(40_000):
+            filler = self._ongoing_alert_row(1_000_000 + i, start, start)
+            filler["active_period.end_timestamp"] = int(start) + 3600
+            rows.append(filler)
+        target = self._ongoing_alert_row(999005, start, start)
+        rows.append(target)
+        rows.append(
+            {
+                **target,
+                "last_modified_timestamp": int(closed),
+                "closed_timestamp": int(closed),
+                "active_period.start_timestamp": None,
+            }
+        )
+        path = _write_alerts_parquet(rows)
+        try:
+            last_seen = alerts.last_seen_by_alert(path)
+            window = (date(2026, 9, 1), date(2026, 10, 14))
+            df = alerts.read_latest_versions(path, window, last_seen)
+            _, day_index = alerts.build_v3_alerts(df, window=window)
+            days = [d for d, ids in day_index.items() if "999005" in ids]
+            self.assertEqual((min(days), max(days)), (date(2026, 9, 11), date(2026, 10, 13)))
+        finally:
+            os.remove(path)
+
     def test_select_winning_versions_is_reusable_across_calls(self):
         # backfill/alerts.py computes this once and passes it into every per-year
         # read_latest_versions call rather than recomputing it each time.

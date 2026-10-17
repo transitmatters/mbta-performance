@@ -218,6 +218,12 @@ def read_latest_versions(
     last_seen_table = pa.Table.from_pandas(last_seen.reset_index(), preserve_index=False).rename_columns(
         ["id", "_all_versions_last_modified", "_all_versions_closed"]
     )
+    # closed_timestamp comes out of pandas as float (NaN for never-closed alerts).
+    # Coalescing it with the int64 period end would promote to double, which in
+    # pyarrow 17 turns a multi-chunk column's nulls into 0.0 -- so keep it int64.
+    last_seen_table = last_seen_table.set_column(
+        2, "_all_versions_closed", pc.cast(last_seen_table["_all_versions_closed"], pa.int64())
+    )
 
     parquet_file = pq.ParquetFile(path)
     batches = []
