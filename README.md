@@ -6,7 +6,7 @@ Scripts for processing MBTA performance data both from LAMP and from monthly his
 
 ### Requirements
 
-- Python 3.12
+- Python 3.14 (with [mise](https://mise.jdx.dev): `mise trust && mise install`, pinned in `.python-version`)
 - [uv](https://docs.astral.sh/uv/) - Fast Python package manager
   - Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
   - Verify: `uv --version`
@@ -33,9 +33,10 @@ Scripts for processing MBTA performance data both from LAMP and from monthly his
 
 ### Testing
 
-Run tests with pytest:
+Run tests with pytest. The bus segment tests need the `geo` dependency group, and the PMTiles tests also need [tippecanoe](https://github.com/felt/tippecanoe) (they're skipped without it):
 
 ```shell
+uv sync --group dev --group geo
 uv run pytest mbta-performance
 ```
 
@@ -54,6 +55,12 @@ If you want more verbose logging and debug info, export `DEBUG` as log level. Ho
 
 ```shell
 export LOG_LEVEL="DEBUG"
+```
+
+GTFS feeds are cached locally (`data/gtfs_archives/` for historic, `./feeds` for LAMP backfills). To share one cache with other TransitMatters repos, point `GTFS_DATA_DIR` at a common directory; archives go in `$GTFS_DATA_DIR/gtfs_archives` and sqlite feeds in `$GTFS_DATA_DIR/sqlite_feeds`.
+
+```shell
+export GTFS_DATA_DIR="$HOME/transitmatters-gtfs"
 ```
 
 ### Run today's LAMP ingest

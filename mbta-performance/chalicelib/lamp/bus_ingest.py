@@ -191,7 +191,26 @@ def _recalculate_bus_fields_from_gtfs(
     unmatched_trips = pq_df["scheduled_trip_id"].isna().sum()
     if unmatched_trips > 0:
         logger.warning(f"{unmatched_trips} bus events could not be matched to a scheduled trip")
+
+    # Filter only after trip matching: matching keys on each trip's first stop, which need not be a checkpoint.
+    pq_df = _filter_to_checkpoints(pq_df, gtfs_stops)
     return pq_df[BUS_S3_COLUMNS]
+
+
+def _filter_to_checkpoints(pq_df: pd.DataFrame, gtfs_stops: pd.DataFrame) -> pd.DataFrame:
+    """Keep only events at stops that are GTFS checkpoints for that route and direction.
+
+    A route/direction/stop counts as a checkpoint if any of the day's scheduled trips gives it a
+    checkpoint_id -- a few stops are checkpoints only on some trip variants. GTFS's timepoint column
+    is not usable here: the MBTA sets it to 0 at most checkpoints.
+    """
+    is_checkpoint = gtfs_stops["checkpoint_id"].notna() & (gtfs_stops["checkpoint_id"] != "")
+    checkpoints = gtfs_stops.loc[is_checkpoint, RTE_DIR_STOP].drop_duplicates()
+
+    events_before = len(pq_df)
+    pq_df = pq_df.merge(checkpoints, how="inner", on=RTE_DIR_STOP)
+    logger.info(f"Kept {len(pq_df)} of {events_before} bus events at {len(checkpoints)} route checkpoints")
+    return pq_df
 
 
 def _average_bus_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:

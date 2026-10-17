@@ -14,6 +14,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip '**/*.h' || true
     zip -d -qq cfn/layer-deployment.zip '**/*.pyx' || true
     zip -d -qq cfn/layer-deployment.zip '**/*.pxd' || true
+    # Type stubs, never imported at runtime
+    zip -d -qq cfn/layer-deployment.zip '**/*.pyi' || true
     # Numpy tests - delete test files but keep _natype.py (needed by numpy.testing at runtime)
     # Note: numpy/_core/tests/_natype.py must be preserved - it's imported by numpy/testing/_private/utils.py
     # Use explicit paths because wildcards with ** can match too broadly
@@ -66,6 +68,27 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/include/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/src/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/src/* || true
+    # Pyarrow components we never load. Nothing we keep links these (checked DT_NEEDED), and
+    # pyarrow.fs / pyarrow.dataset import the optional modules inside try/except ImportError.
+    # We read S3 via boto3 and HTTP via HttpRangeFile, never pyarrow.fs.S3FileSystem.
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_flight.so* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python_flight.so* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_flight.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/flight.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_s3.so* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_s3fs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_orc.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_dataset_orc.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/orc.py || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_hdfs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_gcsfs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_azurefs.cpython* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/_pyarrow_cpp_tests.cpython* || true
+    # The wheel ships real copies instead of symlinks; the loader only asks for the .so.NNNN SONAME
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python.so || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python.so.*.*.* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python_parquet_encryption.so || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/pyarrow/libarrow_python_parquet_encryption.so.*.*.* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/**/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/benchmarks/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/examples/**/* || true
@@ -107,6 +130,8 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/Zulu || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/I* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*/zoneinfo/J* || true
+    # dateutil's own tz database; we resolve zones via zoneinfo + tzdata
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/dateutil/zoneinfo/*.tar.gz || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/examples/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/a*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/b*/* || true
@@ -116,7 +141,9 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clean*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloud9/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clouddirectory/* || true
-    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/d*/* || true
+    # Every d* service except dynamodb, which chalicelib/dynamo.py uses
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/d[a-xz]*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/dynamodbstreams/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/e*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/f*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/g*/* || true
@@ -146,6 +173,28 @@ function shrink {
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/x*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/y*/* || true
     zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/z*/* || true
+    # Service models the prefix rules above miss. We keep s3, cloudfront, sqs and
+    # dynamodb. Note zip wildcards cross '/', so s3[a-z]* is used to spare s3 itself.
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/ce/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudc*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudformation/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudfront-*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudh*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/clouds*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudt*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/cloudw*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/s3[a-z]*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sc*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sd*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sh*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/si*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/so*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sw*/* || true
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/boto*/data/sy*/* || true
+    # Only a fallback for when certifi is missing, and certifi comes with requests
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/botocore/cacert.pem || true
+    # Install manifests, only read by pip uninstall and importlib.metadata.files()
+    zip -d -qq cfn/layer-deployment.zip python/lib/**/site-packages/*.dist-info/RECORD || true
 }
 
 # Check if the layer deployment package is under the maximum size
@@ -170,4 +219,69 @@ function check_package_size {
     fi
     
     echo "$zipfile is under the maximum size of $maximumsize bytes, by $difference bytes"
+}
+
+# Check the layer's unzipped size, which is what Lambda actually enforces: 262144000 bytes for the
+# function code plus all layers combined. The limit leaves ~5MB for the app's own deployment.zip.
+function check_unzipped_size {
+    local zipfile="${1:-cfn/layer-deployment.zip}"
+    local maximumsize=257000000
+
+    unzippedsize=$(unzip -l "$zipfile" | tail -1 | awk '{print $1}')
+    difference=$(expr $unzippedsize - $maximumsize)
+
+    echo "$zipfile unzips to $unzippedsize bytes"
+
+    if [ $unzippedsize -ge $maximumsize ]; then
+        echo ""
+        echo "$zipfile unzips to over $maximumsize bytes. Shrink the package by $difference bytes to be able to deploy"
+        exit 1
+    fi
+
+    echo "$zipfile unzips to under the maximum size of $maximumsize bytes, by $difference bytes"
+}
+
+# Import the shrunk layer inside the Lambda Python runtime image, so a too-aggressive shrink fails here
+function smoke_layer {
+    local zipfile="${1:-cfn/layer-deployment.zip}"
+    local helpers_dir
+    helpers_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local layer_dir
+    layer_dir="$(mktemp -d)"
+
+    unzip -q "$zipfile" -d "$layer_dir"
+    # Run in the image matching the Python version the layer was built for (python/lib/pythonX.Y)
+    local python_version
+    python_version="$(basename "$(ls -d "$layer_dir"/python/lib/python3.*)" | sed 's/^python//')"
+    docker run --rm --platform linux/amd64 \
+        -v "$layer_dir:/opt:ro" \
+        -v "$helpers_dir/smoke_layer.py:/smoke_layer.py:ro" \
+        -e PYTHONPATH="/opt/python/lib/python$python_version/site-packages" \
+        --entrypoint python3 \
+        "public.ecr.aws/lambda/python:$python_version" /smoke_layer.py
+    local status=$?
+    rm -rf "$layer_dir"
+    return $status
+}
+
+# Strip debug symbols from the layer's compiled libraries. Wheels ship unstripped .so files;
+# --strip-unneeded keeps the dynamic symbol table the loader needs. ddtrace is left as shipped.
+# Needs GNU strip (binutils), so it's a no-op on macOS; deploys and layer.yml run on Linux.
+function strip_binaries {
+    local zipfile="${1:-cfn/layer-deployment.zip}"
+    if ! strip --version 2>/dev/null | grep -q GNU; then
+        echo "GNU strip not found, skipping strip_binaries"
+        return 0
+    fi
+
+    local zippath
+    zippath="$(cd "$(dirname "$zipfile")" && pwd)/$(basename "$zipfile")"
+    local workdir
+    workdir="$(mktemp -d)"
+
+    # *.libs/ holds auditwheel-vendored libraries rewritten by patchelf; stripping those corrupts
+    # their load segments ("ELF load command address/offset not page-aligned"), e.g. numpy's OpenBLAS
+    unzip -q "$zippath" '*.so' '*.so.*' -x '*/site-packages/ddtrace/*' '*.libs/*' -d "$workdir"
+    (cd "$workdir" && find . -type f -print0 | xargs -0 strip --strip-unneeded 2>/dev/null; zip -q -r "$zippath" .)
+    rm -rf "$workdir"
 }

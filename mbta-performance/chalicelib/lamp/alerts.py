@@ -58,11 +58,20 @@ S3_BUCKET = "tm-mbta-performance"
 S3_KEY_TEMPLATE = "Alerts/lamp/{YYYY_MM_DD}.json.gz"
 LOCAL_PARQUET_PATH = "/tmp/lamp_alerts.parquet"
 
-# The scheduled job only rebuilds a rolling window around today -- comfortably
+# The scheduled job only rebuilds a rolling window of recent days -- comfortably
 # inside Lambda memory/time limits and self-healing day to day. A full rebuild of
 # all history is a separate local script: chalicelib/lamp/backfill/alerts.py.
+#
+# The window always ends at *yesterday*. Today's (and any future day's) file must
+# not exist: t-performance-dash falls back to the live v3 poller's file only when
+# the LAMP file is missing, and a file written at the 11:00 UTC run would freeze
+# today at a ~7 AM ET snapshot.
 LOOKBACK_DAYS = 30
-LOOKAHEAD_DAYS = 90
+
+# An open-ended alert that LAMP has never marked closed is still in the feed, so it
+# is treated as ongoing (effective end = now) -- but only if it was revised within
+# this long, so an orphaned alert can't reappear in every new day file forever.
+ONGOING_ALERT_MAX_AGE_SECONDS = 365 * 24 * 60 * 60
 
 # We skip `description_text.translation.text` and `recurrence_text.translation.text`:
 # together they account for ~170MB of the file's ~480MB uncompressed, and nothing
@@ -155,7 +164,11 @@ def select_winning_versions(path: str) -> pa.Table:
 
 
 def read_latest_versions(
-    path: str, window: tuple, last_seen: pd.DataFrame, winners: Optional[pa.Table] = None
+    path: str,
+    window: tuple,
+    last_seen: pd.DataFrame,
+    winners: Optional[pa.Table] = None,
+    as_of: Optional[int] = None,
 ) -> pd.DataFrame:
     """Read the latest active-period-bearing version of every alert overlapping `window`.
 
@@ -174,16 +187,23 @@ def read_latest_versions(
 
     Each alert's effective end (used only for bucketing into day files, not for the
     "end" field we emit) is: its active_period.end if present, else the last time
-    MBTA marked it closed, else the last time it was modified at all -- clamped to
-    never precede active_period.start. Without that clamp, a pre-announced alert
-    (created long before its future active period, never revised since) would have
-    an effective end older than its own start, which can make it fail this
-    function's window filter and makes service_dates_for's day-range loop yield no
-    days at all. We do not extend an unclosed alert's effective end to "today" --
-    most such alerts are years-old and orphaned rather than genuinely ongoing, and
-    today's alerts are covered by the live v3 poller regardless (see
-    t-performance-dash's same-day fallback), so there's no accuracy gained and a
-    real risk of a stale alert reappearing in every day file forever.
+    MBTA marked it closed, else -- for a never-closed alert -- `as_of` (default: now)
+    if it was revised within ONGOING_ALERT_MAX_AGE_SECONDS, else the last time it was
+    modified at all. All of that is clamped to never precede active_period.start.
+
+    The `as_of` case keeps genuinely ongoing alerts (a long-running detour or
+    station closure, never revised since it was posted) in every day file they
+    cover; otherwise they drop out once their last revision ages past the window.
+    The age guard keeps a years-old orphan from reappearing forever.
+
+    The clamp matters for a pre-announced alert (created long before its future
+    active period, never revised since): its effective end would otherwise be older
+    than its own start, which can make it fail this function's window filter and
+    makes service_dates_for's day-range loop yield no days at all.
+
+    The output keeps each alert's last closed_timestamp across all versions as
+    `closed_at` -- the winning version's own closed_timestamp is almost always null,
+    since MBTA only sets it on the final, active_period-less version.
     """
     # int(), not a bare float: all our *_timestamp columns are whole-second int64,
     # and comparing an int64 Arrow field against a Python float literal (rather
@@ -191,11 +211,18 @@ def read_latest_versions(
     # unsafe int64->float32 cast for values above 2**24, raising ArrowInvalid.
     window_start = int(service_day_start(window[0]).timestamp())
     window_end = int(service_day_start(window[1] + timedelta(days=1)).timestamp())
+    as_of = pa.scalar(int(as_of if as_of is not None else datetime.now().timestamp()), pa.int64())
 
     if winners is None:
         winners = select_winning_versions(path)
     last_seen_table = pa.Table.from_pandas(last_seen.reset_index(), preserve_index=False).rename_columns(
         ["id", "_all_versions_last_modified", "_all_versions_closed"]
+    )
+    # closed_timestamp comes out of pandas as float (NaN for never-closed alerts).
+    # Coalescing it with the int64 period end would promote to double, which in
+    # pyarrow 17 turns a multi-chunk column's nulls into 0.0 -- so keep it int64.
+    last_seen_table = last_seen_table.set_column(
+        2, "_all_versions_closed", pc.cast(last_seen_table["_all_versions_closed"], pa.int64())
     )
 
     parquet_file = pq.ParquetFile(path)
@@ -210,19 +237,24 @@ def read_latest_versions(
         if batch.num_rows == 0:
             continue
         batch = batch.join(last_seen_table, keys="id", join_type="left outer")
-        eff_end = pc.coalesce(
-            batch["active_period.end_timestamp"], batch["_all_versions_closed"], batch["_all_versions_last_modified"]
+        recently_revised = pc.less_equal(
+            pc.subtract(as_of, batch["_all_versions_last_modified"]), ONGOING_ALERT_MAX_AGE_SECONDS
         )
+        never_closed_end = pc.if_else(recently_revised, as_of, batch["_all_versions_last_modified"])
+        eff_end = pc.coalesce(batch["active_period.end_timestamp"], batch["_all_versions_closed"], never_closed_end)
         eff_end = pc.max_element_wise(eff_end, batch["active_period.start_timestamp"])
         batch = batch.append_column("eff_end", eff_end)
         batch = batch.filter(
             (pc.field("active_period.start_timestamp") < window_end) & (pc.field("eff_end") >= window_start)
         )
         if batch.num_rows:
-            batches.append(batch.drop_columns(["_all_versions_last_modified", "_all_versions_closed"]))
+            batch = batch.drop_columns(["_all_versions_last_modified"])
+            batches.append(
+                batch.rename_columns([c if c != "_all_versions_closed" else "closed_at" for c in batch.column_names])
+            )
 
     if not batches:
-        return pd.DataFrame(columns=[*ALERT_COLUMNS, "eff_end"])
+        return pd.DataFrame(columns=[*ALERT_COLUMNS, "closed_at", "eff_end"])
 
     return pa.concat_tables(batches).to_pandas()
 
@@ -309,6 +341,9 @@ def build_v3_alerts(df: pd.DataFrame, window: Optional[tuple] = None) -> tuple:
                 "service_effect": _clean(row["service_effect_text.translation.text"]),
                 "created_at": _iso(row["created_timestamp"]),
                 "updated_at": _iso(row["last_modified_timestamp"]),
+                # When MBTA took the alert down -- unlike active_period.end, which for
+                # subway delays is usually a ~2h placeholder set when it's posted.
+                "closed_timestamp": _iso(row["closed_at"]),
                 "active_period": periods_by_id[alert_id],
                 "informed_entity": entities_by_id[alert_id],
             },
@@ -333,8 +368,9 @@ def upload_day_alerts(day: date, alerts: dict, day_index: dict) -> list:
 _parallel_upload_days = parallel.make_parallel(upload_day_alerts)
 
 
-def ingest_lamp_alerts(lookback_days: int = LOOKBACK_DAYS, lookahead_days: int = LOOKAHEAD_DAYS) -> None:
-    """Rebuild the rolling window of `Alerts/lamp/{date}.json.gz` day files.
+def ingest_lamp_alerts(lookback_days: int = LOOKBACK_DAYS) -> None:
+    """Rebuild the rolling window of `Alerts/lamp/{date}.json.gz` day files, from
+    `lookback_days` ago through yesterday (see LOOKBACK_DAYS for why not today).
 
     Runs daily and re-derives the window from scratch each time (rather than
     tracking incremental state) so retroactive corrections in the LAMP source data
@@ -349,7 +385,7 @@ def ingest_lamp_alerts(lookback_days: int = LOOKBACK_DAYS, lookahead_days: int =
     a warm Lambda container's next invocation to trip over.
     """
     today = date.today()
-    window = (today - timedelta(days=lookback_days), today + timedelta(days=lookahead_days))
+    window = (today - timedelta(days=lookback_days), today - timedelta(days=1))
     logger.info(f"Ingesting LAMP alerts for window {window[0]} to {window[1]}")
 
     path = LOCAL_PARQUET_PATH

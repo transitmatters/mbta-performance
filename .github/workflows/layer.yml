@@ -13,9 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     # Only run for PRs from the same repository (not forks) to protect secrets
     if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.12"]
     env:
       AWS_PROFILE: transitmatters
       AWS_DEFAULT_REGION: us-east-1
@@ -25,15 +22,13 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Set up Python via mise
+        uses: jdx/mise-action@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Generate AWS profile
         run: |
@@ -67,6 +62,7 @@ jobs:
           source ../devops/helpers.sh
           echo "Shrinking deployment package..."
           shrink
+          strip_binaries
 
           # Check size after shrinking
           newsize=$(wc -c <"cfn/layer-deployment.zip")
@@ -79,3 +75,10 @@ jobs:
           cd mbta-performance
           source ../devops/helpers.sh
           check_package_size
+          check_unzipped_size
+
+      - name: Smoke-test layer in the Lambda runtime
+        run: |
+          cd mbta-performance
+          source ../devops/helpers.sh
+          smoke_layer
