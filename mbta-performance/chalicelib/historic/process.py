@@ -133,6 +133,8 @@ def process_ferry(
     )
 
     missing_trip_ids_mask = df["trip_id"].isna()
+    # An all-NaN trip_id column reads as float64, which pandas 3 won't silently upcast for strings
+    df["trip_id"] = df["trip_id"].astype(object)
     df.loc[missing_trip_ids_mask, "trip_id"] = [str(uuid.uuid4()) for _ in range(missing_trip_ids_mask.sum())]
 
     # Convert to datetime first, then apply timezone localization
@@ -169,7 +171,7 @@ def process_ferry(
 
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound)
-    df = df.infer_objects(copy=False)
+    df = df.infer_objects()
     # Convert direction_id to integer to ensure outputs are integers
     df["travel_direction"] = pd.to_numeric(df["travel_direction"])
     # Replace terminal values with GTFS Approved Values

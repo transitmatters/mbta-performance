@@ -60,13 +60,13 @@ class TestIngest(unittest.TestCase):
                 list(inital_df.dtypes),
                 [
                     pd.Int64Dtype(),  # service_date
-                    "string[python]",  # route_id
-                    "string[python]",  # trip_id
-                    "string[python]",  # stop_id
+                    pd.StringDtype(),  # route_id
+                    pd.StringDtype(),  # trip_id
+                    pd.StringDtype(),  # stop_id
                     pd.BooleanDtype(),  # direction_id
                     pd.Int16Dtype(),  # stop_sequence
-                    "string[python]",  # vehicle_id
-                    "string[python]",  # vehicle_label
+                    pd.StringDtype(),  # vehicle_id
+                    pd.StringDtype(),  # vehicle_label
                     pd.Int64Dtype(),  # move_timestamp
                     pd.Int64Dtype(),  # stop_timestamp
                     pd.Int64Dtype(),
@@ -76,7 +76,7 @@ class TestIngest(unittest.TestCase):
                     pd.Int64Dtype(),
                     pd.Int64Dtype(),
                     pd.Int64Dtype(),
-                    "string[python]",  # vehicle_consist
+                    pd.StringDtype(),  # vehicle_consist
                 ],
             )
 

@@ -3,15 +3,16 @@ name = "mbta-performance"
 version = "0.1.0"
 description = "Processing of static MBTA performance data"
 authors = [{ name = "TransitMatters Labs Team" }]
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 license = "MIT"
 dependencies = [
     "requests>=2.32.3,<3",
-    "boto3~=1.34.162",
-    "pandas~=2.2.3",
-    "datadog_lambda==6.109.0",
-    "pyarrow~=17.0.0",
+    "boto3~=1.43",
+    "pandas~=3.0",
+    "datadog_lambda==8.129.0",
+    "pyarrow~=26.0",
     "mbta-gtfs-sqlite~=1.2.0",
+    "tzdata>=2026.1",
 ]
 
 [dependency-groups]
@@ -20,14 +21,15 @@ dev = [
     "ruff>=0.16.7",
     "pytest~=9.1.1",
     "pre-commit>=4.6.2",
+    "botocore[crt]",
 ]
 # Kept out of the base dependencies so the Lambda deployment (packaged via `uv export
 # --no-dev`, which only pulls in explicitly-requested groups) never bundles them. Only
 # needed by code paths that run outside Lambda, e.g. a k8s cron job -- `uv sync --group geo`.
 geo = [
-    "shapely~=2.0",
-    "geopandas~=1.0",
-    "pyproj~=3.6",
+    "shapely~=2.1",
+    "geopandas~=1.1",
+    "pyproj~=3.7",
 ]
 
 [tool.uv]
@@ -39,4 +41,4 @@ build-backend = "hatchling.build"
 
 [tool.black]
 line-length = 120
-target-version = ['py312']
+target-version = ['py314']
