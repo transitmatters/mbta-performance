@@ -21,9 +21,11 @@ uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 -
 uv run python -m mbta-performance.chalicelib.lamp.bus.ingest --date 2026-09-03 --write-leaderboard
 ```
 
-One row per `(route, direction, from_stop, to_stop, service_date, time_band)`. A typical
-weekday produces ~53k rows covering ~10.8k distinct segments across 151 routes, and takes
-about 25 seconds end to end.
+One row per `(route, direction, from_stop, to_stop, service_date, time_band)`, where
+`time_band` is one of six departure windows or `all_day` (see "Time bands" below). A typical
+weekday produces ~64k rows -- ~53k band rows plus one `all_day` row for each of the ~10.8k
+distinct segments -- across 152 routes, and takes about 40 seconds end to end (2026-09-17:
+38s, of which ~15s is reading LAMP and building traversals and ~23s is aggregation).
 
 ## Pipeline
 
@@ -32,9 +34,39 @@ about 25 seconds end to end.
    and pulls just that row group — ~35MB, rather than downloading the 6.8GB all-time file.
 2. **Locate every stop along its route pattern's shape** (`gtfs_geo.py`, `patterns.py`).
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
-4. **Build per-traversal times, then aggregate** to percentiles per time band.
+4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a
+   whole-day `all_day` band.
 5. **Write GeoParquet** with road-following `LineString` geometry (`geoparquet.py`).
 6. **Optionally build PMTiles** from the same result, for the live map (`pmtiles.py`).
+
+## Time bands
+
+Every traversal is labelled by the time it *departed* its first stop, in seconds after
+midnight of the service date (`constants.TIME_BANDS`, `segments.assign_time_band`):
+
+| `time_band` | Departs |
+| --- | --- |
+| `early_am` | before 7:00 |
+| `am_peak` | 7:00-9:00 |
+| `midday` | 9:00-16:00 |
+| `pm_peak` | 16:00-18:30 |
+| `evening` | 18:30-22:00 |
+| `late_night` | 22:00 until 8:00 the next morning (after-midnight trips stay on their service date) |
+| `all_day` | any of the above |
+
+`all_day` (`constants.ALL_DAY_BAND`) is not a seventh window and is deliberately not in
+`TIME_BANDS`. `aggregate_segments` builds it from the same traversals the six bands use --
+one extra aggregation with `time_band` dropped from the group key -- and concatenates those
+rows onto the band rows. It is never derived from the band rows: `p50_speed_mph` is a
+median, and a median of band medians is not the day's median. A traversal that departed
+outside every band (before 0:00 or after 32:00) is dropped before both aggregations, so
+`all_day` covers exactly the traversals the bands do. In practice there are none: across 38
+real days (10.8M traversals) every departure fell between 3:00 and 27:30.
+
+Because `aggregate_segments` is shared, `all_day` reaches every output the bands do -- daily
+(`ingest.py`, one row per segment) and weekly/monthly (`trends.py`, one row per segment per
+`day_type`) -- with the same columns as any band row. GeoParquet and the leaderboard hold it
+alongside the bands; PMTiles puts it in an archive of its own (see "PMTiles" below).
 
 ## Output location
 
@@ -42,7 +74,7 @@ about 25 seconds end to end.
 s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.parquet
 ```
 
-One self-contained GeoParquet per service date, ~4.1MB, holding the whole network. Month
+One self-contained GeoParquet per service date, ~5.7MB, holding the whole network. Month
 and day are **not** zero-padded, matching the existing `Events-lamp/` and `Events/` keys.
 
 This deliberately breaks from the per-`(stop, day)` CSV layout the rest of the bucket uses.
@@ -63,6 +95,7 @@ extension:
 
 ```
 s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments_all_day.pmtiles
 ```
 
 `pmtiles.py` builds it from the same `result` frame the GeoParquet above is written from --
@@ -73,6 +106,23 @@ stop names, time band, `p50_speed_mph`, traversal counts) are handed to tippecan
 column like `p90_speed_mph` or `moving_speed_mph` can never end up on the map by accident --
 see `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend
 type.
+
+**`all_day` rows are a separate archive, `segments_all_day.pmtiles`;** `segments.pmtiles`
+holds only the six time bands. Both use the same `segments` layer and the same properties
+(an all-day feature has `time_band = "all_day"`), so the map can point one layer config at
+either URL. They're split because an all_day feature has exactly the geometry of a band
+feature, and `--drop-densest-as-needed` drops exact duplicates first. Measured with both in
+one archive (2026-09-17): no all_day feature survived at zooms 4-11 -- the dashboard opens
+at zoom 11 -- and zoom 11 went over the 500KB tile limit and lost 86% of its band features.
+Split (`pmtiles.split_all_day`), the band archive is exactly what it was before all_day
+existed, and the all-day archive keeps essentially every segment from zoom 8 up (~60% at
+zoom 4) and every route at `MINIMUM_ZOOM`, checked on a real day, week (2026-W38) and month
+(2026-08). It costs 6.5MB a day (9.2MB a week, 9.6MB a month) and 2-3s of tippecanoe.
+
+The band archive thins out at low zoom on its own, which predates all_day: at zooms 4-10
+only 8-14% of band features survive on a daily file, and 5-7% through zoom 11 on a
+weekly/monthly one, because every segment's geometry is repeated once per band and the
+duplicates are the "densest" features. Every route is still present at `MINIMUM_ZOOM`.
 
 **Requires `tippecanoe` on `PATH`.** It's a system binary, not a Python dependency -- there's
 nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (or the
@@ -131,7 +181,9 @@ uv run python -m mbta-performance.chalicelib.lamp.bus.trends_backfill --weeks --
 
 ```
 s3://tm-mbta-performance/BusSpeedSegments/weekly/Year=2026/Week=6/segments.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/weekly/Year=2026/Week=6/segments_all_day.pmtiles
 s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=2/segments.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=2/segments_all_day.pmtiles
 ```
 
 **Weeks use ISO 8601 (year, week); months use plain calendar (year, month).** `periods.py`
@@ -176,8 +228,9 @@ trips/stop_times/stops/shapes reads `build_pattern_geometry` already does.
 
 `day_type` reaches the map the same way `time_band` does -- as a plain tile property
 (`pmtiles.TILE_PROPERTIES`) a consumer filters on client-side, not a second file or S3 key.
-It's absent from the daily pipeline's output entirely: a single date is already wholly one
-type or the other, so there's nothing to split there.
+It's absent from the daily segment outputs entirely: a single date is already wholly one
+type or the other, so there's nothing to split there. (The daily `DeliveredTripMetricsBus`
+rows do carry it, from the same `day_type_for` -- see "Daily route metrics".)
 
 Geometry is chosen the same way as the daily pipeline (`select_segment_geometry`): whichever
 pattern actually ran each segment most often across the *whole* period, not per day.
@@ -214,11 +267,13 @@ s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=2/leaderboard.
 Segments are ranked slowest-first (by `p50_speed_mph`) **within each time band**, not blended
 across them -- a segment that's slow at 7am rush and one that's slow at midnight aren't
 comparable, the same reasoning behind splitting by time band and `day_type` everywhere else
-in this pipeline. The result is a dict keyed by `time_band`, e.g. `{"am_peak": [...]}`; on the
-weekly/monthly files, which also carry `day_type`, it's nested one level deeper:
-`{"business_day": {"am_peak": [...]}, "weekend_or_holiday": {...}}`. A daily file has no
-`day_type` key at all, matching how it's absent from the PMTiles properties for the same
-reason.
+in this pipeline. The result is a dict keyed by `time_band`, including `all_day`, e.g.
+`{"all_day": [...], "am_peak": [...], ...}`; on the weekly/monthly files, which also carry
+`day_type`, it's nested one level deeper: `{"business_day": {"all_day": [...], "am_peak":
+[...]}, "weekend_or_holiday": {...}}`. `all_day` is ranked like any other band, from its own
+rows, and needs no code of its own here. A daily file has no `day_type` key at all, matching
+how it's absent from the PMTiles properties for the same reason. A band with no segment
+above `LEADERBOARD_MIN_TRAVERSALS` has no key.
 
 Each entry carries only what a leaderboard row needs to display -- `route_id`, `direction_id`,
 `from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`
@@ -261,6 +316,23 @@ upserts them into a `DeliveredTripMetricsBus` DynamoDB table (`route` partition 
 | `miles_covered` | Sum of actual segment distance traveled that day. |
 | `total_time` | Sum of actual segment time (dwell-inclusive), in seconds. |
 | `median_speed_mph` / `mean_speed_mph` | Across all segment traversals for the route that day. |
+| `day_type` | `business_day` or `weekend_or_holiday`, from `day_type.day_type_for` -- the same MBTA GTFS holiday calendar the weekly/monthly map tiles split on. |
+| `time_bands` | Map keyed by time band name (the six in "Time bands" above, not `all_day`), each holding `count`, `n_traversals`, `n_interpolated`, `miles_covered`, `total_time` for traversals that departed in that band. A band with no traversals that day is absent. |
+
+The top-level fields are the all-day figures. `time_bands` carries only fields that can be
+summed across days, so a weekly or monthly view can add up daily rows per band the same way
+it already does for the top level; per-band medians and means are left out because they
+can't be combined. A band's `count` is the distinct trips with at least one traversal
+departing in it, so a trip that crosses a band boundary counts in both bands and the band
+counts sum to more than `count` (10-15% more on real days). The other four fields do add up
+to the top level: every traversal lands in exactly one band, and across 38 real days none
+fell outside all of them. The only difference is rounding -- each band is rounded the same
+way as the top level (3dp miles, 1dp seconds), so the band sums can drift from the top level
+by a few thousandths of a mile or a tenth of a second.
+
+`time_bands` is written as one whole map on every run, not per nested path, so a band that
+disappears on a re-run doesn't linger from the previous write. Adding it takes an item from
+~235 bytes to ~740 (max 793 on 2026-09-17), still under the 1KB that one write unit covers.
 
 This is a table for the same kind of "how fast is this route" line chart the dashboard
 already draws for rail from `DeliveredTripMetrics`, kept separate from that table because bus
@@ -278,16 +350,18 @@ each other. Fleet history starts 2023-12-14, before LAMP bus data, so rows befor
 2025-12-24 carry fleet fields only.
 
 Writing is opt-in (`--write-to-dynamo`, or `write_to_dynamo=True`) and independent of
-`--upload`: turning one on doesn't turn on the other. `generate_yesterday_speed_segments()`
+`--upload`: turning one on doesn't turn on the other. It adds one small `calendar_dates`
+fetch for `day_type`, only when set. `generate_yesterday_speed_segments()`
 writes both by default. Note this table and the write path are not yet wired into `app.py`'s
 scheduled Lambdas or granted DynamoDB permissions in `policy-lamp-ingest.json` -- that's a
 follow-up, same as the map segments' S3 upload isn't scheduled yet either.
 
-Geometry is repeated across the six time bands, a 4.9x duplication. Splitting it into a
-static sidecar would cut daily files from 4.08MB to 2.90MB and cost 1.07MB once. That is
-not worth doing for storage -- a year is 1.5GB vs 1.0GB, about $0.035/month either way --
-but it would let a browser cache the geometry once instead of refetching it per day. Left
-combined for now, on the grounds that one file per day is the simpler thing to consume.
+Geometry is repeated on every row -- six time bands plus `all_day`, a 5.9x duplication.
+Splitting it into a static sidecar would cut the 2026-09-17 file from 5.67MB to 3.82MB and
+cost 0.95MB once. That is not worth doing for storage -- a year is 2.1GB vs 1.4GB, about
+$0.05/month vs $0.03/month -- but it would let a browser cache the geometry once instead of
+refetching it per day. Left combined for now, on the grounds that one file per day is the
+simpler thing to consume.
 
 ## Things that will bite you
 

@@ -11,7 +11,11 @@ import pandas as pd
 from .. import pmtiles
 
 
-def _segments(day_type: str | None = None) -> pd.DataFrame:
+def _segments(day_type: str | None = None, time_bands: tuple[str, ...] = ("am_peak",)) -> pd.DataFrame:
+    return pd.concat([_segment(time_band, day_type) for time_band in time_bands], ignore_index=True)
+
+
+def _segment(time_band: str, day_type: str | None) -> pd.DataFrame:
     row = {
         "route_id": "1",
         "direction_id": 0,
@@ -19,7 +23,7 @@ def _segments(day_type: str | None = None) -> pd.DataFrame:
         "to_stop_id": "s2",
         "from_stop_name": "A",
         "to_stop_name": "B",
-        "time_band": "am_peak",
+        "time_band": time_band,
         "n_traversals": 12,
         "n_interpolated": 1,
         "segment_length_m": 500.0,
@@ -33,6 +37,18 @@ def _segments(day_type: str | None = None) -> pd.DataFrame:
     if day_type is not None:
         row["day_type"] = day_type
     return pd.DataFrame([row])
+
+
+class TestSplitAllDay(unittest.TestCase):
+    def test_separates_all_day_rows_from_band_rows(self):
+        frame = _segments(time_bands=("am_peak", "all_day", "midday"))
+
+        bands, all_day = pmtiles.split_all_day(frame)
+
+        self.assertEqual(list(bands.time_band), ["am_peak", "midday"])
+        self.assertEqual(list(all_day.time_band), ["all_day"])
+        # Nothing else changes: the all_day archive carries the same columns as the bands'.
+        self.assertEqual(list(bands.columns), list(all_day.columns))
 
 
 class TestRequireTippecanoe(unittest.TestCase):
@@ -80,6 +96,19 @@ class TestBuildPmtilesBytes(unittest.TestCase):
 
         self.assertEqual(self.written_properties[0]["day_type"], "business_day")
 
+    def test_all_day_rows_reach_tippecanoe_with_the_same_properties_as_a_band(self):
+        # The map filters on an exact time_band match, so all_day must arrive as a plain
+        # time_band value carrying every property a band feature has.
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(_segments(time_bands=("am_peak", "all_day")))
+
+        by_band = {properties["time_band"]: properties for properties in self.written_properties}
+        self.assertEqual(set(by_band), {"am_peak", "all_day"})
+        self.assertEqual(set(by_band["all_day"]), set(by_band["am_peak"]))
+
     def test_uses_the_segments_layer_and_configured_zoom_range(self):
         with (
             mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
@@ -115,7 +144,7 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
     developer's machine without it) still pass the rest of the suite."""
 
     def test_produces_a_segments_layer_with_only_tile_properties(self):
-        data = pmtiles.build_pmtiles_bytes(_segments(day_type="business_day"))
+        data = pmtiles.build_pmtiles_bytes(_segments(day_type="business_day", time_bands=("am_peak", "all_day")))
 
         self.assertTrue(data.startswith(b"PMTiles"))
 
@@ -132,3 +161,32 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
 
         self.assertEqual(layer["id"], pmtiles.LAYER_NAME)
         self.assertEqual(set(layer["fields"]), set(pmtiles.TILE_PROPERTIES))
+        self.assertEqual(self._time_bands(decoded), {"am_peak", "all_day"})
+
+    def test_split_archives_each_hold_only_their_own_rows(self):
+        decoded = []
+        for rows in pmtiles.split_all_day(_segments(time_bands=("am_peak", "midday", "all_day"))):
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tileset_path = Path(tmp_dir) / "segments.pmtiles"
+                tileset_path.write_bytes(pmtiles.build_pmtiles_bytes(rows))
+                decoded.append(
+                    subprocess.run(
+                        ["tippecanoe-decode", str(tileset_path)], capture_output=True, check=True, text=True
+                    ).stdout
+                )
+
+        self.assertEqual(self._time_bands(decoded[0]), {"am_peak", "midday"})
+        self.assertEqual(self._time_bands(decoded[1]), {"all_day"})
+        # Same layer name in both, so the frontend can point one layer config at either.
+        for archive in decoded:
+            layer = json.loads(json.loads(archive)["properties"]["json"])["vector_layers"][0]
+            self.assertEqual(layer["id"], pmtiles.LAYER_NAME)
+
+    @staticmethod
+    def _time_bands(decoded: str) -> set[str]:
+        return {
+            feature["properties"]["time_band"]
+            for tile in json.loads(decoded)["features"]
+            for layer in tile["features"]
+            for feature in layer["features"]
+        }

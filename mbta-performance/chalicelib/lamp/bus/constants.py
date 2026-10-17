@@ -51,6 +51,15 @@ TIME_BANDS = (
     ("late_night", 22 * 3600, 32 * 3600),
 )
 
+# The whole-day band segments.aggregate_segments emits alongside TIME_BANDS, for the map's
+# "All day" filter. Deliberately not in TIME_BANDS: that tuple is a set of non-overlapping
+# departure windows for assign_time_band, and every traversal already falls in one of them.
+# The all_day rows are aggregated from the same traversals directly -- a median of the band
+# medians is not the day's median, so it can't be derived from the band rows afterwards.
+# GeoParquet and the leaderboard carry these rows alongside the bands; PMTiles puts them in a
+# separate archive (ALL_DAY_PMTILES_KEY_TEMPLATE below).
+ALL_DAY_BAND = "all_day"
+
 # A segment traversal is discarded outright if it implies a speed outside these bounds --
 # these come from GPS noise, layovers counted as travel, and mis-snapped stops.
 MIN_PLAUSIBLE_SPEED_MPH = 0.5
@@ -89,6 +98,14 @@ WEEKLY_S3_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/segmen
 WEEKLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/segments.pmtiles"
 MONTHLY_S3_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.parquet"
 MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments.pmtiles"
+
+# The ALL_DAY_BAND rows get a PMTiles archive of their own beside each segments.pmtiles above,
+# rather than sharing it with the time bands: an all_day feature has exactly the geometry of
+# a band feature, so in one archive tippecanoe's --drop-densest-as-needed always dropped it
+# first -- verified on real data, no all_day feature survived at zooms 4-11 -- see pmtiles.py.
+ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments_all_day.pmtiles"
+WEEKLY_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/segments_all_day.pmtiles"
+MONTHLY_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments_all_day.pmtiles"
 
 # Bus stops and rapid transit stations as a context layer under the speed map -- see
 # reference_tiles.py. One fixed key rather than one per date: stops only move when the GTFS

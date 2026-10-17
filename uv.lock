@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.14.*"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -458,9 +458,9 @@ dev = [
     { name = "ruff", specifier = ">=0.16.7" },
 ]
 geo = [
-    { name = "geopandas", specifier = "~=1.1" },
-    { name = "pyproj", specifier = "~=3.7" },
-    { name = "shapely", specifier = "~=2.1" },
+    { name = "geopandas", specifier = "~=1.0" },
+    { name = "pyproj", specifier = "~=3.6" },
+    { name = "shapely", specifier = "~=2.0" },
 ]
 
 [[package]]

@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .constants import ALL_DAY_BAND
 from .geoparquet import _to_geodataframe
 
 logger = logging.getLogger(__name__)
@@ -78,11 +79,14 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
         "--maximum-zoom",
         str(MAXIMUM_ZOOM),
         # Geometry is repeated per time band and direction (see the bus README), so a dense
-        # area like downtown Boston has many overlapping near-duplicate lines at high zoom --
-        # enough to blow past tippecanoe's default 500KB tile limit and fail outright without
-        # this. Verified against a real day (51k features) that this only drops features
-        # above MINIMUM_ZOOM: every route still has geometry at MINIMUM_ZOOM, which is what
-        # the frontend's fallback view relies on.
+        # area like downtown Boston has many overlapping near-duplicate lines -- enough to
+        # blow past tippecanoe's default 500KB tile limit and fail outright without this.
+        # Verified against a real day (2026-09-17, 52.8k features) that every route still has
+        # geometry at MINIMUM_ZOOM, which is what the frontend's fallback view relies on. The
+        # dropping is real, though: at zooms 4-10 only 8-14% of band features survive on a
+        # daily file (5-7% through zoom 11 on a weekly/monthly one), since exact duplicates
+        # of a geometry already kept are the "densest" features and go first. That's also
+        # why all_day rows get an archive of their own -- see split_all_day.
         "--drop-densest-as-needed",
         "--extend-zooms-if-still-dropping",
         str(geojson_path),
@@ -91,6 +95,21 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"tippecanoe failed ({result.returncode}): {result.stderr.strip()}")
+
+
+def split_all_day(frame):
+    """Split an aggregated frame into (time band rows, ALL_DAY_BAND rows), one per archive.
+
+    all_day rows share their geometry exactly with a band row of the same segment, so in a
+    single archive --drop-densest-as-needed discards them before anything else. Measured on
+    2026-09-17, one archive left no all_day feature at zooms 4-11 -- the map's default view
+    is zoom 11 -- and pushed zoom 11 over the tile limit, cutting its band features by 86%.
+    Built separately, the band archive is unchanged and the all_day archive keeps
+    essentially every segment from zoom 8 up (~60% at zoom 4), with every route present at
+    MINIMUM_ZOOM -- checked on a real day, week, and month.
+    """
+    is_all_day = frame.time_band == ALL_DAY_BAND
+    return frame[~is_all_day], frame[is_all_day]
 
 
 def build_pmtiles_bytes(frame, coordinates_column: str = "coordinates") -> bytes:

@@ -27,9 +27,9 @@ dev = [
 # --no-dev`, which only pulls in explicitly-requested groups) never bundles them. Only
 # needed by code paths that run outside Lambda, e.g. a k8s cron job -- `uv sync --group geo`.
 geo = [
-    "shapely~=2.1",
-    "geopandas~=1.1",
-    "pyproj~=3.7",
+    "shapely~=2.0",
+    "geopandas~=1.0",
+    "pyproj~=3.6",
 ]
 
 [tool.uv]
