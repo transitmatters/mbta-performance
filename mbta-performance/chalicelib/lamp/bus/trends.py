@@ -33,7 +33,7 @@ from .day_type import day_type_for
 from .geoparquet import write_geoparquet
 from .ingest import build_traversals_for_date
 from .leaderboard import build_leaderboard
-from .periods import dates_in_range, month_range, week_range
+from .periods import dates_in_range, month_key_for, month_range, week_key_for, week_range
 from .s3_writer import (
     upload_monthly_leaderboard,
     upload_monthly_pmtiles,
@@ -164,10 +164,14 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Generate weekly or monthly LAMP bus speed trend tiles.")
-    parser.add_argument("--year", type=int, required=True, help="Calendar year for --week or --month")
+    parser.add_argument("--year", type=int, help="Calendar year for --week or --month")
     period = parser.add_mutually_exclusive_group(required=True)
     period.add_argument("--week", type=int, help="ISO 8601 week number within --year")
     period.add_argument("--month", type=int, help="Calendar month number within --year")
+    # For the scheduled jobs. The period holding yesterday is the one still filling in, except
+    # on the first day after it ends, when this rebuilds it one last time with every date.
+    period.add_argument("--latest-week", action="store_true", help="The ISO week containing yesterday's service date")
+    period.add_argument("--latest-month", action="store_true", help="The month containing yesterday's service date")
     parser.add_argument("--out", help="Output GeoParquet path")
     parser.add_argument("--upload", action="store_true", help=f"Also publish to s3://{S3_BUCKET}")
     parser.add_argument(
@@ -177,6 +181,14 @@ if __name__ == "__main__":
         "--write-leaderboard", action="store_true", help="Also build and publish the slowest-segments leaderboard JSON"
     )
     arguments = parser.parse_args()
+
+    yesterday = get_current_service_date() - timedelta(days=1)
+    if arguments.latest_week:
+        arguments.year, arguments.week = week_key_for(yesterday)
+    elif arguments.latest_month:
+        arguments.year, arguments.month = month_key_for(yesterday)
+    elif arguments.year is None:
+        parser.error("--year is required with --week or --month")
 
     if arguments.week is not None:
         generate_weekly_speed_segments(

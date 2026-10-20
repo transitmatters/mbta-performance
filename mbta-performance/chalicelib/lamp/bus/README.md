@@ -27,6 +27,25 @@ weekday produces ~64k rows -- ~53k band rows plus one `all_day` row for each of 
 distinct segments -- across 152 routes, and takes about 40 seconds end to end (2026-09-17:
 38s, of which ~15s is reading LAMP and building traversals and ~23s is aggregation).
 
+## Scheduling
+
+This pipeline isn't in `app.py`. It runs as k8s CronJobs from
+[basement-dweller](https://github.com/transitmatters/basement-dweller)
+(`charts/bus-speed-segments`), from the image the repo-root `Containerfile` builds, which
+bundles `tippecanoe` and the `geo` group. The `container` workflow pushes it to
+`ghcr.io/transitmatters/mbta-performance:main` on every merge, and the jobs pull it at the start
+of each run, so merging here is all it takes to ship a change. Every morning, Boston time:
+
+| Job | Command |
+| --- | --- |
+| daily | `ingest --upload --write-to-dynamo --write-pmtiles --write-leaderboard` (yesterday) |
+| weekly | `trends --latest-week --upload --write-pmtiles --write-leaderboard` |
+| monthly | `trends --latest-month --upload --write-pmtiles --write-leaderboard` |
+| reference (Mondays) | `reference_tiles --upload` |
+
+`--latest-week` and `--latest-month` pick the period containing yesterday, which keeps the
+dashboard's in-progress week and month current and, on the day after one ends, finishes it.
+
 ## Pipeline
 
 1. **Read one service date** from the LAMP bus export. Both exports are partitioned one
@@ -125,8 +144,8 @@ weekly/monthly one, because every segment's geometry is repeated once per band a
 duplicates are the "densest" features. Every route is still present at `MINIMUM_ZOOM`.
 
 **Requires `tippecanoe` on `PATH`.** It's a system binary, not a Python dependency -- there's
-nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (or the
-equivalent for the container image this pipeline runs in); `build_pmtiles_bytes` raises a
+nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (the
+`Containerfile` does the same); `build_pmtiles_bytes` raises a
 clear error if it's missing rather than a bare `FileNotFoundError`.
 
 Writing is opt-in (`--write-pmtiles`, or `write_pmtiles=True`) and independent of `--upload`
@@ -174,6 +193,9 @@ off-peak -- that would otherwise mean flipping through individual days.
 # Weeks are ISO 8601 (year, week); months are plain calendar (year, month) -- see below.
 uv run python -m mbta-performance.chalicelib.lamp.bus.trends --year 2026 --week 6 --upload --write-pmtiles
 uv run python -m mbta-performance.chalicelib.lamp.bus.trends --year 2026 --month 2 --upload --write-pmtiles
+
+# The week or month containing yesterday, as the scheduled jobs run it.
+uv run python -m mbta-performance.chalicelib.lamp.bus.trends --latest-week --upload --write-pmtiles
 
 # Backfill every week/month LAMP has data for (default range: EARLIEST_LAMP_BUS_DATA..yesterday).
 uv run python -m mbta-performance.chalicelib.lamp.bus.trends_backfill --weeks --months --upload --write-pmtiles
@@ -352,9 +374,8 @@ each other. Fleet history starts 2023-12-14, before LAMP bus data, so rows befor
 Writing is opt-in (`--write-to-dynamo`, or `write_to_dynamo=True`) and independent of
 `--upload`: turning one on doesn't turn on the other. It adds one small `calendar_dates`
 fetch for `day_type`, only when set. `generate_yesterday_speed_segments()`
-writes both by default. Note this table and the write path are not yet wired into `app.py`'s
-scheduled Lambdas or granted DynamoDB permissions in `policy-lamp-ingest.json` -- that's a
-follow-up, same as the map segments' S3 upload isn't scheduled yet either.
+writes both by default. The scheduled daily job writes it (see "Scheduling" above), with
+credentials scoped to this table and `BusSpeedSegments/`, not the Lambdas' policies.
 
 Geometry is repeated on every row -- six time bands plus `all_day`, a 5.9x duplication.
 Splitting it into a static sidecar would cut the 2026-09-17 file from 5.67MB to 3.82MB and
@@ -431,8 +452,8 @@ the all-time export otherwise.
 ## Dependencies
 
 Uses `shapely`, `geopandas` and `pyproj` from the `geo` dependency group (`uv sync --group
-geo`) rather than the project's base dependencies -- this pipeline runs as a k8s cron job,
-not through the Lambda deployment that `uv export --no-dev` packages, so there's no bundle
+geo`) rather than the project's base dependencies -- this pipeline runs as a k8s cron job
+(see "Scheduling" above), not through the Lambda deployment that `uv export --no-dev` packages, so there's no bundle
 size to protect. Geometry is projected into Massachusetts State Plane (EPSG:26986, metres)
 with `pyproj`, cut with `shapely.ops.substring`, and reprojected back to WGS84 lon/lat for
 storage; GeoParquet is written by `geopandas.GeoDataFrame.to_parquet`. An earlier version

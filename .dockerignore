@@ -1,0 +1,9 @@
+# Allowlist: the repo root holds multi-GB local caches (.venv, feeds/, data/) that must never
+# reach the build context.
+**
+!pyproject.toml
+!uv.lock
+!.python-version
+!mbta-performance/chalicelib/**
+**/__pycache__
+**/tests
