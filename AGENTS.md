@@ -24,3 +24,4 @@ uv run pytest mbta-performance                                           # Tests
 - S3 request counts are a real cost. A bus run uploads ~10,500 objects, which is why there's no same-day bus job. Estimate objects per run times schedule frequency before adding or speeding up a job.
 - The key layouts in `s3://tm-mbta-performance/` (`Events/`, `Events-lamp/`, `BusSpeedSegments/`; month and day not zero-padded) are read by the Data Dashboard. Don't change them without a matching change there.
 - Schedules in `app.py` are UTC crons; keep the Boston time comment above each one.
+- The bus speed segment pipeline (`lamp/bus/`) isn't in `app.py`. It runs as k8s CronJobs from transitmatters/basement-dweller, using the image built from the repo-root `Containerfile`, and its schedules live there.
