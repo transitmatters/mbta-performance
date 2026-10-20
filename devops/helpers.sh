@@ -221,24 +221,29 @@ function check_package_size {
     echo "$zipfile is under the maximum size of $maximumsize bytes, by $difference bytes"
 }
 
-# Check the layer's unzipped size, which is what Lambda actually enforces: 262144000 bytes for the
-# function code plus all layers combined. The limit leaves ~5MB for the app's own deployment.zip.
+# Check the unzipped size, which is what Lambda actually enforces: 262144000 bytes for the function
+# code plus all its layers combined. That's our layer, the app's deployment.zip and Datadog-Extension.
 function check_unzipped_size {
     local zipfile="${1:-cfn/layer-deployment.zip}"
-    local maximumsize=257000000
+    local appzip="${2:-cfn/deployment.zip}"
+    local maximumsize=262144000
+    # Datadog-Extension:101 (mbta-performance/.chalice/config.json); update when bumping the extension
+    local extensionsize=11683061
 
-    unzippedsize=$(unzip -l "$zipfile" | tail -1 | awk '{print $1}')
-    difference=$(expr $unzippedsize - $maximumsize)
+    layersize=$(unzip -l "$zipfile" | tail -1 | awk '{print $1}')
+    appsize=$(unzip -l "$appzip" | tail -1 | awk '{print $1}')
+    totalsize=$(($layersize + $appsize + $extensionsize))
+    difference=$(($maximumsize - $totalsize))
 
-    echo "$zipfile unzips to $unzippedsize bytes"
+    echo "$zipfile unzips to $layersize bytes, $appzip to $appsize, Datadog-Extension to $extensionsize"
 
-    if [ $unzippedsize -ge $maximumsize ]; then
+    if [ $totalsize -ge $maximumsize ]; then
         echo ""
-        echo "$zipfile unzips to over $maximumsize bytes. Shrink the package by $difference bytes to be able to deploy"
+        echo "Function plus layers unzip to $totalsize bytes, over $maximumsize. Shrink the package by $((-$difference)) bytes to be able to deploy"
         exit 1
     fi
 
-    echo "$zipfile unzips to under the maximum size of $maximumsize bytes, by $difference bytes"
+    echo "Function plus layers unzip to $totalsize bytes, under the maximum size of $maximumsize bytes by $difference bytes"
 }
 
 # Import the shrunk layer inside the Lambda Python runtime image, so a too-aggressive shrink fails here
