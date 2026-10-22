@@ -113,6 +113,43 @@ class TestGTFS(unittest.TestCase):
         # 1901 IDs → 3 batches (900 + 900 + 101)
         self.assertEqual(mock_read_sql.call_count, 3)
 
+    def test_empty_batch_does_not_downcast_string_columns(self):
+        """2026-10-19: the last batch was all ADDED- trips, matched nothing, and came back
+        as object columns. Concatenating it made route_id object, and pandas 3's
+        merge_asof rejected it against LAMP's StringDtype route_id."""
+        trip_ids = [f"trip{i}" for i in range(901)]
+        matched = pd.DataFrame(
+            {
+                "trip_id": pd.array(["trip1"], dtype="string"),
+                "stop_id": pd.array(["70061"], dtype="string"),
+                "arrival_time": pd.array([28800], dtype="Int64"),
+                "route_id": pd.array(["Red"], dtype="string"),
+                "direction_id": pd.array([0], dtype="int16"),
+            }
+        )
+        # What read_sql(dtype_backend="numpy_nullable") returns for zero rows
+        unmatched = pd.DataFrame(
+            {
+                "trip_id": pd.Series([], dtype=object),
+                "stop_id": pd.Series([], dtype=object),
+                "arrival_time": pd.Series([], dtype=object),
+                "route_id": pd.Series([], dtype=object),
+                "direction_id": pd.array([], dtype="int16"),
+            }
+        )
+
+        mock_feed = self._make_mock_feed()
+        mock_archive = self._make_mock_archive(mock_feed)
+
+        with mock.patch("chalicelib.gtfs.boto3.resource"):
+            with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=mock_archive):
+                with mock.patch("chalicelib.gtfs.pd.read_sql", side_effect=[matched, unmatched]):
+                    result = gtfs.fetch_stop_times_from_gtfs(trip_ids, date(2026, 10, 19))
+
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result["route_id"].dtype, pd.StringDtype)
+        self.assertEqual(result["arrival_time"].dtype, "Int64")
+
     def test_fetch_stop_times_from_gtfs_single_batch_for_small_list(self):
         """A list smaller than MAX_QUERY_DEPTH should result in exactly one SQL query."""
         trip_ids = [f"trip{i}" for i in range(50)]

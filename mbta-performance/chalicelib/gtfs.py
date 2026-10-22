@@ -114,6 +114,12 @@ def fetch_stop_times_from_gtfs(
             )
         )
 
-    result = pd.concat(gtfs_stops)
+    # A batch that matches no trips comes back with object columns, not the nullable
+    # dtypes, and concatenating it downcasts every string column to object. pandas 3's
+    # merge_asof then refuses to match those against LAMP's StringDtype keys. It happens
+    # whenever the last batch is all ADDED- trips, which aren't in the schedule -- as on
+    # 2026-10-19, which failed the same-day job for hours.
+    non_empty = [df for df in gtfs_stops if not df.empty]
+    result = pd.concat(non_empty) if non_empty else gtfs_stops[0]
     logger.info(f"Fetched {len(result)} GTFS stop times")
     return result
