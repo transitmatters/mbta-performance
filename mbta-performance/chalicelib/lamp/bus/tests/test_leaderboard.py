@@ -27,6 +27,8 @@ def _row(
         "p50_speed_mph": p50_speed_mph,
         "n_traversals": n_traversals,
         "n_interpolated": n_interpolated,
+        "segment_length_m": 402.3,
+        "p50_total_time_seconds": 72.6,
     }
     if day_type is not None:
         row["day_type"] = day_type
@@ -107,6 +109,11 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
         self.assertIsInstance(entry["direction_id"], int)
         self.assertIsInstance(entry["p50_speed_mph"], float)
         self.assertAlmostEqual(entry["p50_speed_mph"], 12.3, places=1)
+        # Rounded to whole metres/seconds rather than kept as float64.
+        self.assertEqual(entry["segment_length_m"], 402)
+        self.assertEqual(entry["p50_total_time_seconds"], 73)
+        self.assertIsInstance(entry["segment_length_m"], int)
+        self.assertIsInstance(entry["p50_total_time_seconds"], int)
 
     def test_geometry_and_percentile_columns_are_not_exposed(self):
         aggregated = pd.DataFrame(
@@ -116,7 +123,7 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
                     "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
                     "p90_speed_mph": 4.0,
                     "moving_speed_mph": 15.0,
-                    "segment_length_m": 500.0,
+                    "median_dwell_seconds": 12.0,
                 }
             ]
         )

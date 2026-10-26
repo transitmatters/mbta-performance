@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 # leaderboard entry needs to display, selected explicitly so a column like p90_speed_mph or
 # moving_speed_mph can't end up in the published file by accident. time_band/day_type are not
 # repeated per entry here -- they're already the dict keys the entry sits under.
+# segment_length_m and p50_total_time_seconds are the two numbers p50_speed_mph is computed
+# from, shown beside it as the segment's distance and median travel time.
 LEADERBOARD_COLUMNS = [
     "route_id",
     "direction_id",
@@ -41,6 +43,8 @@ LEADERBOARD_COLUMNS = [
     "p50_speed_mph",
     "n_traversals",
     "n_interpolated",
+    "segment_length_m",
+    "p50_total_time_seconds",
 ]
 
 
@@ -49,10 +53,15 @@ def _ranked_slice(rows: pd.DataFrame) -> list[dict]:
 
     Routed through `to_json`/`json.loads` rather than `to_dict` -- the aggregated columns are
     numpy dtypes (int64, float64), which the standard `json` module cannot serialise directly,
-    and pandas' own JSON writer already handles that correctly.
+    and pandas' own JSON writer already handles that correctly. Length and time are rounded to
+    whole metres and seconds, finer than the dashboard displays them and fewer bytes per row.
     """
     ranked = rows.sort_values("p50_speed_mph").head(LEADERBOARD_SIZE)
-    ranked = ranked[LEADERBOARD_COLUMNS].assign(p50_speed_mph=lambda df: df.p50_speed_mph.round(1))
+    ranked = ranked[LEADERBOARD_COLUMNS].assign(
+        p50_speed_mph=lambda df: df.p50_speed_mph.round(1),
+        segment_length_m=lambda df: df.segment_length_m.round().astype(int),
+        p50_total_time_seconds=lambda df: df.p50_total_time_seconds.round().astype(int),
+    )
     return json.loads(ranked.to_json(orient="records", double_precision=1))
 
 

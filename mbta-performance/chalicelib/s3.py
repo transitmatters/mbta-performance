@@ -1,4 +1,5 @@
 import boto3
+import gzip
 import io
 import pandas as pd
 import zlib
@@ -49,14 +50,23 @@ def upload_parquet(bucket, key, data: bytes):
 
 
 def upload_json(bucket, key, data: bytes):
-    """Upload already-serialised JSON bytes.
+    """Upload already-serialised JSON bytes, gzipped with `Content-Encoding: gzip`.
 
-    Not zlib-wrapped, like upload_parquet/upload_pmtiles: this is fetched directly by a
-    browser's `fetch()` and parsed as-is, so wrapping it in a stream-level compression layer
-    would make it unreadable without first knowing to inflate it.
+    Not zlib-wrapped the way upload() is: this is fetched directly by a browser's `fetch()`,
+    which only inflates a body when the response's Content-Encoding says to, and S3 serves the
+    ContentEncoding set here as exactly that header. The dashboard's CloudFront behavior for
+    these files has compression off (it must, for the PMTiles beside them -- see
+    upload_pmtiles), so this is the only compression they get. `mtime=0` keeps re-uploads of
+    the same JSON byte-identical.
     """
     key = str(key)
-    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="application/json")
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=gzip.compress(data, mtime=0),
+        ContentType="application/json",
+        ContentEncoding="gzip",
+    )
 
 
 def upload_pmtiles(bucket, key, data: bytes):
