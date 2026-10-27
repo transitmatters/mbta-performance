@@ -34,6 +34,7 @@ class TestIngest(unittest.TestCase):
             engine="pyarrow",
             dtype_backend="numpy_nullable",
         ).rename(columns=ingest.COLUMN_RENAME_MAP)
+        pq_df_before = ingest._normalize_occupancy(pq_df_before)
 
         pq_df_after = ingest._process_arrival_departure_times(pq_df_before)
         arrivals = pq_df_after[pq_df_after.event_type == "ARR"]
@@ -93,9 +94,9 @@ class TestIngest(unittest.TestCase):
             pq_df_after = ingest.ingest_pq_file(pq_df_before, date(2024, 2, 7))
         added = pq_df_after[pq_df_after["trip_id"].str.startswith("ADDED-")]
         null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
-        self.assertEqual(added.shape, (3763, 18))
+        self.assertEqual(added.shape, (3763, 20))
         self.assertTrue(null_id_events.empty)
-        self.assertEqual(pq_df_after.shape, (17074, 18))
+        self.assertEqual(pq_df_after.shape, (17074, 20))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test__average_scheduled_headways(self):
@@ -105,6 +106,7 @@ class TestIngest(unittest.TestCase):
             engine="pyarrow",
             dtype_backend="numpy_nullable",
         ).rename(columns=ingest.COLUMN_RENAME_MAP)
+        pq_df_before = ingest._normalize_occupancy(pq_df_before)
         pq_df_before = ingest._process_arrival_departure_times(pq_df_before)
         pq_df_before = pq_df_before[pq_df_before["stop_id"].notna()]
         # ensure that no values are dropped during calculation
@@ -114,7 +116,7 @@ class TestIngest(unittest.TestCase):
         # that we do not erase any headway info
         null_headway_events_before = pq_df_before[pq_df_before["scheduled_headway"].isna()]
         null_headway_events_after = pq_df_after[pq_df_after["scheduled_headway"].isna()]
-        self.assertEqual(null_headway_events_after.shape, (245, 18))
+        self.assertEqual(null_headway_events_after.shape, (245, 20))
         self.assertTrue(len(null_headway_events_after) <= len(null_headway_events_before))
 
         # pick a route/dir and directly compare
@@ -171,6 +173,7 @@ class TestIngest(unittest.TestCase):
             engine="pyarrow",
             dtype_backend="numpy_nullable",
         ).rename(columns=ingest.COLUMN_RENAME_MAP)
+        pq_df_before = ingest._normalize_occupancy(pq_df_before)
         pq_df_before = ingest._process_arrival_departure_times(pq_df_before)
         pq_df_before = pq_df_before[pq_df_before["stop_id"].notna()]
 
@@ -257,6 +260,80 @@ class TestIngest(unittest.TestCase):
             with self.assertRaises(ValueError) as context:
                 ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
             self.assertIn("Failed to fetch LAMP parquet file", str(context.exception))
+
+    # --- Occupancy ---
+
+    def test_fetch_pq_file_from_remote_reads_occupancy_when_present(self):
+        pq_df = pd.read_parquet(io.BytesIO(self.data), engine="pyarrow")
+        pq_df["occupancy_status"] = "MANY_SEATS_AVAILABLE|FEW_SEATS_AVAILABLE"
+        pq_df["occupancy_percentage"] = "5.0|13.0"
+        buffer = io.BytesIO()
+        pq_df.to_parquet(buffer, engine="pyarrow")
+
+        mock_response = mock.Mock(status_code=200, content=buffer.getvalue())
+        with mock.patch("requests.get", return_value=mock_response):
+            fetched = ingest.fetch_pq_file_from_remote(date(2026, 10, 26))
+        self.assertListEqual(list(fetched.columns), constants.LAMP_COLUMNS + constants.OCCUPANCY_COLUMNS)
+        self.assertEqual(fetched["occupancy_status"].dtype, pd.StringDtype())
+
+    def test_fetch_pq_file_from_remote_skips_missing_occupancy(self):
+        mock_response = mock.Mock(status_code=200, content=self.data)
+        with mock.patch("requests.get", return_value=mock_response):
+            fetched = ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
+        self.assertListEqual(list(fetched.columns), constants.LAMP_COLUMNS)
+
+    def test_ingest_pq_file_without_occupancy_columns(self):
+        """Files from before LAMP published occupancy still ingest, with the columns left empty."""
+        pq_df = pd.read_parquet(
+            io.BytesIO(self.data),
+            columns=constants.LAMP_COLUMNS,
+            engine="pyarrow",
+            dtype_backend="numpy_nullable",
+        )
+        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
+            result = ingest.ingest_pq_file(pq_df, date(2024, 2, 7))
+        self.assertListEqual(list(result.columns), constants.S3_COLUMNS)
+        self.assertTrue(result["occupancy_status"].isna().all())
+        self.assertTrue(result["occupancy_percentage"].isna().all())
+
+    def test__normalize_occupancy(self):
+        df = pd.DataFrame(
+            {
+                "occupancy_status": [
+                    "NO_DATA_AVAILABLE|NO_DATA_AVAILABLE",
+                    "FEW_SEATS_AVAILABLE|NO_DATA_AVAILABLE",
+                    None,
+                    "NO_DATA_AVAILABLE",
+                ],
+                "occupancy_percentage": [None, "8.0|", None, None],
+            }
+        ).convert_dtypes(dtype_backend="numpy_nullable")
+
+        result = ingest._normalize_occupancy(df)
+        self.assertListEqual(
+            result["occupancy_status"].tolist(), [pd.NA, "FEW_SEATS_AVAILABLE|NO_DATA_AVAILABLE", pd.NA, pd.NA]
+        )
+        self.assertListEqual(result["occupancy_percentage"].tolist(), [pd.NA, "8.0|", pd.NA, pd.NA])
+
+    def test_occupancy_on_arrivals_and_departures(self):
+        """A departure carries the reading from the next arrival: the load it left the stop with."""
+        test_data = self._make_minimal_lamp_df(
+            service_date_int=20240213,
+            trip_stop_pairs=[("trip1", "70001", "O-001"), ("trip1", "70003", "O-001")],
+        )
+        test_data["occupancy_status"] = pd.array(
+            ["MANY_SEATS_AVAILABLE|MANY_SEATS_AVAILABLE", "STANDING_ROOM_ONLY|FEW_SEATS_AVAILABLE"],
+            dtype=pd.StringDtype(),
+        )
+        test_data["occupancy_percentage"] = pd.array(["2.0|3.0", "25.0|15.0"], dtype=pd.StringDtype())
+
+        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
+            result = ingest.ingest_pq_file(test_data, date(2024, 2, 13))
+
+        events = result.set_index(["stop_id", "event_type"])
+        self.assertEqual(events.loc[("70003", "ARR"), "occupancy_percentage"], "25.0|15.0")
+        self.assertEqual(events.loc[("70001", "DEP"), "occupancy_percentage"], "25.0|15.0")
+        self.assertEqual(events.loc[("70001", "ARR"), "occupancy_status"], "MANY_SEATS_AVAILABLE|MANY_SEATS_AVAILABLE")
 
     def test_column_rename_map(self):
         # Test that column renaming works correctly

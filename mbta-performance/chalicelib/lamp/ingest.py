@@ -5,6 +5,7 @@ from datetime import date
 from typing import Tuple
 
 import pandas as pd
+import pyarrow.parquet as pq
 import requests
 
 from .. import parallel, s3
@@ -12,6 +13,7 @@ from ..date import EASTERN_TIME, format_dateint, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
 from .constants import (
     LAMP_COLUMNS,
+    OCCUPANCY_COLUMNS,
     RED_LINE_ASHMONT_STOPS,
     RED_LINE_BRAINTREE_STOPS,
     S3_COLUMNS,
@@ -146,6 +148,8 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # use current infomation for almost everything...
+    # (occupancy included: it's sampled on arrival at the current stop, so it's the load the
+    # train carried out of the previous one)
     renamed_cols = {key + "_curr": key for key in S3_COLUMNS if key != "stop_id"}
     # ...but use the PREVIOUS stop_id
     renamed_cols["stop_id_prev"] = "stop_id"
@@ -169,9 +173,10 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
         raise ValueError(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
 
     logger.info(f"Successfully fetched LAMP parquet file ({len(result.content)} bytes)")
+    available_columns = pq.read_schema(io.BytesIO(result.content)).names
     df = pd.read_parquet(
         io.BytesIO(result.content),
-        columns=LAMP_COLUMNS,
+        columns=LAMP_COLUMNS + [col for col in OCCUPANCY_COLUMNS if col in available_columns],
         engine="pyarrow",
         # NB: Even through parquet files are compressed with columnar metadata, pandas will sometimes override them
         # if the columns contain nulls. This is important as the move/stop times are nullable int64 epoch timestamps,
@@ -181,6 +186,21 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     )
     logger.info(f"Parsed parquet file: {len(df)} rows")
     return df
+
+
+def _normalize_occupancy(pq_df: pd.DataFrame) -> pd.DataFrame:
+    """Make sure the occupancy columns exist, and blank them when no car reported anything.
+
+    Only the newer Red and Orange Line cars report occupancy. Every other train comes through
+    with NO_DATA_AVAILABLE for each car, which tells the dashboard nothing a null wouldn't.
+    """
+    for col in OCCUPANCY_COLUMNS:
+        if col not in pq_df.columns:
+            pq_df[col] = pd.Series(pd.NA, index=pq_df.index, dtype=pd.StringDtype())
+
+    no_data = pq_df["occupancy_status"].str.fullmatch(r"NO_DATA_AVAILABLE(\|NO_DATA_AVAILABLE)*")
+    pq_df.loc[no_data.fillna(False).astype(bool), OCCUPANCY_COLUMNS] = pd.NA
+    return pq_df
 
 
 def _derive_lamp_branch_route_id(pq_df: pd.DataFrame) -> pd.DataFrame:
@@ -377,6 +397,7 @@ def ingest_pq_file(
     # Live data will sometimes report an aliased version of stop_id different
     # from that which GTFS reports in its schedule. Replace for better schedule matching.
     pq_df["stop_id"] = pq_df["stop_id"].replace(STOP_ID_NUMERIC_MAP)
+    pq_df = _normalize_occupancy(pq_df)
     # drop non-revenue producing events
     cutoff_date = format_dateint(20231130)
     initial_count = len(pq_df)

@@ -21,6 +21,13 @@ LAMP_COLUMNS = [
     "vehicle_consist",
 ]
 
+# Per-car occupancy, pipe-delimited in vehicle_consist order. LAMP started publishing these
+# on 2026-10-22, so older parquet files don't have them; they're read only when present.
+OCCUPANCY_COLUMNS = [
+    "occupancy_status",
+    "occupancy_percentage",
+]
+
 # columns that should be output to s3 events.csv
 S3_COLUMNS = [
     "service_date",
@@ -41,6 +48,8 @@ S3_COLUMNS = [
     "scheduled_headway",
     "scheduled_headway_branch",
     "vehicle_consist",
+    "occupancy_status",
+    "occupancy_percentage",
 ]
 
 
