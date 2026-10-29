@@ -341,6 +341,60 @@ class TestGTFSArchive(unittest.TestCase):
             self.assertIn("scheduled_headway", result.columns)
             self.assertIn("scheduled_tt", result.columns)
 
+    def _shared_stop_gtfs(self, route_ids):
+        """Four scheduled trips alternating between two routes, each starting at its own stop and
+        reaching the shared stop 5 minutes later, at 8:00, 8:04, 8:10 and 8:14."""
+        offsets = [0, 4, 10, 14]
+        trips = pd.DataFrame(
+            {
+                "trip_id": [f"sched{i}" for i in range(4)],
+                "route_id": [route_ids[i % 2] for i in range(4)],
+                "direction_id": [1] * 4,
+            }
+        )
+        stops = pd.DataFrame(
+            {
+                "trip_id": [f"sched{i}" for i in range(4) for _ in range(2)],
+                "stop_id": [s for i in range(4) for s in (f"branch-{route_ids[i % 2]}", "shared")],
+                "arrival_time": [
+                    pd.Timedelta(hours=8, minutes=offset + delay) for offset in offsets for delay in (-5, 0)
+                ],
+            }
+        )
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-02-07")] * 4,
+                "route_id": list(trips.route_id),
+                "direction_id": [1] * 4,
+                "stop_id": ["shared"] * 4,
+                "trip_id": [f"actual{i}" for i in range(4)],
+                "event_time": [pd.Timestamp("2024-02-07 08:00:30") + pd.Timedelta(minutes=o) for o in offsets],
+            }
+        )
+        return trips, stops, events
+
+    def test_add_gtfs_headways_pools_green_branches_on_trunk(self):
+        """Green Line branches sharing a stop get trunk scheduled headways, but keep per-branch travel times."""
+        trips, stops, events = self._shared_stop_gtfs(["Green-B", "Green-C"])
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events).sort_values("event_time")
+
+        # gaps between consecutive trains of either branch, not between trains of the same branch (600s)
+        self.assertListEqual(list(result.scheduled_headway[1:]), [240, 360, 240])
+        self.assertListEqual(list(result.scheduled_tt), [300] * 4)
+        self.assertNotIn("trunk_route_id", result.columns)
+
+    def test_add_gtfs_headways_keeps_bus_routes_separate(self):
+        """Routes without a trunk (bus) still get per-route scheduled headways at a shared stop."""
+        trips, stops, events = self._shared_stop_gtfs(["1", "47"])
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events).sort_values("event_time")
+
+        self.assertListEqual(list(result.scheduled_headway[2:]), [600, 600])
+        self.assertTrue(result.scheduled_headway[:2].isna().all())
+
     def test_add_gtfs_headways_with_incomplete_gtfs(self):
         """add_gtfs_headways keeps events for dates with incomplete GTFS, without scheduled values."""
         events_df = pd.DataFrame(
