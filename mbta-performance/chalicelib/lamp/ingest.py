@@ -5,13 +5,16 @@ from datetime import date
 from typing import Tuple
 
 import pandas as pd
+import pyarrow.parquet as pq
 import requests
 
 from .. import parallel, s3
 from ..date import EASTERN_TIME, format_dateint, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
+from ..routes import trunk_route_id
 from .constants import (
     LAMP_COLUMNS,
+    OCCUPANCY_COLUMNS,
     RED_LINE_ASHMONT_STOPS,
     RED_LINE_BRAINTREE_STOPS,
     S3_COLUMNS,
@@ -41,6 +44,9 @@ TRIP_IDS_TO_DROP = ("NONREV-",)
 
 # defining these columns in particular becasue we use them everywhere
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
+# scheduled headways are averaged across every branch sharing a stop (trunk), or within one branch
+TRUNK_DIR_STOP = ["trunk_route_id", "direction_id", "stop_id"]
+BRANCH_DIR_STOP = ["branch_route_id", "direction_id", "stop_id"]
 
 
 def _derive_gtfs_branch_route_id(gtfs_stops: pd.DataFrame) -> pd.DataFrame:
@@ -146,6 +152,8 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # use current infomation for almost everything...
+    # (occupancy included: it's sampled on arrival at the current stop, so it's the load the
+    # train carried out of the previous one)
     renamed_cols = {key + "_curr": key for key in S3_COLUMNS if key != "stop_id"}
     # ...but use the PREVIOUS stop_id
     renamed_cols["stop_id_prev"] = "stop_id"
@@ -169,9 +177,10 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
         raise ValueError(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
 
     logger.info(f"Successfully fetched LAMP parquet file ({len(result.content)} bytes)")
+    available_columns = pq.read_schema(io.BytesIO(result.content)).names
     df = pd.read_parquet(
         io.BytesIO(result.content),
-        columns=LAMP_COLUMNS,
+        columns=LAMP_COLUMNS + [col for col in OCCUPANCY_COLUMNS if col in available_columns],
         engine="pyarrow",
         # NB: Even through parquet files are compressed with columnar metadata, pandas will sometimes override them
         # if the columns contain nulls. This is important as the move/stop times are nullable int64 epoch timestamps,
@@ -181,6 +190,21 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     )
     logger.info(f"Parsed parquet file: {len(df)} rows")
     return df
+
+
+def _normalize_occupancy(pq_df: pd.DataFrame) -> pd.DataFrame:
+    """Make sure the occupancy columns exist, and blank them when no car reported anything.
+
+    Only the newer Red and Orange Line cars report occupancy. Every other train comes through
+    with NO_DATA_AVAILABLE for each car, which tells the dashboard nothing a null wouldn't.
+    """
+    for col in OCCUPANCY_COLUMNS:
+        if col not in pq_df.columns:
+            pq_df[col] = pd.Series(pd.NA, index=pq_df.index, dtype=pd.StringDtype())
+
+    no_data = pq_df["occupancy_status"].str.fullmatch(r"NO_DATA_AVAILABLE(\|NO_DATA_AVAILABLE)*")
+    pq_df.loc[no_data.fillna(False).astype(bool), OCCUPANCY_COLUMNS] = pd.NA
+    return pq_df
 
 
 def _derive_lamp_branch_route_id(pq_df: pd.DataFrame) -> pd.DataFrame:
@@ -319,17 +343,19 @@ def _recalculate_fields_from_gtfs(
     if unmatched_trips > 0:
         logger.warning(f"{unmatched_trips} events could not be matched to a scheduled trip")
     logger.debug(f"GTFS enrichment complete: {len(pq_df)} events")
-    return pq_df[S3_COLUMNS]
+    # keep branch_route_id for averaging branch headways; it's dropped before upload
+    return pq_df[S3_COLUMNS + ["branch_route_id"]]
 
 
 def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     """Bucket scheduled headways into 30 minute buckets.
 
     We do this so as to smooth the benchmark headways for the data dashboard.
-    TODO: do this with branch headways as well
-    TODO: group green line branches together in trunk headways
+    Trunk headways are averaged across every branch stopping at a stop (e.g. all Green Line branches
+    at Government Center), branch headways within each branch (Red-A/Red-B, Green-B, etc).
     """
     logger.debug(f"Calculating average scheduled headways for {len(pq_df)} events")
+    pq_df = pq_df.assign(trunk_route_id=trunk_route_id(pq_df["route_id"]))
     # service date starts at 5:30am, but there are enough very early/late departures that we dont want to be opinionated
     start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
     end_time = start_time + pd.Timedelta(hours=48)
@@ -345,13 +371,15 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
         )
         filtered_trips = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
 
-        # Get the average headway per route
-        average_scheduled_headway = filtered_trips.groupby(RTE_DIR_STOP)["scheduled_headway"].mean()
-        average_scheduled_headway = average_scheduled_headway.round(-1)  # Round to the nearest 10seconds
+        # Get the average headway per trunk and per branch, rounded to the nearest 10 seconds
+        average_scheduled_headway = filtered_trips.groupby(TRUNK_DIR_STOP)["scheduled_headway"].mean().round(-1)
+        average_scheduled_headway_branch = (
+            filtered_trips.groupby(BRANCH_DIR_STOP)["scheduled_headway_branch"].mean().round(-1)
+        )
 
         enriched_trip = filtered_trips.merge(
-            average_scheduled_headway, how="left", on=RTE_DIR_STOP, suffixes=["_lamp", ""]
-        )
+            average_scheduled_headway, how="left", on=TRUNK_DIR_STOP, suffixes=["_lamp", ""]
+        ).merge(average_scheduled_headway_branch, how="left", on=BRANCH_DIR_STOP, suffixes=["_lamp", ""])
         _enriched_trips.append(enriched_trip)
     return pd.concat(_enriched_trips)[S3_COLUMNS]
 
@@ -377,6 +405,7 @@ def ingest_pq_file(
     # Live data will sometimes report an aliased version of stop_id different
     # from that which GTFS reports in its schedule. Replace for better schedule matching.
     pq_df["stop_id"] = pq_df["stop_id"].replace(STOP_ID_NUMERIC_MAP)
+    pq_df = _normalize_occupancy(pq_df)
     # drop non-revenue producing events
     cutoff_date = format_dateint(20231130)
     initial_count = len(pq_df)

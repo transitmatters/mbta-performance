@@ -5,12 +5,14 @@ processing path have to be provably output-neutral. The unit tests in
 test_ingest.py assert shapes and dtypes; these assert the exact bytes that reach
 S3, rendered through the same serialization upload_df_as_csv uses.
 
-Goldens capture current behaviour. They are expected to change exactly twice, in
-isolated commits that re-bless them deliberately:
+Goldens capture current behaviour. They only change in isolated commits that
+re-bless them deliberately, such as:
   * switching the sorts to kind="stable" (reorders ~2.9% of rows -- 21% of rows
     share an event_time, so today's order is a quicksort artifact)
   * the .in_() rewrite of fetch_stop_times_from_gtfs (changes read_sql row order,
     which feeds a merge_asof(direction="nearest") that breaks ties by position)
+  * averaging scheduled_headway per trunk and scheduled_headway_branch per branch
+    (#25): only those two columns change, and branch values gain a trailing ".0"
 
 Regenerate with:
     REGENERATE_GOLDEN=1 uv run pytest mbta-performance/chalicelib/lamp/tests/test_parity.py
