@@ -112,7 +112,7 @@ def _upload_pmtiles(segments: pd.DataFrame, key: str, all_day_key: str) -> tuple
 
 def _upload_leaderboard(leaderboard: dict, key: str) -> str:
     data = json.dumps(leaderboard).encode("utf-8")
-    logger.info(f"Uploading leaderboard ({len(data)} bytes) to s3://{S3_BUCKET}/{key}")
+    logger.info(f"Uploading leaderboard ({len(data)} bytes before gzip) to s3://{S3_BUCKET}/{key}")
     s3.upload_json(S3_BUCKET, key, data)
     return key
 

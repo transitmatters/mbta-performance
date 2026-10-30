@@ -1,3 +1,4 @@
+import gzip
 import io
 import os
 import tempfile
@@ -71,6 +72,15 @@ class TestS3(unittest.TestCase):
         self.assertEqual(decompressed, b"raw data")
         self.assertEqual(call_kwargs["Bucket"], "my-bucket")
         self.assertEqual(call_kwargs["Key"], "my/key")
+
+    def test_upload_json_is_gzipped_for_the_browser(self):
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            s3_module.upload_json("my-bucket", "my/key.json", b'{"a": 1}')
+
+        call_kwargs = self.mock_s3.put_object.call_args[1]
+        self.assertEqual(gzip.decompress(call_kwargs["Body"]), b'{"a": 1}')
+        self.assertEqual(call_kwargs["ContentType"], "application/json")
+        self.assertEqual(call_kwargs["ContentEncoding"], "gzip")
 
     def test_upload_default_is_compressed(self):
         with mock.patch("chalicelib.s3.s3", self.mock_s3):

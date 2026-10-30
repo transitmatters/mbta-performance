@@ -122,8 +122,11 @@ MONTHLY_LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={
 
 # Entries kept per (day_type, time_band) slice of the leaderboard. This is a display list, not
 # an analytical export -- the full ranked table already exists as GeoParquet/PMTiles -- so it's
-# capped well below the ~10.8k distinct segments/day rather than dumping the whole table.
-LEADERBOARD_SIZE = 100
+# capped well below the ~10.8k distinct segments/day rather than dumping the whole table. It's
+# still deep, because the dashboard's route and Frequent Bus filters narrow this slice
+# client-side: at 100, a filtered view came out with only a handful of rows. 500 puts a monthly
+# file at ~1.7MB of JSON, ~180KB once upload_json gzips it.
+LEADERBOARD_SIZE = 500
 
 # Higher than MIN_TRAVERSALS_HINT, and deliberately a separate constant: verified against real
 # data (2026-09-17/18), a segment's *slowest* end is dominated by 3-6-traversal noise (a single
