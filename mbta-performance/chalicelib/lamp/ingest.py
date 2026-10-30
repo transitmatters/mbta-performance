@@ -11,6 +11,7 @@ import requests
 from .. import parallel, s3
 from ..date import EASTERN_TIME, format_dateint, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
+from ..routes import trunk_route_id
 from .constants import (
     LAMP_COLUMNS,
     OCCUPANCY_COLUMNS,
@@ -43,6 +44,9 @@ TRIP_IDS_TO_DROP = ("NONREV-",)
 
 # defining these columns in particular becasue we use them everywhere
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
+# scheduled headways are averaged across every branch sharing a stop (trunk), or within one branch
+TRUNK_DIR_STOP = ["trunk_route_id", "direction_id", "stop_id"]
+BRANCH_DIR_STOP = ["branch_route_id", "direction_id", "stop_id"]
 
 
 def _derive_gtfs_branch_route_id(gtfs_stops: pd.DataFrame) -> pd.DataFrame:
@@ -339,17 +343,19 @@ def _recalculate_fields_from_gtfs(
     if unmatched_trips > 0:
         logger.warning(f"{unmatched_trips} events could not be matched to a scheduled trip")
     logger.debug(f"GTFS enrichment complete: {len(pq_df)} events")
-    return pq_df[S3_COLUMNS]
+    # keep branch_route_id for averaging branch headways; it's dropped before upload
+    return pq_df[S3_COLUMNS + ["branch_route_id"]]
 
 
 def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
     """Bucket scheduled headways into 30 minute buckets.
 
     We do this so as to smooth the benchmark headways for the data dashboard.
-    TODO: do this with branch headways as well
-    TODO: group green line branches together in trunk headways
+    Trunk headways are averaged across every branch stopping at a stop (e.g. all Green Line branches
+    at Government Center), branch headways within each branch (Red-A/Red-B, Green-B, etc).
     """
     logger.debug(f"Calculating average scheduled headways for {len(pq_df)} events")
+    pq_df = pq_df.assign(trunk_route_id=trunk_route_id(pq_df["route_id"]))
     # service date starts at 5:30am, but there are enough very early/late departures that we dont want to be opinionated
     start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
     end_time = start_time + pd.Timedelta(hours=48)
@@ -365,13 +371,15 @@ def _average_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.D
         )
         filtered_trips = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
 
-        # Get the average headway per route
-        average_scheduled_headway = filtered_trips.groupby(RTE_DIR_STOP)["scheduled_headway"].mean()
-        average_scheduled_headway = average_scheduled_headway.round(-1)  # Round to the nearest 10seconds
+        # Get the average headway per trunk and per branch, rounded to the nearest 10 seconds
+        average_scheduled_headway = filtered_trips.groupby(TRUNK_DIR_STOP)["scheduled_headway"].mean().round(-1)
+        average_scheduled_headway_branch = (
+            filtered_trips.groupby(BRANCH_DIR_STOP)["scheduled_headway_branch"].mean().round(-1)
+        )
 
         enriched_trip = filtered_trips.merge(
-            average_scheduled_headway, how="left", on=RTE_DIR_STOP, suffixes=["_lamp", ""]
-        )
+            average_scheduled_headway, how="left", on=TRUNK_DIR_STOP, suffixes=["_lamp", ""]
+        ).merge(average_scheduled_headway_branch, how="left", on=BRANCH_DIR_STOP, suffixes=["_lamp", ""])
         _enriched_trips.append(enriched_trip)
     return pd.concat(_enriched_trips)[S3_COLUMNS]
 

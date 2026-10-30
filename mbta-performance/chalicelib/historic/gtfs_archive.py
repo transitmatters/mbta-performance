@@ -6,6 +6,7 @@ import shutil
 import urllib.request
 
 from ..date import to_dateint
+from ..routes import trunk_route_id
 
 # Set GTFS_DATA_DIR to share downloaded archives between repos when running locally
 MAIN_DIR = pathlib.Path(os.environ.get("GTFS_DATA_DIR", "./data")).expanduser() / "gtfs_archives"
@@ -145,6 +146,8 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
     # defining these columns in particular becasue we use them everywhere
     RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
+    # scheduled headways are per trunk, so trunk stops count every Green Line branch
+    TRUNK_DIR_STOP = ["trunk_route_id", "direction_id", "stop_id"]
 
     results = []
 
@@ -165,10 +168,11 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         # take only the stops from those trips (adding route and dir info)
         trip_info = relevant_trips[["trip_id", "route_id", "direction_id"]]
         gtfs_stops = all_stops.merge(trip_info, on="trip_id", how="right")
+        gtfs_stops["trunk_route_id"] = trunk_route_id(gtfs_stops.route_id)
 
         # calculate gtfs headways
         gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
-        headways = gtfs_stops.groupby(RTE_DIR_STOP).arrival_time.diff()
+        headways = gtfs_stops.groupby(TRUNK_DIR_STOP).arrival_time.diff()
         gtfs_stops["scheduled_headway"] = headways.dt.seconds
 
         # calculate gtfs traveltimes
@@ -186,6 +190,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         # merge_asof 'backward' matches the previous scheduled value of 'arrival_time'
         days_events_clean = days_events_clean.copy()  # Create a copy to avoid SettingWithCopyWarning
         days_events_clean["arrival_time"] = days_events_clean.event_time - service_date
+        days_events_clean["trunk_route_id"] = trunk_route_id(days_events_clean.route_id)
 
         # Additional null check after creating arrival_time
         days_events_clean = days_events_clean.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
@@ -196,11 +201,11 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
         final = pd.merge_asof(
             days_events_clean.sort_values(by="arrival_time"),
-            gtfs_stops_clean[RTE_DIR_STOP + ["arrival_time", "scheduled_headway"]],
+            gtfs_stops_clean[TRUNK_DIR_STOP + ["arrival_time", "scheduled_headway"]],
             on="arrival_time",
             direction="backward",
-            by=RTE_DIR_STOP,
-        )
+            by=TRUNK_DIR_STOP,
+        ).drop(columns=["trunk_route_id"])
 
         # assign each actual trip a scheduled trip_id, based on when it started the route
         route_starts = days_events_clean.loc[days_events_clean.groupby("trip_id").event_time.idxmin()]
