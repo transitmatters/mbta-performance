@@ -195,6 +195,12 @@ def assign_time_band(departure_seconds: pd.Series) -> pd.Series:
     return band
 
 
+def with_time_bands(traversals: pd.DataFrame) -> pd.DataFrame:
+    """A copy of `traversals` labelled with their time band, less any that departed outside every band."""
+    traversals = traversals.assign(time_band=assign_time_band(traversals.depart_seconds))
+    return traversals.dropna(subset=["time_band"])
+
+
 def aggregate_segments(
     traversals: pd.DataFrame, extra_group_columns: tuple[str, ...] = ("service_date",)
 ) -> pd.DataFrame:
@@ -211,9 +217,7 @@ def aggregate_segments(
     Traversals that departed outside every band are dropped before either aggregation, so
     all_day covers exactly the traversals the bands do.
     """
-    traversals = traversals.copy()
-    traversals["time_band"] = assign_time_band(traversals.depart_seconds)
-    traversals = traversals.dropna(subset=["time_band"])
+    traversals = with_time_bands(traversals)
 
     segment_key = SEGMENT_KEY + list(extra_group_columns)
     by_band = _aggregate(traversals, segment_key + ["time_band"])

@@ -56,7 +56,8 @@ dashboard's in-progress week and month current and, on the day after one ends, f
 4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a
    whole-day `all_day` band.
 5. **Write GeoParquet** with road-following `LineString` geometry (`geoparquet.py`).
-6. **Optionally build PMTiles** from the same result, for the live map (`pmtiles.py`).
+6. **Optionally build PMTiles** from the same result, for the live map (`pmtiles.py`),
+   plus a pooled row for each stop pair several routes share (`shared_segments.py`).
 
 ## Time bands
 
@@ -121,10 +122,12 @@ s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments
 one `tippecanoe` invocation, writing every segment into a single vector layer named
 `segments` (matching `modules/busspeedmap/constants.ts`'s `PMTILES_SOURCE_LAYER` in the
 dashboard repo). Only the columns the map actually reads (`TILE_PROPERTIES`: route, direction,
-stop names, time band, `p50_speed_mph`, traversal counts) are handed to tippecanoe, so a
-column like `p90_speed_mph` or `moving_speed_mph` can never end up on the map by accident --
-see `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend
-type.
+stop names, time band, `p50_speed_mph`, traversal counts, `segment_length_m`,
+`p50_total_time_seconds` and `shared_routes`) are handed to tippecanoe, so a column like
+`p90_speed_mph` or `moving_speed_mph` can never end up on the map by accident -- see
+`modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend type.
+They're rounded to what the dashboard displays first (speed to 0.1 mph, length and time to
+whole metres and seconds), which keeps the archive smaller than full-precision floats would.
 
 **`all_day` rows are a separate archive, `segments_all_day.pmtiles`;** `segments.pmtiles`
 holds only the six time bands. Both use the same `segments` layer and the same properties
@@ -142,6 +145,33 @@ The band archive thins out at low zoom on its own, which predates all_day: at zo
 only 8-14% of band features survive on a daily file, and 5-7% through zoom 11 on a
 weekly/monthly one, because every segment's geometry is repeated once per band and the
 duplicates are the "densest" features. Every route is still present at `MINIMUM_ZOOM`.
+
+**Stop pairs several routes share get one more, pooled row** (`shared_segments.py`), in
+the tiles only. Where routes run between the same two stops -- SL4 and SL5 on Washington St,
+SL1-SL3 through the Silver Line tunnel -- each route's own line is drawn exactly over the
+others, and the colour you'd see is whichever is on top. The pooled row is the median of
+every route's traversals together, and the map draws it in their place whenever all of them
+are selected (including when no route is). Its `route_id` is the routes' ids sorted and
+comma-joined (`"749,751"`), and every row on the pair, pooled or not, carries that string as
+`shared_routes`; it's null, and so left off the feature, everywhere else. Only routes the map
+draws (`MIN_TRAVERSALS_HINT` or more traversals) pool, and only when they agree on
+`direction_id` and their lengths are within 25m.
+
+Pooled rows go first in the input, so where tippecanoe thins out the low zooms and keeps
+one of a run of identical lines, it keeps them. They also make the densest tile at a zoom up
+to 25% bigger, since shared corridors cluster downtown, and `--drop-densest-as-needed` thins
+a whole zoom when one tile overflows. At tippecanoe's default 500KB, that tipped the lowest
+complete zoom into thinning (2026-W44's zoom 10 went from every segment to 15% of them), so
+`MAXIMUM_TILE_BYTES` raises the limit by those 25%, to 625KB. Checked against the same data
+without pooled rows at 500KB, on 2026-10-28, 2026-10-29, 2026-W44 and September and October
+2026: no zoom has fewer segments, and on a day zoom 9 now holds every one (5,417 stop pairs in
+2026-10-29's am_peak, against 751).
+
+Measured on 2026-10-29, the band and all_day archives grow 17% and 7% for the day (most of
+that is zoom 9 filling in), 10% and 8% for the week, and 10% and 10% for the month: about 1GB
+more S3 a year, and about 10% more tile transfer for whatever part of the map is viewed.
+Pooling takes 2s for a day, 4s for a week and 12s for a month. The GeoParquet and the
+leaderboard stay one row per route -- `"749,751"` isn't a route.
 
 **Requires `tippecanoe` on `PATH`.** It's a system binary, not a Python dependency -- there's
 nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (the

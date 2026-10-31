@@ -43,13 +43,22 @@ from .s3_writer import (
     upload_weekly_speed_segments,
 )
 from .segments import SEGMENT_KEY, aggregate_segments, select_segment_geometry
+from .shared_segments import add_shared_segments
 
 logger = logging.getLogger(__name__)
 
+# No service_date in the group key, but day_type is: every traversal in the period contributes
+# to one percentile per (segment, day type, time band), so a business day and a
+# weekend/holiday in the same week never blend into one number.
+PERIOD_GROUP_COLUMNS = ("day_type",)
 
-def _build_period_result(service_dates: list[date]) -> pd.DataFrame:
+
+def _build_period_result(service_dates: list[date]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Aggregate traversals from every given service date into one (segment, day type, time
     band) table.
+
+    Returns (that table, the traversals it was built from), the latter for
+    shared_segments.add_shared_segments.
 
     Dates with no usable data (a gap in LAMP's export, an unparseable feed) are logged and
     skipped rather than failing the whole period, matching how backfill.py treats a bad date.
@@ -74,10 +83,7 @@ def _build_period_result(service_dates: list[date]) -> pd.DataFrame:
         ["route_pattern_id", "from_stop_id", "to_stop_id"]
     )
 
-    # No service_date in the group key, but day_type is: every traversal in the period
-    # contributes to one percentile per (segment, day type, time band), so a business day and
-    # a weekend/holiday in the same week never blend into one number.
-    aggregated = aggregate_segments(traversals, extra_group_columns=("day_type",))
+    aggregated = aggregate_segments(traversals, extra_group_columns=PERIOD_GROUP_COLUMNS)
     chosen_geometry = select_segment_geometry(traversals, segments)
 
     result = aggregated.merge(chosen_geometry, on=SEGMENT_KEY, how="inner")
@@ -85,7 +91,7 @@ def _build_period_result(service_dates: list[date]) -> pd.DataFrame:
         f"{len(result)} segment-band rows carry geometry across {len(service_dates)} dates "
         f"(from {len(aggregated)} aggregated rows)"
     )
-    return result
+    return result, traversals
 
 
 def generate_weekly_speed_segments(
@@ -113,14 +119,14 @@ def generate_weekly_speed_segments(
         raise ValueError(f"{year}-W{week:02d} ({start}..{end}) has no service dates with available LAMP bus data yet")
 
     logger.info(f"Generating bus speed segments for {year}-W{week:02d} ({service_dates[0]}..{service_dates[-1]})")
-    result = _build_period_result(service_dates)
+    result, traversals = _build_period_result(service_dates)
 
     if output_path:
         write_geoparquet(result, output_path)
     if upload:
         upload_weekly_speed_segments(result, year, week)
     if write_pmtiles:
-        upload_weekly_pmtiles(result, year, week)
+        upload_weekly_pmtiles(add_shared_segments(result, traversals, PERIOD_GROUP_COLUMNS), year, week)
     if write_leaderboard:
         upload_weekly_leaderboard(build_leaderboard(result), year, week)
     return result
@@ -146,14 +152,14 @@ def generate_monthly_speed_segments(
         raise ValueError(f"{year}-{month:02d} ({start}..{end}) has no service dates with available LAMP bus data yet")
 
     logger.info(f"Generating bus speed segments for {year}-{month:02d} ({service_dates[0]}..{service_dates[-1]})")
-    result = _build_period_result(service_dates)
+    result, traversals = _build_period_result(service_dates)
 
     if output_path:
         write_geoparquet(result, output_path)
     if upload:
         upload_monthly_speed_segments(result, year, month)
     if write_pmtiles:
-        upload_monthly_pmtiles(result, year, month)
+        upload_monthly_pmtiles(add_shared_segments(result, traversals, PERIOD_GROUP_COLUMNS), year, month)
     if write_leaderboard:
         upload_monthly_leaderboard(build_leaderboard(result), year, month)
     return result
