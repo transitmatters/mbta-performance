@@ -56,7 +56,7 @@ class TestBuildPeriodResult(unittest.TestCase):
             mock.patch.object(trends, "build_traversals_for_date", side_effect=build_side_effect) as build,
             mock.patch.object(trends, "day_type_for", return_value="business_day"),
         ):
-            result = trends._build_period_result(dates)
+            result, _ = trends._build_period_result(dates)
 
         self.assertEqual(build.call_count, 3)
         # Both surviving dates share one segment/day-type/time-band -- they collapse to one
@@ -78,7 +78,7 @@ class TestBuildPeriodResult(unittest.TestCase):
             ),
             mock.patch.object(trends, "day_type_for", side_effect=day_type_side_effect),
         ):
-            result = trends._build_period_result(dates)
+            result, _ = trends._build_period_result(dates)
 
         self.assertEqual(len(result), 4)
         self.assertEqual(set(result.day_type), {"business_day", "weekend_or_holiday"})
@@ -102,7 +102,7 @@ class TestBuildPeriodResult(unittest.TestCase):
                 side_effect=lambda d: "weekend_or_holiday" if d.weekday() >= 5 else "business_day",
             ),
         ):
-            result = trends._build_period_result([date(2026, 1, 5), date(2026, 1, 10)])
+            result, _ = trends._build_period_result([date(2026, 1, 5), date(2026, 1, 10)])
 
         all_day = result[result.time_band == "all_day"].set_index("day_type")
         self.assertEqual(sorted(all_day.index), ["business_day", "weekend_or_holiday"])
@@ -125,7 +125,7 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 10)),
             mock.patch.object(
-                trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})
+                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), pd.DataFrame())
             ) as build,
         ):
             trends.generate_weekly_speed_segments(2026, 2)
@@ -139,7 +139,9 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
     def test_upload_and_pmtiles_are_opt_in(self):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 10)),
-            mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})),
+            mock.patch.object(
+                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), pd.DataFrame())
+            ),
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
             mock.patch.object(trends, "upload_weekly_leaderboard") as upload_leaderboard,
@@ -153,17 +155,24 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
     def test_upload_and_pmtiles_flags_are_forwarded(self):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 10)),
-            mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})),
+            mock.patch.object(
+                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), pd.DataFrame())
+            ),
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
             mock.patch.object(trends, "upload_weekly_leaderboard") as upload_leaderboard,
             mock.patch.object(trends, "build_leaderboard", return_value={"am_peak": []}) as build_leaderboard,
+            mock.patch.object(trends, "add_shared_segments", return_value="with shared") as add_shared,
         ):
             trends.generate_weekly_speed_segments(2026, 2, upload=True, write_pmtiles=True, write_leaderboard=True)
 
         upload_segments.assert_called_once_with(mock.ANY, 2026, 2)
-        upload_pmtiles.assert_called_once_with(mock.ANY, 2026, 2)
+        # The tiles get the pooled shared rows; the GeoParquet and leaderboard don't.
+        add_shared.assert_called_once_with(mock.ANY, mock.ANY, trends.PERIOD_GROUP_COLUMNS)
+        upload_pmtiles.assert_called_once_with("with shared", 2026, 2)
+        self.assertIsInstance(upload_segments.call_args[0][0], pd.DataFrame)
         build_leaderboard.assert_called_once()
+        self.assertIsInstance(build_leaderboard.call_args[0][0], pd.DataFrame)
         upload_leaderboard.assert_called_once_with({"am_peak": []}, 2026, 2)
 
     def test_raises_for_a_week_with_no_available_dates_yet(self):
@@ -178,7 +187,7 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 15)),
             mock.patch.object(
-                trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})
+                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), pd.DataFrame())
             ) as build,
         ):
             trends.generate_monthly_speed_segments(2026, 1)
@@ -190,16 +199,19 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
     def test_upload_and_pmtiles_flags_are_forwarded(self):
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 2, 1)),
-            mock.patch.object(trends, "_build_period_result", return_value=pd.DataFrame({"n_traversals": [1]})),
+            mock.patch.object(
+                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), pd.DataFrame())
+            ),
             mock.patch.object(trends, "upload_monthly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_monthly_pmtiles") as upload_pmtiles,
             mock.patch.object(trends, "upload_monthly_leaderboard") as upload_leaderboard,
             mock.patch.object(trends, "build_leaderboard", return_value={"am_peak": []}),
+            mock.patch.object(trends, "add_shared_segments", return_value="with shared"),
         ):
             trends.generate_monthly_speed_segments(2026, 1, upload=True, write_pmtiles=True, write_leaderboard=True)
 
         upload_segments.assert_called_once_with(mock.ANY, 2026, 1)
-        upload_pmtiles.assert_called_once_with(mock.ANY, 2026, 1)
+        upload_pmtiles.assert_called_once_with("with shared", 2026, 1)
         upload_leaderboard.assert_called_once_with({"am_peak": []}, 2026, 1)
 
     def test_raises_for_a_month_with_no_available_dates_yet(self):

@@ -11,11 +11,13 @@ import pandas as pd
 from .. import pmtiles
 
 
-def _segments(day_type: str | None = None, time_bands: tuple[str, ...] = ("am_peak",)) -> pd.DataFrame:
-    return pd.concat([_segment(time_band, day_type) for time_band in time_bands], ignore_index=True)
+def _segments(
+    day_type: str | None = None, time_bands: tuple[str, ...] = ("am_peak",), shared_routes: str | None = None
+) -> pd.DataFrame:
+    return pd.concat([_segment(time_band, day_type, shared_routes) for time_band in time_bands], ignore_index=True)
 
 
-def _segment(time_band: str, day_type: str | None) -> pd.DataFrame:
+def _segment(time_band: str, day_type: str | None, shared_routes: str | None) -> pd.DataFrame:
     row = {
         "route_id": "1",
         "direction_id": 0,
@@ -26,11 +28,14 @@ def _segment(time_band: str, day_type: str | None) -> pd.DataFrame:
         "time_band": time_band,
         "n_traversals": 12,
         "n_interpolated": 1,
-        "segment_length_m": 500.0,
-        "p50_speed_mph": 11.5,
+        "segment_length_m": 500.4,
+        "p50_total_time_seconds": 97.26,
+        "p50_speed_mph": 11.5123,
         "p90_speed_mph": 8.0,
         "moving_speed_mph": 20.0,
         "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
+        # Null off a shared stop pair (see shared_segments.py), as on most rows.
+        "shared_routes": shared_routes,
     }
     # day_type is only present on the weekly/monthly trend rollups (trends.py), never on a
     # daily frame -- most tests exercise the daily shape, so it's opt-in here.
@@ -96,6 +101,21 @@ class TestBuildPmtilesBytes(unittest.TestCase):
 
         self.assertEqual(self.written_properties[0]["day_type"], "business_day")
 
+    def test_rounds_speed_length_and_time_to_what_the_dashboard_shows(self):
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(_segments())
+
+        properties = self.written_properties[0]
+        self.assertEqual(properties["p50_speed_mph"], 11.5)
+        # Written as JSON integers, not 500.0, so tippecanoe stores them as integers too.
+        self.assertIs(type(properties["segment_length_m"]), int)
+        self.assertEqual(properties["segment_length_m"], 500)
+        self.assertIs(type(properties["p50_total_time_seconds"]), int)
+        self.assertEqual(properties["p50_total_time_seconds"], 97)
+
     def test_all_day_rows_reach_tippecanoe_with_the_same_properties_as_a_band(self):
         # The map filters on an exact time_band match, so all_day must arrive as a plain
         # time_band value carrying every property a band feature has.
@@ -125,6 +145,7 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         # high zoom) fails outright instead of tiling -- see _run_tippecanoe's comment.
         self.assertIn("--drop-densest-as-needed", command)
         self.assertIn("--extend-zooms-if-still-dropping", command)
+        self.assertEqual(command[command.index("--maximum-tile-bytes") + 1], str(pmtiles.MAXIMUM_TILE_BYTES))
 
     def test_raises_on_a_nonzero_exit(self):
         def failing_run(command, **_kwargs):
@@ -144,7 +165,9 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
     developer's machine without it) still pass the rest of the suite."""
 
     def test_produces_a_segments_layer_with_only_tile_properties(self):
-        data = pmtiles.build_pmtiles_bytes(_segments(day_type="business_day", time_bands=("am_peak", "all_day")))
+        data = pmtiles.build_pmtiles_bytes(
+            _segments(day_type="business_day", time_bands=("am_peak", "all_day"), shared_routes="1,2")
+        )
 
         self.assertTrue(data.startswith(b"PMTiles"))
 
@@ -181,6 +204,24 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
         for archive in decoded:
             layer = json.loads(json.loads(archive)["properties"]["json"])["vector_layers"][0]
             self.assertEqual(layer["id"], pmtiles.LAYER_NAME)
+
+    def test_a_null_shared_routes_is_left_off_the_feature(self):
+        frame = pd.concat([_segments(), _segments(time_bands=("midday",), shared_routes="1,2")], ignore_index=True)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tileset_path = Path(tmp_dir) / "segments.pmtiles"
+            tileset_path.write_bytes(pmtiles.build_pmtiles_bytes(frame))
+            decoded = subprocess.run(
+                ["tippecanoe-decode", str(tileset_path)], capture_output=True, check=True, text=True
+            ).stdout
+
+        by_band = {
+            feature["properties"]["time_band"]: feature["properties"]
+            for tile in json.loads(decoded)["features"]
+            for layer in tile["features"]
+            for feature in layer["features"]
+        }
+        self.assertNotIn("shared_routes", by_band["am_peak"])
+        self.assertEqual(by_band["midday"]["shared_routes"], "1,2")
 
     @staticmethod
     def _time_bands(decoded: str) -> set[str]:
