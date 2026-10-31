@@ -26,9 +26,9 @@ TIPPECANOE_BINARY = "tippecanoe"
 # Matches modules/busspeedmap/constants.ts's PMTILES_SOURCE_LAYER on the frontend.
 LAYER_NAME = "segments"
 
-# The frontend falls back to this zoom to find a route's geometry when the current view has
-# nothing loaded (see BusSpeedMapView.tsx), on the assumption that every route is present
-# there -- so MINIMUM_ZOOM must stay at or below it.
+# The frontend falls back to a whole-network view (about zoom 9, depending on the map's size)
+# to find a route's geometry when the current view has nothing loaded (see BusSpeedMapView.tsx),
+# on the assumption that every route is present there -- so MINIMUM_ZOOM must stay below it.
 MINIMUM_ZOOM = 4
 MAXIMUM_ZOOM = 16
 
@@ -41,6 +41,9 @@ MAXIMUM_ZOOM = 16
 # the other, so ingest.py's daily frames never carry the column. Listed here anyway: only
 # columns actually present in a given frame reach tippecanoe (see build_pmtiles_bytes), so
 # this is a no-op for daily and picks the column up automatically for trends.
+#
+# segment_length_m and p50_total_time_seconds are the two numbers p50_speed_mph is computed
+# from, shown in the map's hover popup as the segment's distance and median travel time.
 TILE_PROPERTIES = [
     "route_id",
     "direction_id",
@@ -51,6 +54,8 @@ TILE_PROPERTIES = [
     "p50_speed_mph",
     "n_traversals",
     "n_interpolated",
+    "segment_length_m",
+    "p50_total_time_seconds",
 ]
 
 
@@ -112,15 +117,31 @@ def split_all_day(frame):
     return frame[~is_all_day], frame[is_all_day]
 
 
+def _round_for_tiles(frame):
+    """Round to what the dashboard shows: speed to 0.1 mph, length and time to whole metres and
+    seconds, as leaderboard.py does.
+
+    Full-precision floats make nearly every value in a tile unique, and each one a full 8-byte
+    double. Measured on 2026-10-28's band archive (11.4MB before length and time were added):
+    they'd add 24% as floats and 10% as integers, while rounding speed saves 12%, so with both
+    the archive comes out 5% smaller than before.
+    """
+    return frame.assign(
+        p50_speed_mph=frame.p50_speed_mph.round(1),
+        segment_length_m=frame.segment_length_m.round().astype(int),
+        p50_total_time_seconds=frame.p50_total_time_seconds.round().astype(int),
+    )
+
+
 def build_pmtiles_bytes(frame, coordinates_column: str = "coordinates") -> bytes:
     """Serialise a DataFrame with a coordinate-list column to a PMTiles tileset, in memory.
 
     Only `TILE_PROPERTIES` (plus geometry) reach tippecanoe -- everything else in `frame`
-    (segment length, dwell, the p90 and moving-speed columns) is dropped first.
+    (dwell, the p90 and moving-speed columns) is dropped first.
     """
     _require_tippecanoe()
     columns = [coordinates_column] + [column for column in TILE_PROPERTIES if column in frame.columns]
-    geo_frame = _to_geodataframe(frame[columns], coordinates_column)
+    geo_frame = _to_geodataframe(_round_for_tiles(frame[columns]), coordinates_column)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         geojson_path = Path(tmp_dir) / "segments.geojsons"

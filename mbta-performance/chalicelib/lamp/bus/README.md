@@ -121,10 +121,12 @@ s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments
 one `tippecanoe` invocation, writing every segment into a single vector layer named
 `segments` (matching `modules/busspeedmap/constants.ts`'s `PMTILES_SOURCE_LAYER` in the
 dashboard repo). Only the columns the map actually reads (`TILE_PROPERTIES`: route, direction,
-stop names, time band, `p50_speed_mph`, traversal counts) are handed to tippecanoe, so a
-column like `p90_speed_mph` or `moving_speed_mph` can never end up on the map by accident --
-see `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend
-type.
+stop names, time band, `p50_speed_mph`, traversal counts, `segment_length_m` and
+`p50_total_time_seconds`) are handed to tippecanoe, so a column like `p90_speed_mph` or
+`moving_speed_mph` can never end up on the map by accident -- see
+`modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend type.
+They're rounded to what the dashboard displays first (speed to 0.1 mph, length and time to
+whole metres and seconds), which keeps the archive smaller than full-precision floats would.
 
 **`all_day` rows are a separate archive, `segments_all_day.pmtiles`;** `segments.pmtiles`
 holds only the six time bands. Both use the same `segments` layer and the same properties

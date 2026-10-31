@@ -26,8 +26,9 @@ def _segment(time_band: str, day_type: str | None) -> pd.DataFrame:
         "time_band": time_band,
         "n_traversals": 12,
         "n_interpolated": 1,
-        "segment_length_m": 500.0,
-        "p50_speed_mph": 11.5,
+        "segment_length_m": 500.4,
+        "p50_total_time_seconds": 97.26,
+        "p50_speed_mph": 11.5123,
         "p90_speed_mph": 8.0,
         "moving_speed_mph": 20.0,
         "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
@@ -95,6 +96,21 @@ class TestBuildPmtilesBytes(unittest.TestCase):
             pmtiles.build_pmtiles_bytes(_segments(day_type="business_day"))
 
         self.assertEqual(self.written_properties[0]["day_type"], "business_day")
+
+    def test_rounds_speed_length_and_time_to_what_the_dashboard_shows(self):
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(_segments())
+
+        properties = self.written_properties[0]
+        self.assertEqual(properties["p50_speed_mph"], 11.5)
+        # Written as JSON integers, not 500.0, so tippecanoe stores them as integers too.
+        self.assertIs(type(properties["segment_length_m"]), int)
+        self.assertEqual(properties["segment_length_m"], 500)
+        self.assertIs(type(properties["p50_total_time_seconds"]), int)
+        self.assertEqual(properties["p50_total_time_seconds"], 97)
 
     def test_all_day_rows_reach_tippecanoe_with_the_same_properties_as_a_band(self):
         # The map filters on an exact time_band match, so all_day must arrive as a plain
