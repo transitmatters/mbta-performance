@@ -32,6 +32,15 @@ LAYER_NAME = "segments"
 MINIMUM_ZOOM = 4
 MAXIMUM_ZOOM = 16
 
+# tippecanoe's default is 500KB. --drop-densest-as-needed (see _run_tippecanoe) thins a whole
+# zoom level whenever a single tile in it overflows, so the lowest zoom that still has every
+# segment is always one whose densest tile only just fits. shared_segments.py's pooled rows
+# make the densest tile at a zoom up to 25% bigger, since shared corridors cluster downtown;
+# at 500KB that tipped the next zoom up into thinning (2026-W44's densest zoom 10 tile grew
+# from 479KB to 530KB, and zoom 10 went from every segment to 15% of them). Raised by that
+# 25%, every zoom that fitted before still does -- and sometimes one more now fits too.
+MAXIMUM_TILE_BYTES = 625_000
+
 # What modules/busspeedmap/types.ts's BusSpeedSegmentProperties reads off a tile feature.
 # Selected explicitly, rather than handing tippecanoe the full GeoParquet schema, so a column
 # like p90_speed_mph or moving_speed_mph can never end up on the map by accident.
@@ -44,6 +53,10 @@ MAXIMUM_ZOOM = 16
 #
 # segment_length_m and p50_total_time_seconds are the two numbers p50_speed_mph is computed
 # from, shown in the map's hover popup as the segment's distance and median travel time.
+#
+# shared_routes marks the rows on a stop pair several routes share, so the map can draw the
+# pooled row in their place (see shared_segments.py). Null everywhere else, which tippecanoe
+# leaves off the feature entirely.
 TILE_PROPERTIES = [
     "route_id",
     "direction_id",
@@ -56,6 +69,7 @@ TILE_PROPERTIES = [
     "n_interpolated",
     "segment_length_m",
     "p50_total_time_seconds",
+    "shared_routes",
 ]
 
 
@@ -85,7 +99,7 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
         str(MAXIMUM_ZOOM),
         # Geometry is repeated per time band and direction (see the bus README), so a dense
         # area like downtown Boston has many overlapping near-duplicate lines -- enough to
-        # blow past tippecanoe's default 500KB tile limit and fail outright without this.
+        # blow past the tile size limit (MAXIMUM_TILE_BYTES) and fail outright without this.
         # Verified against a real day (2026-09-17, 52.8k features) that every route still has
         # geometry at MINIMUM_ZOOM, which is what the frontend's fallback view relies on. The
         # dropping is real, though: at zooms 4-10 only 8-14% of band features survive on a
@@ -94,6 +108,8 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
         # why all_day rows get an archive of their own -- see split_all_day.
         "--drop-densest-as-needed",
         "--extend-zooms-if-still-dropping",
+        "--maximum-tile-bytes",
+        str(MAXIMUM_TILE_BYTES),
         str(geojson_path),
     ]
     logger.info(f"Running tippecanoe on {geojson_path} -> {output_path}")

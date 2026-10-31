@@ -38,6 +38,7 @@ from .segments import (
     interpolate_missing_times,
     select_segment_geometry,
 )
+from .shared_segments import add_shared_segments
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,9 @@ def generate_speed_segments(
 
     `write_pmtiles` additionally builds a PMTiles tileset from the same result and publishes
     it alongside the GeoParquet, under the same S3 prefix -- this is what the live map
-    actually reads. Also opt-in and independent of `upload`, and requires tippecanoe on
-    PATH (see pmtiles.py).
+    actually reads. The tiles also carry a pooled row for every stop pair several routes
+    share (shared_segments.py), which the GeoParquet and leaderboard don't. Also opt-in and
+    independent of `upload`, and requires tippecanoe on PATH (see pmtiles.py).
 
     `write_leaderboard` additionally ranks segments slowest-first within each time band
     (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles --
@@ -134,7 +136,7 @@ def generate_speed_segments(
     if upload:
         upload_speed_segments(result, service_date)
     if write_pmtiles:
-        upload_pmtiles(result, service_date)
+        upload_pmtiles(add_shared_segments(result, traversals), service_date)
     if write_leaderboard:
         upload_leaderboard(build_leaderboard(result), service_date)
     return result
