@@ -606,18 +606,13 @@ class TestProcess(unittest.TestCase):
                 # to_disk_ferry should still be called despite the GTFS failure
                 mock_to_disk.assert_called_once()
 
-    def test_load_bus_data_utc_conversion(self):
-        """Test that post-June 2024 bus data is correctly converted from UTC to Eastern Time.
+    def test_load_bus_data_shifted_times(self):
+        """June to December 2024 bus data is Eastern + 5 hours all year, so 5 hours come off even under DST.
 
-        MBTA changed their data format around June 2024:
-        - Before: Times were Eastern Time (mislabeled with Z suffix)
-        - After: Times are actual UTC
-
-        This test verifies that UTC times are properly converted to Eastern.
+        Read as UTC, 10:06Z would be 06:06 EDT, an hour later than the bus ran (checked against gobble's
+        recordings at route 1's stop 67 in June, August and October 2024).
         """
-        # Post-June 2024 data with UTC times
-        # 10:05:00Z UTC = 06:05:00 EDT (UTC-4 in summer)
-        utc_bus_data = pd.DataFrame(
+        shifted_bus_data = pd.DataFrame(
             {
                 "service_date": ["2024-07-15", "2024-07-15"],
                 "route_id": ["01", "01"],
@@ -635,18 +630,20 @@ class TestProcess(unittest.TestCase):
             }
         )
 
-        bus_csv = pathlib.Path(self.temp_dir) / "bus_utc.csv"
-        utc_bus_data.to_csv(bus_csv, index=False)
+        bus_csv = pathlib.Path(self.temp_dir) / "bus_shifted.csv"
+        shifted_bus_data.to_csv(bus_csv, index=False)
 
         df = process.load_bus_data(str(bus_csv))
 
-        # Verify times are converted to Eastern (EDT in July = UTC-4)
-        # 10:06:00 UTC should become 06:06:00 EDT
-        expected_time_1 = datetime.datetime(2024, 7, 15, 6, 6, 0)
-        expected_time_2 = datetime.datetime(2024, 7, 15, 6, 9, 30)
+        self.assertEqual(df.iloc[0]["actual"], datetime.datetime(2024, 7, 15, 5, 6, 0))
+        self.assertEqual(df.iloc[1]["actual"], datetime.datetime(2024, 7, 15, 5, 9, 30))
+        self.assertEqual(df.iloc[0]["scheduled"], datetime.datetime(2024, 7, 15, 5, 5, 0))
 
-        self.assertEqual(df.iloc[0]["actual"], expected_time_1)
-        self.assertEqual(df.iloc[1]["actual"], expected_time_2)
+        # In winter Eastern + 5 hours is UTC, so the two readings agree
+        shifted_bus_data["service_date"] = "2024-12-10"
+        shifted_bus_data.to_csv(bus_csv, index=False)
+        df = process.load_bus_data(str(bus_csv))
+        self.assertEqual(df.iloc[0]["actual"], datetime.datetime(2024, 12, 10, 5, 6, 0))
 
     @staticmethod
     def _service_day_times(utc_offset_hours: int, n: int = 12_000) -> pd.Series:
@@ -657,22 +654,23 @@ class TestProcess(unittest.TestCase):
             utc=True,
         )
 
-    def test_bus_times_are_utc_detects_utc_from_data(self):
-        """True UTC times (Eastern + 5h) have their overnight lull at 7-9Z, regardless of service date."""
+    def test_bus_times_are_shifted_detects_shift_from_data(self):
+        """Shifted times (Eastern + 5h) have their overnight lull at 7-9, regardless of service date."""
         times = pd.Series(self._service_day_times(utc_offset_hours=5))
-        self.assertTrue(process.bus_times_are_utc(times, datetime.datetime(2026, 3, 1)))
+        self.assertTrue(process.bus_times_are_shifted(times, datetime.datetime(2026, 3, 1)))
 
-    def test_bus_times_are_utc_detects_eastern_labelled_z(self):
-        """From Feb 2026 MBTA went back to Eastern times with a Z suffix; the lull is at 2-4 so it's not UTC."""
+    def test_bus_times_are_shifted_detects_eastern_labelled_z(self):
+        """Eastern times with a Z suffix have their lull at 2-4, so they're not shifted."""
         times = pd.Series(self._service_day_times(utc_offset_hours=0))
-        self.assertFalse(process.bus_times_are_utc(times, datetime.datetime(2025, 1, 1)))
+        self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2024, 7, 1)))
 
-    def test_bus_times_are_utc_small_input_falls_back_to_known_window(self):
+    def test_bus_times_are_shifted_small_input_falls_back_to_known_window(self):
         times = pd.Series(pd.to_datetime(["1900-01-01T10:06:00Z"], utc=True))
-        self.assertFalse(process.bus_times_are_utc(times, datetime.datetime(2024, 5, 31)))
-        self.assertTrue(process.bus_times_are_utc(times, datetime.datetime(2024, 6, 1)))
-        self.assertTrue(process.bus_times_are_utc(times, datetime.datetime(2026, 1, 31)))
-        self.assertFalse(process.bus_times_are_utc(times, datetime.datetime(2026, 2, 1)))
+        self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2024, 5, 31)))
+        self.assertTrue(process.bus_times_are_shifted(times, datetime.datetime(2024, 6, 1)))
+        self.assertTrue(process.bus_times_are_shifted(times, datetime.datetime(2024, 12, 31)))
+        self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2025, 1, 1)))
+        self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2026, 1, 31)))
 
     def test_load_bus_data_feb_2026_z_suffix_treated_as_eastern(self):
         """Feb 2026+ bus data is Eastern wall-clock time again despite the Z suffix: no UTC shift."""
