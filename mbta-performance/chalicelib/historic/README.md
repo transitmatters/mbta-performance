@@ -115,15 +115,17 @@ Processing in this repo doesn't depend on routes. Every stop and route in the so
 
 ## Bus timezones
 
-The bus source files always carry a `Z` suffix, but that suffix hasn't always meant UTC:
+The bus source files always carry a `Z` suffix, but it never means UTC. As currently published:
 
-| Period                  | Actual timezone                  |
-| ----------------------- | -------------------------------- |
-| up to May 2024          | Eastern (mislabelled `Z`)        |
-| June 2024 – January 2026 | UTC                              |
-| February 2026 onward    | Eastern again (mislabelled `Z`)  |
+| Period                | What the times are                                                             |
+| --------------------- | ------------------------------------------------------------------------------ |
+| up to May 2024        | Eastern wall-clock time                                                        |
+| June – December 2024  | Eastern + 5 hours, all year: the same as UTC in winter, an hour past it under DST |
+| 2025 onward           | Eastern wall-clock time again                                                  |
 
-`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local. It falls back to the table above only for very small inputs. If the MBTA switches again, detection should handle it. Still, check the spot-check in step 4 after each update.
+The shifted months look like UTC, but under daylight time reading them as UTC puts every bus an hour late. Taking 5 hours off matches gobble's recordings to within a minute (route 1, stop 67, on days in June, August, October and November 2024). This table used to list 2025 and January 2026 as UTC too; as the MBTA republished them in October 2026, they're Eastern.
+
+`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. If the MBTA switches again, detection should handle it. Still, check the spot-check in step 4 after each update.
 
 ## Full rebuilds
 

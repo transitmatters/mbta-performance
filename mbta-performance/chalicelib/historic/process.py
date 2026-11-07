@@ -223,24 +223,27 @@ def process_ferry(
     to_disk_ferry(df, outdir, nozip)
 
 
-# Below this many rows the hour-of-day signal is too thin to trust; fall back to the known UTC window
+# Below this many rows the hour-of-day signal is too thin to trust; fall back to the known shifted window
 MIN_ROWS_FOR_TZ_DETECTION = 10_000
-# MBTA published true UTC times from June 2024 through January 2026, and Eastern times labelled "Z" otherwise
-BUS_UTC_WINDOW = (datetime(2024, 6, 1), datetime(2026, 2, 1))
+# Months the MBTA publishes as Eastern + 5 hours (the 2024 file, last updated January 2025); Eastern otherwise,
+# including 2025 and January 2026 as republished in October 2026.
+BUS_SHIFTED_WINDOW = (datetime(2024, 6, 1), datetime(2025, 1, 1))
+BUS_SHIFT = pd.Timedelta(hours=5)
 
 
-def bus_times_are_utc(actual: pd.Series, first_service_date) -> bool:
+def bus_times_are_shifted(actual: pd.Series, first_service_date) -> bool:
     """
-    Whether a bus file's "Z"-suffixed times are really UTC, or Eastern wall-clock times mislabelled as UTC.
+    Whether a bus file's "Z"-suffixed times are Eastern wall-clock time plus 5 hours, or Eastern wall-clock time.
 
-    The MBTA has switched between the two without notice (UTC from June 2024, back to Eastern in February 2026),
-    so detect it from the data: bus service is quietest around 2-4am local. If the times are UTC, that lull shows
-    up at 7-9Z; if they are Eastern, it shows up at 2-4.
+    The shifted files are 5 hours ahead all year, as if converted from Eastern at standard time: the same as UTC
+    in winter, but an hour past UTC under daylight time, so they can't be read as UTC. The MBTA has switched
+    between the two without notice, so detect it from the data: bus service is quietest around 2-4am local.
+    Shifted, that lull shows up at 7-9; otherwise at 2-4.
     """
     if len(actual) >= MIN_ROWS_FOR_TZ_DETECTION:
         hours = actual.dt.hour
         return hours.between(7, 9).sum() < hours.between(2, 4).sum()
-    return BUS_UTC_WINDOW[0] <= first_service_date < BUS_UTC_WINDOW[1]
+    return BUS_SHIFTED_WINDOW[0] <= first_service_date < BUS_SHIFTED_WINDOW[1]
 
 
 def load_bus_data(input_csv: str, routes: list = None):
@@ -290,12 +293,12 @@ def load_bus_data(input_csv: str, routes: list = None):
 
     df.service_date = pd.to_datetime(df.service_date).dt.tz_localize(None)
 
-    # Parse scheduled/actual times - they have 'Z' suffix, which may or may not mean UTC (see bus_times_are_utc)
+    # Parse scheduled/actual times - they have 'Z' suffix, which doesn't mean UTC (see bus_times_are_shifted)
     df.scheduled = pd.to_datetime(df.scheduled, utc=True)
     df.actual = pd.to_datetime(df.actual, utc=True)
 
     # Detect on the whole file, before route filtering, so there are enough rows to be conclusive
-    is_utc_format = bus_times_are_utc(df.actual, df.service_date.min())
+    is_shifted = bus_times_are_shifted(df.actual, df.service_date.min())
 
     df.route_id = df.route_id.str.lstrip("0")
     if routes:
@@ -309,24 +312,13 @@ def load_bus_data(input_csv: str, routes: list = None):
     scheduled_time = df.scheduled - df.scheduled.dt.normalize()
     actual_time = df.actual - df.actual.dt.normalize()
 
-    if is_utc_format:
-        # Data is in UTC - combine with service_date first, then convert to Eastern
-        # We must do it this way so DST rules are applied based on the actual date, not 1900
-        from zoneinfo import ZoneInfo
-
-        eastern = ZoneInfo("US/Eastern")
-
-        # Build full UTC datetime: service_date + days_offset + time_of_day
-        df.scheduled = (df.service_date + scheduled_days_offset + scheduled_time).dt.tz_localize("UTC")
-        df.actual = (df.service_date + actual_days_offset + actual_time).dt.tz_localize("UTC")
-
-        # Convert to Eastern and strip timezone
-        df.scheduled = df.scheduled.dt.tz_convert(eastern).dt.tz_localize(None)
-        df.actual = df.actual.dt.tz_convert(eastern).dt.tz_localize(None)
-    else:
-        # Data is already in Eastern Time (despite Z suffix) - just combine with service_date
-        df.scheduled = df.service_date + scheduled_days_offset + scheduled_time
-        df.actual = df.service_date + actual_days_offset + actual_time
+    # Eastern wall-clock time on the service date (despite the Z suffix)
+    df.scheduled = df.service_date + scheduled_days_offset + scheduled_time
+    df.actual = df.service_date + actual_days_offset + actual_time
+    if is_shifted:
+        # 5 hours ahead whatever the date, so take 5 hours off rather than converting from UTC with DST rules
+        df.scheduled -= BUS_SHIFT
+        df.actual -= BUS_SHIFT
 
     df.direction_id = df.direction_id.map({"Outbound": 0, "Inbound": 1})
 
