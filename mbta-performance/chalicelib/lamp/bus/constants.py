@@ -33,6 +33,10 @@ BUS_COLUMNS = [
     "stop_departure_seconds",
     "plan_stop_departure_sam",
     "point_type",
+    # Only for the per-route daily metrics in daily_metrics.py, read from the raw events.
+    "route_direction_headway_seconds",
+    "plan_route_direction_headway_seconds",
+    "waiver_remark",
 ]
 
 # NOTE: the plan_*_dt columns in the LAMP bus export are offset from the rest of the feed
@@ -145,3 +149,22 @@ LEADERBOARD_MIN_TRAVERSALS = 20
 # family of tables. Named separately from that family: bus has ~150 independent routes rather
 # than a handful of lines with fixed branches and a nominal track length.
 DYNAMO_TABLE_NAME = "DeliveredTripMetricsBus"
+
+# LAMP marks a trip's timepoints with point_type "start", "mid" or "end". Headway reliability
+# counts only the "mid" ones, leaving out terminals as transitmatters/data-ingestion#232 does
+# for rail: origin departures are held by dispatchers (73% within 0.75-1.25x of schedule on
+# 2026-11-04, against 58% mid-route), and terminal arrivals are past where anyone boards.
+HEADWAY_POINT_TYPES = ("mid",)
+
+# Daily counts of headways by actual / scheduled headway, as (field name, lower, upper,
+# includes lower, includes upper). Matches the dashboard: exactly 0.5 is bunched (`<= 0.5`) and
+# on time is 0.75-1.25 exclusive. Exactly 1.5 goes to the top bucket, mirroring 0.5. Named by
+# ratio rather than "bunched"/"on_time" so the dashboard can pick 75-125% or 50-150% later.
+# Bucket names and edges are shared with transitmatters/data-ingestion#232; keep them in step.
+HEADWAY_RATIO_BUCKETS = (
+    ("headways_under_50", float("-inf"), 0.5, True, True),
+    ("headways_50_75", 0.5, 0.75, False, True),
+    ("headways_75_125", 0.75, 1.25, False, False),
+    ("headways_125_150", 1.25, 1.5, True, False),
+    ("headways_over_150", 1.5, float("inf"), True, True),
+)
