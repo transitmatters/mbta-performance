@@ -236,6 +236,14 @@ class TestTraversals(unittest.TestCase):
         self.assertEqual(second.total_time_seconds, 90.0)
         self.assertGreater(second.moving_speed_mph, second.speed_mph)
 
+    def test_marks_the_first_and_last_segments_of_a_trip(self):
+        events = pd.DataFrame(self._trip("t1", [(0.0, 10.0), (70.0, 80.0), (140.0, 150.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+
+        self.assertEqual(traversals.is_trip_start.tolist(), [True, False])
+        self.assertEqual(traversals.is_trip_end.tolist(), [False, True])
+
     def test_segments_are_not_stitched_across_two_trips(self):
         events = pd.DataFrame(
             self._trip("t1", [(0.0, 0.0), (60.0, 60.0)]) + self._trip("t2", [(500.0, 500.0), (560.0, 560.0)])
@@ -273,6 +281,8 @@ class TestAggregateSegments(unittest.TestCase):
                         "moving_time_seconds": total_time,
                         "dwell_seconds": 0.0,
                         "is_interpolated": False,
+                        "is_trip_start": False,
+                        "is_trip_end": False,
                         "segment_length_m": 500.0,
                     }
                 )
@@ -299,6 +309,72 @@ class TestAggregateSegments(unittest.TestCase):
         self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
 
 
+class TestTerminalSections(unittest.TestCase):
+    def _section(self, starts: int = 0, ends: int = 0, others: int = 0):
+        """terminal_section of a segment with this many trips starting, ending and passing through."""
+        flags = [(True, False)] * starts + [(False, True)] * ends + [(False, False)] * others
+        traversals = pd.DataFrame(
+            [
+                {
+                    "route_id": "1",
+                    "direction_id": 0,
+                    "from_stop_id": "s1",
+                    "to_stop_id": "s2",
+                    "service_date": date(2026, 9, 3),
+                    "depart_seconds": 8 * 3600,
+                    "total_time_seconds": 60.0,
+                    "moving_time_seconds": 60.0,
+                    "dwell_seconds": 0.0,
+                    "is_interpolated": False,
+                    "is_trip_start": is_trip_start,
+                    "is_trip_end": is_trip_end,
+                    "segment_length_m": 500.0,
+                }
+                for is_trip_start, is_trip_end in flags
+            ]
+        )
+        aggregated = segments.aggregate_segments(traversals)
+        return aggregated[aggregated.time_band == "am_peak"].iloc[0].terminal_section
+
+    def test_where_most_trips_start(self):
+        self.assertEqual(self._section(starts=3, others=2), "first")
+
+    def test_where_most_trips_end(self):
+        self.assertEqual(self._section(ends=3, others=2), "last")
+
+    def test_not_where_most_trips_run_through(self):
+        # A short-turn pattern starting a few trips here doesn't make it the route's terminal.
+        self.assertIsNone(self._section(starts=2, others=3))
+        self.assertIsNone(self._section(ends=2, others=3))
+
+    def test_a_one_segment_trip_is_first(self):
+        self.assertEqual(self._section(starts=2, ends=2), "first")
+
+    def test_the_shares_it_comes_from_are_not_published(self):
+        aggregated = segments.aggregate_segments(
+            pd.DataFrame(
+                [
+                    {
+                        "route_id": "1",
+                        "direction_id": 0,
+                        "from_stop_id": "s1",
+                        "to_stop_id": "s2",
+                        "service_date": date(2026, 9, 3),
+                        "depart_seconds": 8 * 3600,
+                        "total_time_seconds": 60.0,
+                        "moving_time_seconds": 60.0,
+                        "dwell_seconds": 0.0,
+                        "is_interpolated": False,
+                        "is_trip_start": True,
+                        "is_trip_end": False,
+                        "segment_length_m": 500.0,
+                    }
+                ]
+            )
+        )
+        self.assertFalse({"trip_start_share", "trip_end_share"} & set(aggregated.columns))
+
+
 class TestAllDayBand(unittest.TestCase):
     """The all_day rows the map's "All day" filter reads (see ALL_DAY_BAND in constants.py)."""
 
@@ -314,6 +390,8 @@ class TestAllDayBand(unittest.TestCase):
             "moving_time_seconds": total_time * 0.8,
             "dwell_seconds": total_time * 0.2,
             "is_interpolated": is_interpolated,
+            "is_trip_start": False,
+            "is_trip_end": False,
             "segment_length_m": 500.0,
         }
 
@@ -356,7 +434,7 @@ class TestAllDayBand(unittest.TestCase):
         aggregated = segments.aggregate_segments(self._traversals())
 
         all_day = aggregated[aggregated.time_band == ALL_DAY_BAND]
-        self.assertFalse(all_day.drop(columns=["time_band"]).isna().any().any())
+        self.assertFalse(all_day.drop(columns=["time_band", "terminal_section"]).isna().any().any())
         self.assertEqual(set(aggregated.time_band), {"am_peak", "midday", ALL_DAY_BAND})
 
     def test_a_traversal_outside_every_band_is_in_neither_the_bands_nor_all_day(self):

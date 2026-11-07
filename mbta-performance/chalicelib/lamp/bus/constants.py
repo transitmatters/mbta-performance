@@ -71,8 +71,14 @@ MAX_PLAUSIBLE_SPEED_MPH = 65.0
 BUSINESS_DAY = "business_day"
 WEEKEND_OR_HOLIDAY = "weekend_or_holiday"
 
-# Percentiles reported per (segment, date, band).
-PERCENTILES = (50, 90)
+# Percentiles reported per (segment, date, band). Moving time gets fewer: its fast tail is mostly
+# the short segments whose moving clock runs short (see "The two speeds" in the README).
+PERCENTILES = (10, 50, 90)
+MOVING_PERCENTILES = (50, 90)
+
+# A segment is a terminal section if at least this share of its trips start or end on it. See
+# segments._with_terminal_sections.
+TERMINAL_SECTION_SHARE = 0.5
 
 # Aggregation buckets with fewer than this many traversals are still emitted, but a
 # consumer will usually want to filter on n_traversals for map rendering.
