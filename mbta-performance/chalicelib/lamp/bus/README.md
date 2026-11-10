@@ -122,12 +122,14 @@ s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments
 one `tippecanoe` invocation, writing every segment into a single vector layer named
 `segments` (matching `modules/busspeedmap/constants.ts`'s `PMTILES_SOURCE_LAYER` in the
 dashboard repo). Only the columns the map actually reads (`TILE_PROPERTIES`: route, direction,
-stop names, time band, `p50_speed_mph`, traversal counts, `segment_length_m`,
-`p50_total_time_seconds` and `shared_routes`) are handed to tippecanoe, so a column like
-`p90_speed_mph` or `moving_speed_mph` can never end up on the map by accident -- see
-`modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend type.
-They're rounded to what the dashboard displays first (speed to 0.1 mph, length and time to
-whole metres and seconds), which keeps the archive smaller than full-precision floats would.
+`from_stop_id`, stop names, time band, `p50_speed_mph`, traversal counts, `segment_length_m`,
+`p50_total_time_seconds`, `median_dwell_seconds`, `p10_speed_mph`, `p90_speed_mph`,
+`terminal_section` and `shared_routes`) are handed to tippecanoe, so a column like
+`moving_speed_mph` can never end up on the map by accident (see "The two speeds" for why it
+mustn't) -- see `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching
+frontend type. They're rounded to what the dashboard displays first (speed to 0.1 mph, length
+and time to whole metres and seconds, dwell to 5s, the speed range to two significant figures),
+which keeps the archive smaller than full-precision floats would.
 
 **`all_day` rows are a separate archive, `segments_all_day.pmtiles`;** `segments.pmtiles`
 holds only the six time bands. Both use the same `segments` layer and the same properties
@@ -172,6 +174,50 @@ that is zoom 9 filling in), 10% and 8% for the week, and 10% and 10% for the mon
 more S3 a year, and about 10% more tile transfer for whatever part of the map is viewed.
 Pooling takes 2s for a day, 4s for a week and 12s for a month. The GeoParquet and the
 leaderboard stay one row per route -- `"749,751"` isn't a route.
+
+**`median_dwell_seconds` and `from_stop_id` are for the map's hover popups.** The segment popup
+says how much of its time was spent at the first stop. The stop popup lists each route's dwell,
+by finding the segments that leave it: stop tiles aren't tied to a date, and names can't match
+them, since one can cover both sides of a street or stops miles apart. Dwell at a trip's first
+stop is zero (see below), so the map leaves zero out, and terminals show no dwell. A median
+above a few minutes looks like a bus holding mid-trip, like the midday trips that wait 20-odd
+minutes on Ave Louis Pasteur; only 42 of October 2026's 117,565 rows are over 3 minutes.
+
+Dwell is rounded to 5s because stop times don't look any finer: medians pile up around 5.5s
+and 11s, which looks like the spacing of the vehicle positions behind them.
+
+**`p10_speed_mph` and `p90_speed_mph` are the range around the median in the segment popup**,
+as "8 in 10 trips ran 2.6-7.5 mph". A section that's always slow and one a few trips hold up can
+share a median; and where even the fastest trips are slow, it's the street, not the traffic.
+Both are timed arrival to arrival, like `p50_speed_mph`. They're only written for rows with 10 or
+more trips, since "in 10" means nothing with fewer: that leaves them off 76% of a day's band
+rows, and takes its densest zoom 9 tile from 861KB to 771KB. Most sections are consistently
+slow rather than held up: across segments under 5 mph on 2026-10-28, p90 time was 1.5 times p50
+at the median, about the same as for every other segment.
+
+**`terminal_section` marks the first and last segments of most trips**: `"first"` where most
+trips over a segment start on it, `"last"` where most end on it, and null, so left off the
+feature, everywhere else. The map dashes them from zoom 13, and the segment popup says which it is. Only
+the very end of a trip reads differently, by median speed per traversal:
+
+| | Last segment | The one before | Second segment | First segment |
+| --- | --- | --- | --- | --- |
+| 2026-10-28 (Wed) | 9.0 mph | 11.9 mph | 11.9 mph | 15.1 mph |
+| 2026-10-20 (Tue) | 8.9 mph | 11.8 mph | 11.9 mph | 14.9 mph |
+| 2026-10-25 (Sun) | 10.0 mph | 13.4 mph | 13.2 mph | 15.7 mph |
+
+The first segment is quicker because its layover isn't dwell (see below). The last ones are 3% of
+segments but 35-50% of those under 3 mph, so they're much of what looks oddly slow on the map.
+The flag costs 0.3% of an archive.
+
+These columns grow the densest tile at a zoom 13-14% for dwell and `from_stop_id`, then 11% on a
+day and 22% on a week for the speed range, so `MAXIMUM_TILE_BYTES` rises to 825KB; at 750KB, a
+day's zoom 9 falls to 15% of its segments. Measured on 2026-10-29 against the archives before any
+of them, the band and all_day archives grow 21% and 24% for the day, 30% and 24% for the week,
+and 29% and 25% for the month, with no zoom losing segments. The GeoParquet gains
+`p10_total_time_seconds`, `p10_speed_mph` and `terminal_section`, growing 13-14%. Together that's
+about 2.3GB more S3 a year, or $0.05/month more after a year, and 21-30% more tile transfer for
+whatever part of the map is viewed. p10 adds about 4s to aggregating a month.
 
 **Requires `tippecanoe` on `PATH`.** It's a system binary, not a Python dependency -- there's
 nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (the
@@ -464,8 +510,16 @@ differ by more than a factor of two. Both are emitted:
 
 | Column | Meaning |
 | --- | --- |
-| `p50_moving_speed_mph` | Departure from A to arrival at B. Running speed in traffic. Reproduces LAMP's own `travel_time_seconds` exactly. |
+| `p50_moving_speed_mph` | Departure from A to arrival at B. Reproduces LAMP's own `travel_time_seconds` exactly, but it isn't a true running speed: see below. |
 | `p50_speed_mph` | Arrival to arrival, so it includes dwell at A. What a rider on board experiences. **This is the headline number.** |
+
+Moving speed reads too high, and impossibly high on short segments, which is why it's kept off
+the map. On 2026-10-28, segments of 100-150m had a median moving time of 6s, or 41 mph, and 63%
+of them read over 35 mph; moving time falls to zero at a segment of about 86m. That suggests LAMP
+stamps arrival and departure some way out from the stop rather than at it, though we haven't
+confirmed how. Arrival to arrival doesn't have the problem, since both ends are stamped the same
+way and the span between them is still the whole segment. Dwell does, so it's best read as time
+around the stop, not time with the doors open.
 
 Dwell at a trip's *first* stop is excluded: the bus sits at the terminal awaiting its
 scheduled departure, often 10+ minutes, and charging that to the first segment made

@@ -12,12 +12,21 @@ from .. import pmtiles
 
 
 def _segments(
-    day_type: str | None = None, time_bands: tuple[str, ...] = ("am_peak",), shared_routes: str | None = None
+    day_type: str | None = None,
+    time_bands: tuple[str, ...] = ("am_peak",),
+    shared_routes: str | None = None,
+    n_traversals: int = 12,
+    terminal_section: str | None = None,
 ) -> pd.DataFrame:
-    return pd.concat([_segment(time_band, day_type, shared_routes) for time_band in time_bands], ignore_index=True)
+    return pd.concat(
+        [_segment(time_band, day_type, shared_routes, n_traversals, terminal_section) for time_band in time_bands],
+        ignore_index=True,
+    )
 
 
-def _segment(time_band: str, day_type: str | None, shared_routes: str | None) -> pd.DataFrame:
+def _segment(
+    time_band: str, day_type: str | None, shared_routes: str | None, n_traversals: int, terminal_section: str | None
+) -> pd.DataFrame:
     row = {
         "route_id": "1",
         "direction_id": 0,
@@ -26,13 +35,16 @@ def _segment(time_band: str, day_type: str | None, shared_routes: str | None) ->
         "from_stop_name": "A",
         "to_stop_name": "B",
         "time_band": time_band,
-        "n_traversals": 12,
+        "n_traversals": n_traversals,
         "n_interpolated": 1,
         "segment_length_m": 500.4,
         "p50_total_time_seconds": 97.26,
+        "median_dwell_seconds": 23.4,
         "p50_speed_mph": 11.5123,
-        "p90_speed_mph": 8.0,
+        "p10_speed_mph": 14.26,
+        "p90_speed_mph": 8.04,
         "moving_speed_mph": 20.0,
+        "terminal_section": terminal_section,
         "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
         # Null off a shared stop pair (see shared_segments.py), as on most rows.
         "shared_routes": shared_routes,
@@ -115,6 +127,26 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         self.assertEqual(properties["segment_length_m"], 500)
         self.assertIs(type(properties["p50_total_time_seconds"]), int)
         self.assertEqual(properties["p50_total_time_seconds"], 97)
+        self.assertIs(type(properties["median_dwell_seconds"]), int)
+        self.assertEqual(properties["median_dwell_seconds"], 25)  # to the nearest DWELL_ROUNDING_SECONDS
+        # To two significant figures, either side of 10 mph.
+        self.assertEqual(properties["p10_speed_mph"], 14.0)
+        self.assertEqual(properties["p90_speed_mph"], 8.0)
+
+    def test_a_row_with_too_few_trips_gets_no_speed_range(self):
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(_segments(n_traversals=pmtiles.SPEED_RANGE_MINIMUM_TRAVERSALS - 1))
+
+        properties = self.written_properties[0]
+        self.assertIsNone(properties.get("p10_speed_mph"))
+        self.assertIsNone(properties.get("p90_speed_mph"))
+
+    def test_moving_speed_stays_off_the_map(self):
+        # See TILE_PROPERTIES: it reads as impossible speeds on short segments.
+        self.assertFalse([column for column in pmtiles.TILE_PROPERTIES if "moving" in column])
 
     def test_all_day_rows_reach_tippecanoe_with_the_same_properties_as_a_band(self):
         # The map filters on an exact time_band match, so all_day must arrive as a plain
@@ -166,7 +198,12 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
 
     def test_produces_a_segments_layer_with_only_tile_properties(self):
         data = pmtiles.build_pmtiles_bytes(
-            _segments(day_type="business_day", time_bands=("am_peak", "all_day"), shared_routes="1,2")
+            _segments(
+                day_type="business_day",
+                time_bands=("am_peak", "all_day"),
+                shared_routes="1,2",
+                terminal_section="first",
+            )
         )
 
         self.assertTrue(data.startswith(b"PMTiles"))
@@ -205,8 +242,14 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             layer = json.loads(json.loads(archive)["properties"]["json"])["vector_layers"][0]
             self.assertEqual(layer["id"], pmtiles.LAYER_NAME)
 
-    def test_a_null_shared_routes_is_left_off_the_feature(self):
-        frame = pd.concat([_segments(), _segments(time_bands=("midday",), shared_routes="1,2")], ignore_index=True)
+    def test_a_null_is_left_off_the_feature(self):
+        frame = pd.concat(
+            [
+                _segments(n_traversals=3),
+                _segments(time_bands=("midday",), shared_routes="1,2", terminal_section="last"),
+            ],
+            ignore_index=True,
+        )
         with tempfile.TemporaryDirectory() as tmp_dir:
             tileset_path = Path(tmp_dir) / "segments.pmtiles"
             tileset_path.write_bytes(pmtiles.build_pmtiles_bytes(frame))
@@ -220,8 +263,11 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             for layer in tile["features"]
             for feature in layer["features"]
         }
-        self.assertNotIn("shared_routes", by_band["am_peak"])
+        for column in ("shared_routes", "terminal_section", "p10_speed_mph", "p90_speed_mph"):
+            self.assertNotIn(column, by_band["am_peak"])
         self.assertEqual(by_band["midday"]["shared_routes"], "1,2")
+        self.assertEqual(by_band["midday"]["terminal_section"], "last")
+        self.assertEqual(by_band["midday"]["p10_speed_mph"], 14)
 
     @staticmethod
     def _time_bands(decoded: str) -> set[str]:

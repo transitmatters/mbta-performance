@@ -167,6 +167,8 @@ def _aggregated(day_types: list[str] | None = None) -> pd.DataFrame:
                 "moving_time_seconds": total_time,
                 "dwell_seconds": 0.0,
                 "is_interpolated": False,
+                "is_trip_start": False,
+                "is_trip_end": False,
                 "segment_length_m": 500.0,
             }
             if day_type is not None:
