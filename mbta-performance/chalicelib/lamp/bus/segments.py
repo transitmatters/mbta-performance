@@ -10,7 +10,9 @@ from .constants import (
     MAX_PLAUSIBLE_SPEED_MPH,
     METERS_PER_SECOND_TO_MPH,
     MIN_PLAUSIBLE_SPEED_MPH,
+    MOVING_PERCENTILES,
     PERCENTILES,
+    TERMINAL_SECTION_SHARE,
     TIME_BANDS,
 )
 
@@ -145,6 +147,8 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
             "depart_seconds": events.stop_departure_seconds,
             "arrive_seconds": grouped.stop_arrival_seconds.shift(-1),
             "is_trip_start": grouped.cumcount() == 0,
+            # The second-to-last stop's row, since a trip's last stop starts no segment.
+            "is_trip_end": grouped.cumcount(ascending=False) == 1,
             "from_interpolated": events.is_interpolated,
             "to_interpolated": grouped.is_interpolated.shift(-1),
             # Guard against stitching a segment across a trip boundary.
@@ -240,9 +244,11 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         "n_interpolated": ("is_interpolated", "sum"),
         "segment_length_m": ("segment_length_m", "median"),
         "median_dwell_seconds": ("dwell_seconds", "median"),
+        "trip_start_share": ("is_trip_start", "mean"),
+        "trip_end_share": ("is_trip_end", "mean"),
     }
-    for percentile in PERCENTILES:
-        for measure in ("total_time_seconds", "moving_time_seconds"):
+    for measure, percentiles in (("total_time_seconds", PERCENTILES), ("moving_time_seconds", MOVING_PERCENTILES)):
+        for percentile in percentiles:
             aggregation[f"p{percentile}_{measure}"] = (
                 measure,
                 lambda series, q=percentile: float(np.percentile(series, q)),
@@ -256,11 +262,34 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         aggregated[f"p{percentile}_speed_mph"] = (
             aggregated.segment_length_m / aggregated[f"p{percentile}_total_time_seconds"] * METERS_PER_SECOND_TO_MPH
         )
+    for percentile in MOVING_PERCENTILES:
         aggregated[f"p{percentile}_moving_speed_mph"] = (
             aggregated.segment_length_m / aggregated[f"p{percentile}_moving_time_seconds"] * METERS_PER_SECOND_TO_MPH
         )
 
-    return aggregated
+    return _with_terminal_sections(aggregated)
+
+
+def _with_terminal_sections(aggregated: pd.DataFrame) -> pd.DataFrame:
+    """Swap the trip start and end shares for what they add up to: `terminal_section`.
+
+    "first" where most trips over a segment start on it, "last" where most end on it, and null on
+    everything else. Those two segments are the only ones in a trip that read differently: on
+    2026-10-28 a trip's first segment ran at a median 15 mph, because its layover isn't counted as
+    dwell, and its last at 9 mph, against 12 mph for each of the segments next to those. The last
+    ones are 3% of segments but 35-50% of those under 3 mph, going by two weekdays and a Sunday.
+
+    A share rather than the pattern's own first and last stops, because a short-turning pattern
+    would otherwise mark a stretch that nearly every trip runs straight through. It rarely matters
+    where the line falls: only 26 of 9,948 shares fell between a quarter and three quarters. A trip
+    of one segment is "first".
+    """
+    starts = aggregated.trip_start_share >= TERMINAL_SECTION_SHARE
+    ends = aggregated.trip_end_share >= TERMINAL_SECTION_SHARE
+    aggregated["terminal_section"] = None
+    aggregated.loc[ends, "terminal_section"] = "last"
+    aggregated.loc[starts, "terminal_section"] = "first"
+    return aggregated.drop(columns=["trip_start_share", "trip_end_share"])
 
 
 def select_segment_geometry(traversals: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame:

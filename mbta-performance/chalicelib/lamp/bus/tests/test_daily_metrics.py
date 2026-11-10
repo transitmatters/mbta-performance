@@ -506,6 +506,8 @@ class TestIngestPassesDayType(unittest.TestCase):
             to_stop_id="s2",
             moving_time_seconds=traversals.total_time_seconds,
             dwell_seconds=0.0,
+            is_trip_start=False,
+            is_trip_end=False,
         )
         segments = pd.DataFrame(
             [

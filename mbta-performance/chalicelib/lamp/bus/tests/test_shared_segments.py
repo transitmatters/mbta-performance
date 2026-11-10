@@ -20,6 +20,8 @@ def _traversal(route_id: str, total_time: float, **overrides) -> dict:
         "moving_time_seconds": total_time * 0.8,
         "dwell_seconds": total_time * 0.2,
         "is_interpolated": False,
+        "is_trip_start": False,
+        "is_trip_end": False,
         "segment_length_m": 500.0,
         **overrides,
     }
@@ -67,7 +69,25 @@ class TestAddSharedSegments(unittest.TestCase):
         # The median of all seven trips -- not the mean of SL5's 110 and SL4's 215.
         self.assertAlmostEqual(row.p50_total_time_seconds, 200.0)
         self.assertAlmostEqual(row.p50_speed_mph, 500.0 / 200.0 * 2.2369362920544)
+        # Dwell is pooled the same way, and the stop it was at stays on the row for the map.
+        self.assertAlmostEqual(row.median_dwell_seconds, 40.0)
+        self.assertEqual(row.from_stop_id, "s1")
         self.assertEqual((row.from_stop_name, row.to_stop_name), ("Stop s1", "Stop s2"))
+
+    def test_a_pair_is_a_terminal_section_by_all_its_routes_trips_together(self):
+        # SL5's three trips end here and SL4's four run through, so the street isn't a terminal
+        # section, though SL5's own row still is.
+        traversals = _traversals(
+            [_traversal("749", time, is_trip_end=True) for time in (100, 110, 120)]
+            + [_traversal("751", time) for time in (200, 210, 220, 230)]
+        )
+
+        mapped = shared_segments.add_shared_segments(_result(traversals), traversals)
+
+        am_peak = mapped[mapped.time_band == "am_peak"].set_index("route_id")
+        self.assertIsNone(am_peak.loc["749,751"].terminal_section)
+        self.assertEqual(am_peak.loc["749"].terminal_section, "last")
+        self.assertIsNone(am_peak.loc["751"].terminal_section)
 
     def test_marks_each_routes_own_rows_with_the_routes_they_share_with(self):
         traversals = _traversals(
