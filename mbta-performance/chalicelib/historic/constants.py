@@ -88,16 +88,35 @@ CSV_FIELDS = [
 
 unofficial_ferry_labels_map = {
     "F1": "Boat-F1",
-    "F2H": "Boat-F1",
+    "F2H": "Boat-F2H",
     "F3": "Boat-EastBoston",
     "F4": "Boat-F4",
     "F5": "Boat-Lynn",
     "F6": "Boat-F6",
     "F7": "Boat-F7",
     "F8": "Boat-F8",
+    # The MBTA labels some 2025 Quincy/Winthrop trips F9, but names them "F8-QuincyWinthrop"
+    "F9": "Boat-F8",
 }
 
 inbound_outbound = {"From Boston": 0, "To Boston": 1}
+
+# The MBTA leaves travel_direction as "NA" on many trips (over half of F6). For routes that run to and
+# from Boston, a trip leaving one of these terminals is outbound.
+BOSTON_FERRY_TERMINALS = {
+    "Aquarium",
+    "Boston",
+    "Central Whf",
+    "Long Wharf N",
+    "Long Wharf S",
+    "Rowes",
+    "Rowes Wharf",
+    "Seaport",
+}
+
+# GTFS runs these as one-way loops with direction_id 1, which is what live (gobble) data uses
+LOOP_FERRY_ROUTES = {"F6", "F7", "F8", "F9"}
+LOOP_DIRECTION_ID = 1
 
 example_field_mapping = {
     "service_date": "service_date",

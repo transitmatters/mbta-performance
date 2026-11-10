@@ -413,9 +413,20 @@ upserts them into a `DeliveredTripMetricsBus` DynamoDB table (`route` partition 
 | `n_interpolated` | Of those, how many crossed a stop LAMP didn't observe directly. |
 | `miles_covered` | Sum of actual segment distance traveled that day. |
 | `total_time` | Sum of actual segment time (dwell-inclusive), in seconds. |
+| `total_dwell` | Sum of dwell at the stops where it was observed, in seconds. |
+| `n_dwell_stops` | The stops `total_dwell` covers: every traversal except a trip's first (its wait is layover, zeroed) and ones starting at an interpolated stop (no recorded dwell). Average dwell is `total_dwell / n_dwell_stops`, about 30s on 2026-11-04. |
 | `median_speed_mph` / `mean_speed_mph` | Across all segment traversals for the route that day. |
 | `day_type` | `business_day` or `weekend_or_holiday`, from `day_type.day_type_for` -- the same MBTA GTFS holiday calendar the weekly/monthly map tiles split on. |
-| `time_bands` | Map keyed by time band name (the six in "Time bands" above, not `all_day`), each holding `count`, `n_traversals`, `n_interpolated`, `miles_covered`, `total_time` for traversals that departed in that band. A band with no traversals that day is absent. |
+| `time_bands` | Map keyed by time band name (the six in "Time bands" above, not `all_day`), each holding `count`, `n_traversals`, `n_interpolated`, `miles_covered`, `total_time`, `total_dwell`, `n_dwell_stops` for traversals that departed in that band. A band with no traversals that day is absent. |
+| `scheduled_trips` | Every trip in the LAMP events, run or not. LAMP has a row for every scheduled stop of every scheduled trip, and matched GTFS exactly over six days. A trip interlined across routes (~18 a day) counts on each. |
+| `unobserved_trips` | Trips with no observed arrival or departure at any stop. Nearly all carry the placeholder `vehicle_label` `____`, but so do some partly observed trips, so the label isn't the test. |
+| `unobserved_waived_trips` | Of those, trips with a `waiver_remark` on any row. |
+| `headways_under_50` ... `headways_over_150` | Headways at mid-route timepoints (`point_type` `mid`; terminals left out), counted by actual / scheduled route-direction headway: `≤0.5`, `(0.5, 0.75]`, `(0.75, 1.25)`, `[1.25, 1.5)`, `≥1.5`. The edges reproduce the dashboard's bunched (`≤ 0.5`) and on-time (`0.75–1.25` exclusive) rules, and are shared with transitmatters/data-ingestion#232. Rows with no positive scheduled headway are skipped. |
+
+The trip and headway fields come from the LAMP events as read, before they become
+traversals, since a trip that never ran has no traversals. So a route whose trips were all
+unobserved (usually a shuttle) still gets a row, with these fields and no speed fields. All
+of them are whole counts that sum across days.
 
 The top-level fields are the all-day figures. `time_bands` carries only fields that can be
 summed across days, so a weekly or monthly view can add up daily rows per band the same way
@@ -431,6 +442,9 @@ by a few thousandths of a mile or a tenth of a second.
 `time_bands` is written as one whole map on every run, not per nested path, so a band that
 disappears on a re-run doesn't linger from the previous write. Adding it takes an item from
 ~235 bytes to ~740 (max 793 on 2026-09-17), still under the 1KB that one write unit covers.
+The dwell, trip and headway fields take it to roughly 1KB (a rough count put 2026-11-04 at
+1,040 median, 1,079 max), so some writes now take two units. At ~153 rows a day that's still
+well under a cent a month.
 
 This is a table for the same kind of "how fast is this route" line chart the dashboard
 already draws for rail from `DeliveredTripMetrics`, kept separate from that table because bus

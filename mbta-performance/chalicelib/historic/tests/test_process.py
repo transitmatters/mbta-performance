@@ -203,6 +203,71 @@ class TestProcess(unittest.TestCase):
                 # Verify route mapping was applied
                 self.assertTrue(all(df["route_id"].str.startswith("Boat-")))
 
+    def _process_ferry_rows(self, rows):
+        n = len(rows["route_id"])
+        ferry_data = pd.DataFrame(
+            {
+                "service_date": ["2025-07-15 00:00:00+00:00"] * n,
+                "trip_id": [f"trip{i}" for i in range(n)],
+                "mbta_sched_arrival": ["2025-07-15 12:30:00+00:00"] * n,
+                "mbta_sched_departure": ["2025-07-15 12:00:00+00:00"] * n,
+                "actual_arrival": ["2025-07-15 08:30:00"] * n,
+                "actual_departure": ["2025-07-15 08:00:00"] * n,
+                "vessel_time_slot": ["slot1"] * n,
+                **rows,
+            }
+        )
+        ferry_csv = pathlib.Path(self.temp_dir) / "ferry.csv"
+        ferry_data.to_csv(ferry_csv, index=False)
+
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=lambda x: x):
+            with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
+                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+                df = mock_to_disk.call_args[0][0]
+        return df[df["event_type"] == "DEP"].set_index("trip_id")
+
+    def test_process_ferry_infers_missing_direction(self):
+        """Trips the MBTA labels "NA" get a direction from their departure terminal instead of being dropped."""
+        deps = self._process_ferry_rows(
+            {
+                "route_id": ["F4", "F4"],
+                "travel_direction": ["NA", "NA"],
+                "departure_terminal": ["Central Whf", "Navy Yard"],
+                "arrival_terminal": ["Navy Yard", "Central Whf"],
+            }
+        )
+
+        self.assertEqual(deps.loc["trip0", "direction_id"], 0)
+        self.assertEqual(deps.loc["trip0", "stop_id"], "Boat-Aquarium")
+        self.assertEqual(deps.loc["trip1", "direction_id"], 1)
+        self.assertEqual(deps.loc["trip1", "stop_id"], "Boat-Charlestown")
+
+    def test_process_ferry_loop_routes_use_gtfs_direction(self):
+        """Loop routes always use direction 1, whatever the MBTA labels them, to match live data."""
+        deps = self._process_ferry_rows(
+            {
+                "route_id": ["F6", "F7", "F9"],
+                "travel_direction": ["From Boston", "NA", "From Boston"],
+                "departure_terminal": ["Aquarium", "Quincy", "Winthrop"],
+                "arrival_terminal": ["Seaport", "Logan", "Quincy"],
+            }
+        )
+
+        self.assertEqual(deps["direction_id"].tolist(), [1, 1, 1])
+        self.assertEqual(deps["route_id"].tolist(), ["Boat-F6", "Boat-F7", "Boat-F8"])
+
+    def test_process_ferry_keeps_f2h_separate_from_f1(self):
+        deps = self._process_ferry_rows(
+            {
+                "route_id": ["F1", "F2H"],
+                "travel_direction": ["To Boston", "To Boston"],
+                "departure_terminal": ["Hingham", "Hull"],
+                "arrival_terminal": ["Rowes", "Long Wharf N"],
+            }
+        )
+
+        self.assertEqual(deps["route_id"].tolist(), ["Boat-F1", "Boat-F2H"])
+
     def test_process_ferry_with_date_filtering(self):
         """Test process_ferry with date range filtering."""
         ferry_data = pd.DataFrame(

@@ -222,7 +222,8 @@ class TestIngestPoolsOnlyTheTiles(unittest.TestCase):
             ]
         )
         with (
-            mock.patch.object(ingest, "build_traversals_for_date", return_value=(traversals, geometry)),
+            mock.patch.object(ingest, "read_events_for_date"),
+            mock.patch.object(ingest, "build_traversals_from_events", return_value=(traversals, geometry)),
             mock.patch.object(ingest, "upload_speed_segments") as upload_segments,
             mock.patch.object(ingest, "upload_pmtiles") as upload_pmtiles,
             mock.patch.object(ingest, "upload_leaderboard"),
