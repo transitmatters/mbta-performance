@@ -8,6 +8,9 @@ from .constants import (
     CSV_FIELDS,
     arrival_field_mapping,
     departure_field_mapping,
+    BOSTON_FERRY_TERMINALS,
+    LOOP_DIRECTION_ID,
+    LOOP_FERRY_ROUTES,
     inbound_outbound,
     station_mapping,
     unofficial_ferry_labels_map,
@@ -120,6 +123,9 @@ def process_ferry(
     # read data, convert to datetime
     df = pd.read_csv(path_to_csv_file, low_memory=False)
 
+    leaves_boston = df["departure_terminal"].isin(BOSTON_FERRY_TERMINALS)
+    df["travel_direction"] = df["travel_direction"].fillna(leaves_boston.map({True: "From Boston", False: "To Boston"}))
+
     # Make sure these columns have data
     df = df.dropna(
         subset=[
@@ -174,6 +180,7 @@ def process_ferry(
     df = df.infer_objects()
     # Convert direction_id to integer to ensure outputs are integers
     df["travel_direction"] = pd.to_numeric(df["travel_direction"])
+    df.loc[df["route_id"].isin(LOOP_FERRY_ROUTES), "travel_direction"] = LOOP_DIRECTION_ID
     # Replace terminal values with GTFS Approved Values
     df["departure_terminal"] = df["departure_terminal"].replace(station_mapping)
     df["arrival_terminal"] = df["arrival_terminal"].replace(station_mapping)

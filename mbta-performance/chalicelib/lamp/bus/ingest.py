@@ -60,17 +60,25 @@ def source_url_for(service_date: date) -> str:
     return BUS_ALL_URL
 
 
+def read_events_for_date(service_date: date) -> pd.DataFrame:
+    """One service date of LAMP bus events, as published: every scheduled stop, observed or not."""
+    events = read_service_date(source_url_for(service_date), service_date, BUS_COLUMNS)
+    if events.empty:
+        raise ValueError(f"No LAMP bus events for {service_date}")
+    return events
+
+
 def build_traversals_for_date(service_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build per-traversal segment times for one service date.
 
     Returns (traversals, segment geometry) -- the shared first half of the pipeline, reused
-    as-is by `generate_speed_segments` for a single date and by `trends.py` to roll several
-    dates together into a weekly or monthly trend tileset.
+    by `trends.py` to roll several dates together into a weekly or monthly trend tileset.
     """
-    events = read_service_date(source_url_for(service_date), service_date, BUS_COLUMNS)
-    if events.empty:
-        raise ValueError(f"No LAMP bus events for {service_date}")
+    return build_traversals_from_events(read_events_for_date(service_date), service_date)
 
+
+def build_traversals_from_events(events: pd.DataFrame, service_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`build_traversals_for_date`, from events already read with `read_events_for_date`."""
     geometry = build_pattern_geometry(service_date, route_pattern_ids=set(events.route_pattern_id.dropna()))
     if geometry.segments.empty:
         raise ValueError(f"No route pattern geometry could be built for {service_date}")
@@ -98,8 +106,9 @@ def generate_speed_segments(
     `upload` is set. Uploading is opt-in so a local run never touches the bucket.
 
     `write_to_dynamo` additionally rolls the same traversals up to one row per (route,
-    service_date) -- miles covered, total time, trip count, overall and per time band, plus
-    the date's day_type -- and upserts them into the
+    service_date) -- miles covered, total time, dwell, trip count, overall and per time band,
+    plus the date's day_type, and scheduled and unobserved trips and headway reliability
+    buckets from the raw events -- and upserts them into the
     DeliveredTripMetricsBus table, for the same kind of daily speed chart the dashboard
     already draws for rail. Also opt-in, and independent of `upload`: this is a per-route
     daily summary alongside the per-segment map data, not a replacement for it.
@@ -116,12 +125,15 @@ def generate_speed_segments(
     """
     logger.info(f"Generating bus speed segments for {service_date}")
 
-    traversals, segments = build_traversals_for_date(service_date)
+    events = read_events_for_date(service_date)
+    traversals, segments = build_traversals_from_events(events, service_date)
 
     if write_to_dynamo:
-        # On a copy: a daily segment frame must not carry day_type, or it would reach the daily
-        # PMTiles through pmtiles.TILE_PROPERTIES.
-        write_daily_route_metrics(traversals.assign(day_type=day_type_for(service_date)))
+        # On copies: a daily segment frame must not carry day_type, or it would reach the daily
+        # PMTiles through pmtiles.TILE_PROPERTIES. The events are as read, so trips LAMP never
+        # observed are still in them for the trip counts.
+        day_type = day_type_for(service_date)
+        write_daily_route_metrics(traversals.assign(day_type=day_type), events.assign(day_type=day_type))
 
     aggregated = aggregate_segments(traversals)
     chosen_geometry = select_segment_geometry(traversals, segments)
