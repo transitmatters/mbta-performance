@@ -343,7 +343,7 @@ def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
     num_groups = len(group_event_groups)
     logger.info(f"Uploading events for {num_groups} route-direction-stop groups to S3")
     try:
-        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~10,500 files don't
+        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~2,300 files don't
         # exist yet and checking each one would only add requests.
         _parallel_upload(group_event_groups, service_date, remote_etags={})
     except Exception as e:
