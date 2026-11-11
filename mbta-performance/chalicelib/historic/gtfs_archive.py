@@ -233,14 +233,28 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
         # use the scheduled trip matching to get the scheduled traveltime
         final["scheduled_trip_id"] = final.trip_id.map(trip_id_map)
+
+        # A loop trip can stop somewhere twice (route 120 inbound at Maverick, 5 minutes apart), which would match
+        # each event there to both scheduled visits. Number the visits in time order on both sides, so the nth
+        # visit gets the nth scheduled travel time.
+        visit_keys = ["trip_id", "stop_id"] + (["event_type"] if "event_type" in final.columns else [])
+        final["visit"] = final.groupby(visit_keys, dropna=False).cumcount()
+        final["event"] = range(len(final))
+        scheduled_tts = gtfs_stops_clean[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]].copy()
+        scheduled_tts["scheduled_visit"] = scheduled_tts.groupby(["trip_id", "stop_id"]).cumcount()
+
         final = pd.merge(
             final,
-            gtfs_stops_clean[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]],
+            scheduled_tts,
             how="left",
             left_on=RTE_DIR_STOP + ["scheduled_trip_id"],
             right_on=RTE_DIR_STOP + ["trip_id"],
             suffixes=["", "_gtfs"],
         )
+        # Visits beyond the scheduled ones (a repeated row) take the last scheduled visit, as before
+        last_visit = final.groupby("event").scheduled_visit.transform("max")
+        final = final[final.scheduled_visit.isna() | (final.scheduled_visit == final.visit.clip(upper=last_visit))]
+        final = final.drop(columns=["visit", "event", "scheduled_visit"]).reset_index(drop=True)
 
         # finally, put all the days together
         results.append(final)

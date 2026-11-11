@@ -382,6 +382,64 @@ class TestProcess(unittest.TestCase):
                 # Verify trip_ids were generated (should not be null)
                 self.assertFalse(df["trip_id"].isna().any())
 
+    def _ferry_rows_missing_trip_ids(self):
+        return pd.DataFrame(
+            {
+                "service_date": ["2024-02-07 05:00:00+00"] * 5,
+                "route_id": ["F4"] * 5,
+                "trip_id": [None] * 5,
+                "travel_direction": ["To Boston"] + ["From Boston"] * 4,
+                "departure_terminal": ["Navy Yard"] + ["Long Wharf N"] * 4,
+                "arrival_terminal": ["Long Wharf N", "Navy Yard", "Navy Yard", "Navy Yard", None],
+                "mbta_sched_departure": ["2024-02-07 12:00:00+00", "2024-02-07 12:15:00+00"]
+                + ["2024-02-07 05:00:00+00"] * 3,
+                "mbta_sched_arrival": ["2024-02-07 12:10:00+00", "2024-02-07 12:25:00+00"]
+                + ["2024-02-07 05:00:00+00"] * 3,
+                # The last three are midnight placeholders like the source has: identical but for the vessel,
+                # and some without an arrival terminal
+                "actual_departure": ["2024-02-07 07:01:00", "2024-02-07 07:16:00"] + ["2024-02-07 00:00"] * 3,
+                "actual_arrival": ["2024-02-07 07:11:00", "2024-02-07 07:26:00"] + ["2024-02-07 00:00"] * 3,
+                "vessel_time_slot": ["Vessel A", "Vessel A", "Vessel B", "Vessel C", "Vessel D"],
+            }
+        )
+
+    def _ferry_trip_ids_by_departure(self, ferry_data):
+        ferry_csv = pathlib.Path(self.temp_dir) / "ferry.csv"
+        ferry_data.to_csv(ferry_csv, index=False)
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=lambda x: x):
+            with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
+                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+        df = mock_to_disk.call_args[0][0]
+        deps = df[df["event_type"] == "DEP"]
+        return dict(zip(zip(deps["event_time"], deps["vehicle_id"]), deps["trip_id"]))
+
+    def test_process_ferry_missing_trip_ids_are_stable(self):
+        """Trips without a trip_id get the same unique id on every run, whatever order the file lists them in."""
+        ferry_data = self._ferry_rows_missing_trip_ids()
+
+        first = self._ferry_trip_ids_by_departure(ferry_data)
+        rerun = self._ferry_trip_ids_by_departure(ferry_data)
+        reordered = self._ferry_trip_ids_by_departure(ferry_data.iloc[::-1])
+
+        self.assertEqual(len(set(first.values())), 5)
+        self.assertEqual(first, rerun)
+        self.assertEqual(first, reordered)
+
+    def test_process_ferry_actual_time_in_dst_changeover(self):
+        """An actual time in the repeated hour when clocks fall back is kept as written, instead of crashing."""
+        deps = self._process_ferry_rows(
+            {
+                "route_id": ["F1"],
+                "travel_direction": ["From Boston"],
+                "departure_terminal": ["Rowes"],
+                "arrival_terminal": ["Hingham"],
+                "service_date": ["2024-11-03 04:00:00+00:00"],
+                "actual_departure": ["2024-11-03 01:30:00"],
+            }
+        )
+
+        self.assertEqual(deps["event_time"].tolist(), [pd.Timestamp("2024-11-03 01:30:00")])
+
     def test_load_bus_data(self):
         """Test load_bus_data reads and transforms bus data correctly."""
         bus_data = pd.DataFrame(
@@ -418,6 +476,24 @@ class TestProcess(unittest.TestCase):
         # Verify dates were adjusted from 1900 base
         self.assertTrue(all(result["scheduled"].dt.year == 2020))
         self.assertTrue(all(result["actual"].dt.year == 2020))
+
+    def test_load_bus_data_pascal_case_headers(self):
+        """The 2020 Q4 file's PascalCase headers get the same string IDs as the others, not floats like 67.0."""
+        bus_csv = pathlib.Path(self.temp_dir) / "bus.csv"
+        bus_csv.write_text(
+            "ServiceDate,Route,Direction,HalfTripId,Stop,Timepoint,TimepointOrder,PointType,StandardType,"
+            "Scheduled,Actual,ScheduledHeadway,Headway\n"
+            "2020-10-01 00:00:00.000,01,Inbound,48885644.0,067,maput,2,Midpoint,Schedule,"
+            "1900-01-01 05:07:00.000,1900-01-01 05:07:42.000,NULL,NULL\n"
+            "2020-10-01 00:00:00.000,01,Inbound,48885644.0,,maput,3,Midpoint,Schedule,"
+            "1900-01-01 05:09:00.000,1900-01-01 05:09:42.000,NULL,NULL\n"
+        )
+
+        result = process.load_bus_data(str(bus_csv))
+
+        self.assertEqual(result["stop_id"].iloc[0], "067")
+        self.assertListEqual(list(result["route_id"]), ["1", "1"])
+        self.assertListEqual(list(result["direction_id"]), [1, 1])
 
     def test_load_bus_data_with_route_filter(self):
         """Test load_bus_data filters routes correctly."""

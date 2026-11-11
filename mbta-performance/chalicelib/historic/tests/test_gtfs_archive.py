@@ -406,6 +406,91 @@ class TestGTFSArchive(unittest.TestCase):
         self.assertListEqual(list(result.scheduled_headway[2:]), [600, 600])
         self.assertTrue(result.scheduled_headway[:2].isna().all())
 
+    def test_add_gtfs_headways_loop_trip_matches_visits_in_order(self):
+        """A scheduled trip that stops somewhere twice gives each actual visit its own travel time, without
+        duplicating events."""
+        trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["120"], "direction_id": [1]})
+        # orhgt, then Maverick, a loop through Jeffries Point, and Maverick again (as in the 2024 GTFS)
+        stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"] * 4,
+                "stop_id": ["5880", "57400", "5862", "57400"],
+                "arrival_time": [pd.Timedelta(hours=8, minutes=m) for m in (0, 11, 15, 16)],
+            }
+        )
+        # 4 minutes late by the first Maverick visit, so it's nearer the second visit's scheduled time
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-09-04")] * 4,
+                "route_id": ["120"] * 4,
+                "direction_id": [1] * 4,
+                "stop_id": ["5880", "57400", "5862", "57400"],
+                "trip_id": ["actual1"] * 4,
+                "event_time": [pd.Timestamp("2024-09-04 08:00") + pd.Timedelta(minutes=m) for m in (0, 15, 18, 19)],
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.stop_id), ["5880", "57400", "5862", "57400"])
+        self.assertListEqual(list(result.scheduled_tt), [0, 660, 900, 960])
+
+    def test_add_gtfs_headways_loop_stop_keeps_arrival_and_departure(self):
+        """At a stop visited twice, the ARR and DEP of one visit both get that visit's travel time."""
+        trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["Loop"], "direction_id": [0]})
+        stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"] * 3,
+                "stop_id": ["A", "B", "A"],
+                "arrival_time": [pd.Timedelta(hours=8, minutes=m) for m in (0, 5, 10)],
+            }
+        )
+        times = [pd.Timestamp("2024-09-04 08:00") + pd.Timedelta(minutes=m) for m in (0, 1, 5, 10)]
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-09-04")] * 4,
+                "route_id": ["Loop"] * 4,
+                "direction_id": [0] * 4,
+                "stop_id": ["A", "A", "B", "A"],
+                "trip_id": ["actual1"] * 4,
+                "event_type": ["ARR", "DEP", "ARR", "ARR"],
+                "event_time": times,
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.event_type), ["ARR", "DEP", "ARR", "ARR"])
+        self.assertListEqual(list(result.scheduled_tt), [0, 0, 300, 600])
+
+    def test_add_gtfs_headways_repeated_event_keeps_scheduled_tt(self):
+        """A duplicated event at a stop the schedule visits once keeps that stop's travel time."""
+        trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["Red"], "direction_id": [0]})
+        stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"] * 2,
+                "stop_id": ["A", "B"],
+                "arrival_time": [pd.Timedelta(hours=8), pd.Timedelta(hours=8, minutes=3)],
+            }
+        )
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-09-04")] * 3,
+                "route_id": ["Red"] * 3,
+                "direction_id": [0] * 3,
+                "stop_id": ["A", "B", "B"],
+                "trip_id": ["actual1"] * 3,
+                "event_time": [pd.Timestamp(t) for t in ("2024-09-04 08:00", "2024-09-04 08:03", "2024-09-04 08:03")],
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.scheduled_tt), [0, 180, 180])
+
     def test_add_gtfs_headways_with_incomplete_gtfs(self):
         """add_gtfs_headways keeps events for dates with incomplete GTFS, without scheduled values."""
         events_df = pd.DataFrame(
