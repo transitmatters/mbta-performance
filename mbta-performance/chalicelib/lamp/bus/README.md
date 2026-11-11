@@ -50,7 +50,8 @@ dashboard's in-progress week and month current and, on the day after one ends, f
 
 1. **Read one service date** from the LAMP bus export. Both exports are partitioned one
    parquet row group per `service_date`, so `remote_parquet.py` reads the footer over HTTP
-   and pulls just that row group — ~35MB, rather than downloading the 6.8GB all-time file.
+   and pulls just the row groups covering that date (one, in practice) — ~35MB, rather than
+   downloading the 6.8GB all-time file.
 2. **Locate every stop along its route pattern's shape** (`gtfs_geo.py`, `patterns.py`).
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
 4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a
@@ -178,10 +179,15 @@ leaderboard stay one row per route -- `"749,751"` isn't a route.
 **`median_dwell_seconds` and `from_stop_id` are for the map's hover popups.** The segment popup
 says how much of its time was spent at the first stop. The stop popup lists each route's dwell,
 by finding the segments that leave it: stop tiles aren't tied to a date, and names can't match
-them, since one can cover both sides of a street or stops miles apart. Dwell at a trip's first
-stop is zero (see below), so the map leaves zero out, and terminals show no dwell. A median
-above a few minutes looks like a bus holding mid-trip, like the midday trips that wait 20-odd
-minutes on Ave Louis Pasteur; only 42 of October 2026's 117,565 rows are over 3 minutes.
+them, since one can cover both sides of a street or stops miles apart. The median is over the
+dwells that were observed (`segments.observed_dwell_seconds`), the same ones `total_dwell` sums
+in "Daily route metrics": a trip's first stop (its wait is layover, see below) and an
+interpolated stop are left out, since both are zero. Where none was observed, as on a segment
+every trip starts on, it's null and left off the feature, and the map shows no dwell. On
+2026-11-10, counting those zeros pulled down 24% of rows' medians, by 2.5s at the median, and
+left 2,842 rows at 0 that are now null. A median above a few minutes looks like a bus holding mid-trip, like the midday
+trips that wait 20-odd minutes on Ave Louis Pasteur; only 42 of October 2026's 117,565 rows are
+over 3 minutes.
 
 Dwell is rounded to 5s because stop times don't look any finer: medians pile up around 5.5s
 and 11s, which looks like the spacing of the vehicle positions behind them.
@@ -374,12 +380,15 @@ how it's absent from the PMTiles properties for the same reason. A band with no 
 above `LEADERBOARD_MIN_TRAVERSALS` has no key.
 
 Each entry carries only what a leaderboard row needs to display -- `route_id`, `direction_id`,
-`from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`
-(`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of explicit allowlist as
-`pmtiles.TILE_PROPERTIES`, so geometry and the p90/moving-speed columns never leak into a
-public file by accident. Each slice is capped at `LEADERBOARD_SIZE` (100) entries: this is a
-display list, not an analytical export, so it's kept well below the ~10.8k distinct
-segments/day rather than dumping the whole aggregated table.
+`from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`, and
+`segment_length_m` and `p50_total_time_seconds`, the distance and median travel time
+`p50_speed_mph` is computed from (`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of
+explicit allowlist as `pmtiles.TILE_PROPERTIES`, so geometry and the p90/moving-speed columns
+never leak into a public file by accident. Each slice is capped at `LEADERBOARD_SIZE` (500)
+entries: this is a display list, not an analytical export, so it's kept well below the ~10.8k
+distinct segments/day rather than dumping the whole aggregated table. It's still deep because
+the dashboard's route and Frequent Bus filters narrow a slice client-side, and at 100 a
+filtered view came out with only a handful of rows.
 
 **Segments below `LEADERBOARD_MIN_TRAVERSALS` (20) traversals in a slice are dropped before
 ranking** -- higher than the map's `MIN_TRAVERSALS_HINT` (3), and deliberately a separate

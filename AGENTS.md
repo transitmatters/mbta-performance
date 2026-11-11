@@ -22,7 +22,7 @@ uv run pytest mbta-performance                                           # Tests
 
 - The package directory has a hyphen, so run modules from the repo root as `uv run python -m mbta-performance.chalicelib.<module>`.
 - The `geo` group (shapely, geopandas) stays out of the Lambda layer, which must stay under ~79 MB after `devops/helpers.sh` shrinks it (checked by CI in `layer.yml`). Code reachable from `app.py` must not import it.
-- S3 request counts are a real cost. A bus run uploads ~10,500 objects, which is why there's no same-day bus job. Estimate objects per run times schedule frequency before adding or speeding up a job.
+- S3 request counts are a real cost. A bus run uploads ~2,300 objects (one per route checkpoint), which is why there's no same-day bus job. Estimate objects per run times schedule frequency before adding or speeding up a job.
 - The key layouts in `s3://tm-mbta-performance/` (`Events/`, `Events-lamp/`, `BusSpeedSegments/`; month and day not zero-padded) are read by the Data Dashboard. Don't change them without a matching change there.
 - Schedules in `app.py` are UTC crons; keep the Boston time comment above each one.
 - The bus speed segment pipeline (`lamp/bus/`) isn't in `app.py`. It runs as k8s CronJobs from transitmatters/basement-dweller, using the image built from the repo-root `Containerfile`, and its schedules live there.
