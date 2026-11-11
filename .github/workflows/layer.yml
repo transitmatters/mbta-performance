@@ -4,15 +4,15 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
+  # Main runs this from deploy.yml, which doesn't deploy unless it passes
+  workflow_call:
 
 jobs:
   check-layer-size:
     runs-on: ubuntu-24.04-arm
-    # Only run for PRs from the same repository (not forks) to protect secrets
-    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+    # Only run for PRs from the same repository (not forks) to protect secrets. Called from
+    # deploy.yml the event is the caller's (push or workflow_dispatch), and it must run then.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       AWS_PROFILE: transitmatters
       AWS_DEFAULT_REGION: us-east-1
