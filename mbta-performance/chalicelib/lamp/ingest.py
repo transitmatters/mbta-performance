@@ -134,30 +134,32 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
 
     # these departures are from the the previous stop! so set them to the previous stop id
     # find the stop id for the departure whose sequence number precences the recorded one
-    # stop sequences don't necessarily increment by 1 or with a reliable pattern
+    # stop sequences don't necessarily increment by 1 or with a reliable pattern.
+    # Search every row of the trip, not just the ones with an arrival: a stop LAMP has no
+    # stop_timestamp for is still the stop the train left from, and skipping it would credit
+    # the departure to the stop before (which then has two DEPs for the trip).
+    trip_keys = [
+        "service_date",  # comment out for faster performance
+        "route_id",
+        "trip_id",
+        "vehicle_id",
+        "direction_id",
+    ]
+    prev_stops = pq_df[trip_keys + ["stop_sequence", "stop_id"]]
     dep_df = pd.merge_asof(
         dep_df,
-        arr_df,
+        prev_stops,
         on=["stop_sequence"],
-        by=[
-            "service_date",  # comment out for faster performance
-            "route_id",
-            "trip_id",
-            "vehicle_id",
-            "direction_id",
-        ],
+        by=trip_keys,
         direction="backward",
         suffixes=("_curr", "_prev"),
         allow_exact_matches=False,  # don't want to match on itself
     )
 
-    # use current infomation for almost everything...
+    # use current infomation for everything but the stop...
     # (occupancy included: it's sampled on arrival at the current stop, so it's the load the
     # train carried out of the previous one)
-    renamed_cols = {key + "_curr": key for key in S3_COLUMNS if key != "stop_id"}
-    # ...but use the PREVIOUS stop_id
-    renamed_cols["stop_id_prev"] = "stop_id"
-    dep_df = dep_df.rename(columns=renamed_cols)[S3_COLUMNS]
+    dep_df = dep_df.rename(columns={"stop_id_prev": "stop_id"})[S3_COLUMNS]
 
     # stitch together arrivals and departures
     result = pd.concat([arr_df, dep_df])

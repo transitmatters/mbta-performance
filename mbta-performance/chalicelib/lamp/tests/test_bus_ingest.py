@@ -43,6 +43,45 @@ def _checkpoint_gtfs_mock(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _lamp_trip(stop_ids: list, arrivals: list, departures: list) -> pd.DataFrame:
+    """One trip's bus LAMP rows, columns already renamed, built the way LAMP builds them.
+
+    Each row is one stop visit: arrival at and departure from that row's own stop_id. LAMP's
+    stopped_duration_seconds is departure - arrival on the row, and travel_time_seconds is the
+    row's arrival minus the previous row's departure.
+    """
+    n = len(stop_ids)
+    arr = pd.Series(pd.to_datetime(arrivals, utc=True))
+    dep = pd.Series(pd.to_datetime(departures, utc=True))
+    return pd.DataFrame(
+        {
+            "service_date": ["20260407"] * n,
+            "route_id": ["1"] * n,
+            "trip_id": ["trip-1"] * n,
+            "stop_id": stop_ids,
+            "direction_id": [0] * n,
+            "stop_sequence": list(range(1, n + 1)),
+            "vehicle_label": ["y0001"] * n,
+            "stop_arrival_dt": arr,
+            "stop_departure_dt": dep,
+            "travel_time_seconds": (arr - dep.shift(1)).dt.total_seconds(),
+            "dwell_time_seconds": (dep - arr).dt.total_seconds(),
+            "headway_seconds": [600] * n,
+            "scheduled_tt": [300 * i for i in range(n)],
+            "scheduled_headway": [600] * n,
+        }
+    )
+
+
+def _loop_trip() -> pd.DataFrame:
+    """A loop/circulator trip A -> B -> A -> C that visits stop-A twice."""
+    return _lamp_trip(
+        ["stop-A", "stop-B", "stop-A", "stop-C"],
+        arrivals=["2026-04-07T12:00:00Z", "2026-04-07T12:05:00Z", "2026-04-07T12:15:00Z", "2026-04-07T12:20:00Z"],
+        departures=["2026-04-07T12:00:30Z", "2026-04-07T12:05:30Z", "2026-04-07T12:15:30Z", None],
+    )
+
+
 class TestBusIngest(unittest.TestCase):
     def setUp(self):
         with open(SAMPLE_BUS_DATA_PATH, "rb") as f:
@@ -89,142 +128,74 @@ class TestBusIngest(unittest.TestCase):
         for event_time in result["event_time"].dropna().head(5):
             self.assertEqual(str(event_time.tzinfo), "US/Eastern")
 
-    def test_departures_use_previous_stop_id(self):
-        """DEP rows must be keyed by previous_stop_id, not the row's own stop_id."""
-        df = pd.DataFrame(
-            {
-                "service_date": ["20260407", "20260407"],
-                "route_id": ["1", "1"],
-                "trip_id": ["trip-1", "trip-1"],
-                "stop_id": ["stop-A", "stop-B"],
-                "direction_id": [0, 0],
-                "stop_sequence": [1, 2],
-                "vehicle_label": ["y0001", "y0001"],
-                "previous_stop_id": [None, "stop-A"],
-                "stop_arrival_dt": pd.to_datetime(["2026-04-07T11:55:00Z", "2026-04-07T12:00:00Z"]),
-                "stop_departure_dt": pd.to_datetime([pd.NaT, "2026-04-07T12:00:30Z"]),
-                "travel_time_seconds": [0, 300],
-                "dwell_time_seconds": [30, 30],
-                "headway_seconds": [600, 600],
-                "scheduled_tt": [0, 280],
-                "scheduled_headway": [600, 600],
-            }
+    def test_departures_keep_their_own_stop(self):
+        """A DEP row is the bus leaving that row's own stop, not the stop before it (#129).
+
+        The trip arrives at its origin A at 11:55, lays over and leaves at 12:00, reaches B at
+        12:05, leaves B at 12:05:30, and ends at C.
+        """
+        df = _lamp_trip(
+            ["stop-A", "stop-B", "stop-C"],
+            arrivals=["2026-04-07T11:55:00Z", "2026-04-07T12:05:00Z", "2026-04-07T12:10:00Z"],
+            departures=["2026-04-07T12:00:00Z", "2026-04-07T12:05:30Z", None],
         )
         result = bus_ingest._process_bus_arrival_departure_times(df)
-        departures = result[result.event_type == "DEP"]
-        self.assertEqual(len(departures), 1)
-        self.assertEqual(departures.iloc[0]["stop_id"], "stop-A")
-        self.assertEqual(departures.iloc[0]["visit_rank"], 0)
+        events = result.set_index(["stop_id", "event_type"])
+        times = events["event_time"]
+
+        self.assertEqual(times["stop-A", "DEP"], pd.Timestamp("2026-04-07T12:00:00Z"))  # origin departure kept
+        self.assertEqual(times["stop-B", "DEP"], pd.Timestamp("2026-04-07T12:05:30Z"))
+        self.assertNotIn(("stop-C", "DEP"), events.index)
+        self.assertEqual(events.loc[("stop-A", "DEP"), "stop_sequence"], 1)
+        # What the dashboard derives from these events matches LAMP's own fields on B's row.
+        travel_time = (times["stop-B", "ARR"] - times["stop-A", "DEP"]).total_seconds()
+        dwell = (times["stop-B", "DEP"] - times["stop-B", "ARR"]).total_seconds()
+        self.assertEqual(travel_time, df.loc[1, "travel_time_seconds"])
+        self.assertEqual(dwell, df.loc[1, "dwell_time_seconds"])
+
+    def test_process_bus_arrival_departure_times_sample_dwell_matches_lamp(self):
+        """On real LAMP rows, DEP - ARR at the same stop visit is LAMP's stopped_duration_seconds."""
+        df = self.sample_df.rename(columns=bus_constants.BUS_COLUMN_RENAME_MAP)
+        result = bus_ingest._process_bus_arrival_departure_times(df)
+
+        visit = ["trip_id", "stop_id", "visit_rank"]
+        arr = result[result.event_type == "ARR"].set_index(visit)
+        dep = result[result.event_type == "DEP"].set_index(visit)
+        self.assertEqual(len(dep), df["stop_departure_dt"].notna().sum())  # includes each origin's departure
+
+        both = arr.index.intersection(dep.index)
+        dwell = (dep.loc[both, "event_time"] - arr.loc[both, "event_time"]).dt.total_seconds()
+        lamp_dwell = arr.loc[both, "dwell_time_seconds"].astype(float)
+        has_dwell = lamp_dwell.notna()
+        self.assertGreater(has_dwell.sum(), 0)
+        pd.testing.assert_series_equal(dwell[has_dwell], lamp_dwell[has_dwell], check_names=False)
 
     def test_process_bus_arrival_departure_times_unique_index(self):
         """Output index must be unique.
 
         route_starts = pq_df.loc[pq_df.groupby("trip_id").event_time.idxmin()] in
         _recalculate_bus_fields_from_gtfs returns every row matching a duplicated index label,
-        not just the one idxmin selected. A trip whose earliest captured row already has
-        previous_stop_id set (LAMP's daily window starting mid-trip) produces an ARR row and a
-        DEP row from that same source row, which previously shared its index after concat.
+        not just the one idxmin selected. A raw row with both an arrival and a departure produces
+        an ARR row and a DEP row, which would otherwise share its index after concat.
         """
-        df = pd.DataFrame(
-            {
-                "service_date": ["20260407"],
-                "route_id": ["1"],
-                "trip_id": ["trip-1"],
-                "stop_id": ["stop-B"],
-                "direction_id": [0],
-                "stop_sequence": [5],
-                "vehicle_label": ["y0001"],
-                "previous_stop_id": ["stop-A"],
-                "stop_arrival_dt": pd.to_datetime(["2026-04-07T12:00:00Z"]),
-                "stop_departure_dt": pd.to_datetime(["2026-04-07T12:00:30Z"]),
-                "travel_time_seconds": [300],
-                "dwell_time_seconds": [30],
-                "headway_seconds": [600],
-                "scheduled_tt": [280],
-                "scheduled_headway": [600],
-            }
-        )
+        df = _lamp_trip(["stop-B"], arrivals=["2026-04-07T12:00:00Z"], departures=["2026-04-07T12:00:30Z"])
         result = bus_ingest._process_bus_arrival_departure_times(df)
-        self.assertEqual(len(result), 2)  # ARR-B and DEP-A, both derived from the one raw row
+        self.assertEqual(len(result), 2)  # ARR-B and DEP-B, both derived from the one raw row
         self.assertTrue(result.index.is_unique)
 
     def test_process_bus_arrival_departure_times_loop_route_visit_rank(self):
         """A loop/circulator trip that revisits a stop_id gets a distinct visit_rank per visit."""
-        df = pd.DataFrame(
-            {
-                "service_date": ["20260407"] * 4,
-                "route_id": ["1"] * 4,
-                "trip_id": ["trip-1"] * 4,
-                "stop_id": ["stop-A", "stop-B", "stop-A", "stop-C"],
-                "direction_id": [0] * 4,
-                "stop_sequence": [1, 2, 3, 4],
-                "vehicle_label": ["y0001"] * 4,
-                "previous_stop_id": [None, "stop-A", "stop-B", "stop-A"],
-                "stop_arrival_dt": pd.to_datetime(
-                    [
-                        "2026-04-07T12:00:00Z",
-                        "2026-04-07T12:05:00Z",
-                        "2026-04-07T12:15:00Z",
-                        "2026-04-07T12:20:00Z",
-                    ]
-                ),
-                "stop_departure_dt": pd.to_datetime(
-                    [
-                        pd.NaT,
-                        "2026-04-07T12:00:30Z",
-                        "2026-04-07T12:05:30Z",
-                        "2026-04-07T12:15:30Z",
-                    ]
-                ),
-                "travel_time_seconds": [0, 300, 600, 300],
-                "dwell_time_seconds": [30, 30, 30, 30],
-                "headway_seconds": [600, 600, 600, 600],
-                "scheduled_tt": [0, 300, 600, 900],
-                "scheduled_headway": [600, 600, 600, 600],
-            }
-        )
+        df = _loop_trip()
         result = bus_ingest._process_bus_arrival_departure_times(df)
-        # 4 raw rows -> 4 ARR + 3 DEP (first row has no previous_stop_id) = 7, no fan-out
+        # 4 raw rows -> 4 ARR + 3 DEP (the last stop has no departure) = 7, no fan-out
         self.assertEqual(len(result), 7)
-        stop_a_events = result[result.stop_id == "stop-A"]
-        self.assertEqual(sorted(stop_a_events["visit_rank"].tolist()), [0, 0, 1, 1])
+        stop_a_events = result[result.stop_id == "stop-A"].sort_values("event_time")
+        self.assertEqual(stop_a_events["event_type"].tolist(), ["ARR", "DEP", "ARR", "DEP"])
+        self.assertEqual(stop_a_events["visit_rank"].tolist(), [0, 0, 1, 1])
 
     def test_recalculate_bus_fields_from_gtfs_loop_route_no_fanout(self):
         """Revisiting a stop_id doesn't fan out rows, and each visit gets its own scheduled_tt."""
-        raw = pd.DataFrame(
-            {
-                "service_date": ["20260407"] * 4,
-                "route_id": ["1"] * 4,
-                "trip_id": ["trip-1"] * 4,
-                "stop_id": ["stop-A", "stop-B", "stop-A", "stop-C"],
-                "direction_id": [0] * 4,
-                "stop_sequence": [1, 2, 3, 4],
-                "vehicle_label": ["y0001"] * 4,
-                "previous_stop_id": [None, "stop-A", "stop-B", "stop-A"],
-                "stop_arrival_dt": pd.to_datetime(
-                    [
-                        "2026-04-07T12:00:00Z",
-                        "2026-04-07T12:05:00Z",
-                        "2026-04-07T12:15:00Z",
-                        "2026-04-07T12:20:00Z",
-                    ]
-                ),
-                "stop_departure_dt": pd.to_datetime(
-                    [
-                        pd.NaT,
-                        "2026-04-07T12:00:30Z",
-                        "2026-04-07T12:05:30Z",
-                        "2026-04-07T12:15:30Z",
-                    ]
-                ),
-                "travel_time_seconds": [0, 300, 600, 300],
-                "dwell_time_seconds": [30, 30, 30, 30],
-                "headway_seconds": [600, 600, 600, 600],
-                "scheduled_tt": [0, 300, 600, 900],
-                "scheduled_headway": [600, 600, 600, 600],
-            }
-        )
-        processed = bus_ingest._process_bus_arrival_departure_times(raw)
+        processed = bus_ingest._process_bus_arrival_departure_times(_loop_trip())
 
         mock_gtfs = pd.DataFrame(
             {

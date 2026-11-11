@@ -1,6 +1,7 @@
+import calendar
 import pathlib
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -17,6 +18,20 @@ from .constants import (
 )
 from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
 from .gtfs_archive import add_gtfs_headways
+
+
+def whole_months(start_date: date | None, end_date: date | None) -> tuple[date | None, date | None]:
+    """
+    Widen [start_date, end_date] to whole calendar months: start on the 1st, end on the month's last day.
+
+    Outputs are one file per (stop, month), and uploading one replaces that whole month in S3. A range that starts or
+    ends mid-month would write a file holding only the days in range, and uploading it would drop the rest of the month.
+    """
+    if start_date is not None:
+        start_date = start_date.replace(day=1)
+    if end_date is not None:
+        end_date = end_date.replace(day=calendar.monthrange(end_date.year, end_date.month)[1])
+    return start_date, end_date
 
 
 def process_events(
@@ -41,6 +56,7 @@ def process_events(
         },
     )
 
+    start_date, end_date = whole_months(start_date, end_date)
     if start_date is not None:
         df = df[df["service_date"].dt.date >= start_date]
     if end_date is not None:
@@ -155,8 +171,9 @@ def process_ferry(
     df["service_date"] = pd.to_datetime(df["service_date"], errors="coerce").dt.tz_convert(tz="US/Eastern")
 
     # Apply date range filtering if specified
+    start_date, end_date = whole_months(start_date, end_date)
     if start_date or end_date:
-        print("Filtering data by date range...")
+        print("Filtering data by date range (whole months)...")
         original_count = len(df)
 
         if start_date:
