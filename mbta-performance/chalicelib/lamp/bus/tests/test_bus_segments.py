@@ -263,6 +263,50 @@ class TestTraversals(unittest.TestCase):
 
         self.assertEqual(len(traversals), 0)
 
+    def test_a_traversal_with_no_time_arrival_to_arrival_is_dropped(self):
+        # A trip's first segment has no dwell, so arrival to arrival is the moving clock: zero here.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 100.0), (100.0, 130.0), (190.0, 190.0)]))
+
+        traversals = segments.build_traversals(events, self._segments())
+
+        self.assertEqual(traversals.from_stop_id.tolist(), ["s2"])
+
+    def test_a_moving_clock_reading_zero_keeps_the_traversal_without_a_moving_time(self):
+        # Left s2 at 90s and reached s3 at 90s, but 30s arrival to arrival is 37mph over 500m.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 90.0), (90.0, 100.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+        second = traversals.iloc[1]
+
+        self.assertEqual(len(traversals), 2)
+        self.assertEqual(second.total_time_seconds, 30.0)
+        self.assertTrue(np.isnan(second.moving_time_seconds))
+        self.assertTrue(np.isnan(second.moving_speed_mph))
+        # The other segment's moving clock is fine and is left alone.
+        self.assertEqual(traversals.iloc[0].moving_time_seconds, 60.0)
+
+    def test_a_moving_clock_faster_than_any_bus_keeps_the_traversal_without_a_moving_time(self):
+        # 5s from s2 to s3 is 224mph over 500m, but 30s arrival to arrival is 37mph.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 85.0), (90.0, 100.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+        second = traversals.iloc[1]
+
+        self.assertEqual(second.total_time_seconds, 30.0)
+        self.assertTrue(np.isnan(second.moving_time_seconds))
+        self.assertTrue(np.isnan(second.moving_speed_mph))
+
+    def test_a_bus_held_mid_trip_is_kept_however_slow(self):
+        # Ten minutes at s2, then 50 minutes to s3: 0.37mph moving, 0.31mph arrival to arrival.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 660.0), (3660.0, 3660.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+        second = traversals.iloc[1]
+
+        self.assertEqual(len(traversals), 2)
+        self.assertEqual(second.total_time_seconds, 3600.0)
+        self.assertEqual(second.moving_time_seconds, 3000.0)
+
 
 class TestAggregateSegments(unittest.TestCase):
     def _traversals(self) -> pd.DataFrame:
@@ -307,6 +351,24 @@ class TestAggregateSegments(unittest.TestCase):
         row = aggregated[aggregated.time_band == "am_peak"].iloc[0]
         self.assertEqual(row.n_traversals, 4)
         self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
+
+    def test_moving_percentiles_leave_out_traversals_without_a_moving_time(self):
+        # build_traversals nulls the moving time where the moving clock is unusable.
+        traversals = self._traversals()
+        traversals.loc[traversals.service_date == date(2026, 9, 2), "moving_time_seconds"] = np.nan
+
+        pooled = segments.aggregate_segments(traversals, extra_group_columns=())
+        row = pooled[pooled.time_band == "am_peak"].iloc[0]
+        self.assertEqual(row.n_traversals, 4)
+        self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
+        self.assertAlmostEqual(row.p50_moving_time_seconds, 100.0)
+
+        # A row with no moving times at all has no moving speed, and keeps its other columns.
+        daily = segments.aggregate_segments(traversals)
+        row = daily[(daily.time_band == "am_peak") & (daily.service_date == date(2026, 9, 2))].iloc[0]
+        self.assertAlmostEqual(row.p50_total_time_seconds, 200.0)
+        self.assertTrue(np.isnan(row.p50_moving_time_seconds))
+        self.assertTrue(np.isnan(row.p90_moving_speed_mph))
 
 
 class TestTerminalSections(unittest.TestCase):
