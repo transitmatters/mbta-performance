@@ -530,13 +530,26 @@ confirmed how. Arrival to arrival doesn't have the problem, since both ends are 
 way and the span between them is still the whole segment. Dwell does, so it's best read as time
 around the stop, not time with the doors open.
 
+**So a traversal is kept or dropped on arrival to arrival.** It's dropped if that time is zero or
+less, or works out faster than `MAX_PLAUSIBLE_SPEED_MPH` (65 mph): 1.4% of traversals on
+2026-11-10. Judged on the moving clock, as it was until #130, 22-32% of traversals under 200m
+were dropped, mostly the fastest, and about a quarter of those segments read more than 1 mph
+slow. There's no lower bound: the slowest traversals are buses holding mid-trip, for up to an
+hour, often on segments where most trips do (route 109 from stop 7417 runs at a median 0.64
+mph), and a floor hid the slowest of them.
+
+Where the moving clock reads zero or less, or faster than 65 mph, the traversal is kept with a
+null moving time: 10% of traversals on 2026-11-10. `p50_moving_speed_mph` and
+`p90_moving_speed_mph` come from the rest, so from fewer traversals than `n_traversals`, and
+are null on a row where none are left. That was 1.5% of rows, nearly all with 1-3 traversals.
+
 Dwell at a trip's *first* stop is excluded: the bus sits at the terminal awaiting its
 scheduled departure, often 10+ minutes, and charging that to the first segment made
 terminal segments read as 0.5mph. This matches how `chalicelib.benchmarks` treats the dwell
 at an origin stop for rail.
 
-Sanity check on 2026-09-03, traversal-weighted p50: 12.35mph at pm peak rising to 16.97mph
-late night, 13.90mph overall — consistent with a system whose buses average ~13mph.
+Sanity check on 2026-09-03, traversal-weighted p50: 12.69mph at pm peak rising to 17.34mph
+late night, 14.26mph overall — consistent with a system whose buses average ~13mph.
 
 ## Interpolation
 
