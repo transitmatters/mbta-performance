@@ -374,12 +374,12 @@ how it's absent from the PMTiles properties for the same reason. A band with no 
 above `LEADERBOARD_MIN_TRAVERSALS` has no key.
 
 Each entry carries only what a leaderboard row needs to display -- `route_id`, `direction_id`,
-`from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`
-(`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of explicit allowlist as
-`pmtiles.TILE_PROPERTIES`, so geometry and the p90/moving-speed columns never leak into a
-public file by accident. Each slice is capped at `LEADERBOARD_SIZE` (100) entries: this is a
-display list, not an analytical export, so it's kept well below the ~10.8k distinct
-segments/day rather than dumping the whole aggregated table.
+`from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`,
+`segment_length_m`, `p50_total_time_seconds` (`leaderboard.LEADERBOARD_COLUMNS`) -- the same
+kind of explicit allowlist as `pmtiles.TILE_PROPERTIES`, so geometry and the p90/moving-speed
+columns never leak into a public file by accident. Each slice is capped at `LEADERBOARD_SIZE`
+(500) entries: this is a display list, not an analytical export, so it's kept well below the
+~10.8k distinct segments/day rather than dumping the whole aggregated table.
 
 **Segments below `LEADERBOARD_MIN_TRAVERSALS` (20) traversals in a slice are dropped before
 ranking** -- higher than the map's `MIN_TRAVERSALS_HINT` (3), and deliberately a separate

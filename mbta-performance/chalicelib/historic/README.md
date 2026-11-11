@@ -125,7 +125,7 @@ The bus source files always carry a `Z` suffix, but it never means UTC. As curre
 
 The shifted months look like UTC, but under daylight time reading them as UTC puts every bus an hour late. Taking 5 hours off matches gobble's recordings to within a minute (route 1, stop 67, on days in June, August, October and November 2024). This table used to list 2025 and January 2026 as UTC too; as the MBTA republished them in October 2026, they're Eastern.
 
-`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. If the MBTA switches again, detection should handle it. Still, check the spot-check in step 4 after each update.
+`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. Detection can only tell the shifted (+5 h) case from the unshifted one -- if the MBTA ever published true UTC under daylight time, it would come out an hour early and slip through. So after each update, run the step-4 spot check and also compare one day against gobble to catch any one-hour error.
 
 ## Full rebuilds
 

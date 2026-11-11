@@ -91,7 +91,7 @@ def to_disk(df: pd.DataFrame, outdir, nozip=False):
 def to_disk_ferry(df: pd.DataFrame, outdir: str, nozip: bool = False):
     """
     For each service_date/stop_id/direction/route group, we write the events to disk.
-    Uses monthly ferry data structure: monthly-ferry-data/{route_id}-{direction_id}-{stop_id}/Year={year}/Month={month}/events.csv.gz
+    Uses monthly ferry data structure: monthly-ferry-data/{route_id}|{direction_id}|{stop_id}/Year={year}/Month={month}/events.csv.gz
     """
     monthly_service_date = pd.Grouper(key="service_date", freq="1ME")
     grouped = df.groupby([monthly_service_date, "stop_id", "direction_id", "route_id"])
