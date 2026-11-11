@@ -217,13 +217,24 @@ def _upload_benchmarks(color: str, benchmarks: dict[str, int]) -> None:
 
 
 def generate_travel_time_benchmarks(colors: tuple[str, ...] = RAPID_TRANSIT_COLORS) -> None:
-    """Regenerate TransitMatters travel-time benchmarks for all rapid-transit lines."""
+    """Regenerate TransitMatters travel-time benchmarks for all rapid-transit lines.
+
+    Every color is attempted even if an earlier one fails, so one bad line doesn't
+    leave the rest stale. If any color failed, this raises afterwards so the Lambda
+    invocation errors instead of reporting success.
+    """
     logger.info(f"Generating TM travel-time benchmarks for colors: {colors}")
+    failed: list[str] = []
     for color in colors:
         try:
             generate_travel_time_benchmarks_for_color(color)
         except Exception as e:
             logger.exception(f"Failed to generate benchmarks for {color}: {e}")
+            failed.append(color)
+    if failed:
+        raise RuntimeError(
+            f"Failed to generate TM benchmarks for {len(failed)} of {len(colors)} colors: {', '.join(failed)}"
+        )
 
 
 if __name__ == "__main__":

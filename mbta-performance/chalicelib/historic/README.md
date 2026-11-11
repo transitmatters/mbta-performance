@@ -50,7 +50,8 @@ Things to expect:
 
 - GTFS archives for scheduled headways are downloaded into `data/gtfs_archives/` and cached there. There is one archive per feed version, at roughly 100 MB unzipped each. If you process the whole ferry history without `--start-date`, it downloads hundreds of them (50+ GB) and takes hours.
 - A year of processed rapid transit and bus data is several GB. `data/` is gitignored.
-- `backfill.main` also accepts `--start-date/--end-date` to process only part of a year.
+- `backfill.main` also accepts `--start-date/--end-date` to process only some months of a year.
+- `--start-date/--end-date` always cover whole months. A mid-month date is widened to the 1st or to the month's last day, because each output file holds a whole month, and uploading it replaces that month in S3.
 - Every backfill command accepts `--upload` to go straight to step 3. For a normal update it's safer to process first, then dry-run the upload.
 
 ### 3. Upload to S3

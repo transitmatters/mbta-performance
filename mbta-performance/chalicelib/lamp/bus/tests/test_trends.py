@@ -22,6 +22,7 @@ def _traversal_and_segment(service_date: date, total_time: float) -> tuple[pd.Da
                 "moving_time_seconds": total_time,
                 "dwell_seconds": 0.0,
                 "is_interpolated": False,
+                "from_interpolated": False,
                 "is_trip_start": False,
                 "is_trip_end": False,
                 "segment_length_m": 500.0,

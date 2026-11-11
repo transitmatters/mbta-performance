@@ -182,7 +182,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Generate LAMP bus speed segments as GeoParquet.")
     parser.add_argument("--date", type=date.fromisoformat, help="Service date (YYYY-MM-DD), default yesterday")
-    parser.add_argument("--out", default="bus_speed_segments.parquet", help="Output GeoParquet path")
+    # No default: the image's working directory isn't writable, so one would fail the daily job
+    # after its DynamoDB write and before its upload.
+    parser.add_argument("--out", help="Also write the GeoParquet to this path")
     parser.add_argument("--upload", action="store_true", help=f"Also publish to s3://{S3_BUCKET}/{S3_KEY_TEMPLATE}")
     parser.add_argument(
         "--write-to-dynamo", action="store_true", help="Also write daily per-route metrics to DeliveredTripMetricsBus"
