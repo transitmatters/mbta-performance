@@ -610,10 +610,9 @@ class TestProcess(unittest.TestCase):
     def test_load_bus_data_pre_june_2024_z_suffix_treated_as_eastern(self):
         """Pre-June 2024 bus data with a Z suffix is treated as Eastern Time, not UTC.
 
-        Before June 2024 the MBTA labelled Eastern times with a Z suffix.
-        The loader detects this (service_date < 2024-06-01) and does NOT apply
-        a UTC→Eastern conversion, so the output time equals the wall-clock value
-        from the raw data.
+        Before June 2024 the MBTA labelled Eastern times with a Z suffix. One row is too few
+        for detection, so the loader falls back to BUS_SHIFTED_WINDOW, which starts at
+        2024-06-01, and takes no hours off: the output equals the raw wall-clock value.
         """
         bus_data = pd.DataFrame(
             {
@@ -640,7 +639,7 @@ class TestProcess(unittest.TestCase):
         result = process.load_bus_data(str(bus_csv))
 
         # Pre-June 2024: the "Z" is ignored as a UTC indicator.
-        # 08:06 stays as 08:06 on the service date (no UTC→Eastern shift).
+        # 08:06 stays as 08:06 on the service date (no 5-hour shift).
         expected_actual = datetime.datetime(2024, 1, 15, 8, 6, 0)
         self.assertEqual(result.iloc[0]["actual"], expected_actual)
 
@@ -771,8 +770,8 @@ class TestProcess(unittest.TestCase):
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2025, 1, 1)))
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2026, 1, 31)))
 
-    def test_load_bus_data_feb_2026_z_suffix_treated_as_eastern(self):
-        """Feb 2026+ bus data is Eastern wall-clock time again despite the Z suffix: no UTC shift."""
+    def test_load_bus_data_2026_z_suffix_treated_as_eastern(self):
+        """Bus data from 2025 on is Eastern wall-clock time again despite the Z suffix: no hours come off."""
         bus_data = pd.DataFrame(
             {
                 "service_date": ["2026-03-01"],

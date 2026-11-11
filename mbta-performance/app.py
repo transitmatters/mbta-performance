@@ -43,7 +43,7 @@ def process_daily_lamp(event):
     lamp.ingest_today_lamp_data()
 
 
-# Runs once the next day at 11am or 12pm depending on DST
+# Runs daily at 15:00 UTC (10-11 AM Boston depending on DST), for the previous service day.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
@@ -59,10 +59,11 @@ def regenerate_tm_benchmarks(event):
 
 
 # Bus LAMP data processing. Once a day only: there is no same-day bus job, because bus uploads
-# ~10,500 route-direction-stop CSVs per run (rail uploads ~473), which at rail's 30-minute cadence
-# would be ~13.9M S3 PUTs/month. The 300s timeout is a guess sized for one full day of uploads, not
-# a measurement -- right-size it from real runs, as #96 did for rail.
-# Runs once the next day at 11am or 12pm depending on DST
+# ~2,300 route-direction-stop CSVs per weekday run, one per route checkpoint since #101 (rail
+# uploads ~473), which at rail's 30-minute cadence would be ~3M S3 PUTs/month (~$15). The 300s
+# timeout is a guess sized for one full day of uploads, not a measurement -- right-size it from
+# real runs, as #96 did for rail.
+# Runs daily at 15:00 UTC (10-11 AM Boston depending on DST), for the previous service day.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_bus_lamp(event):
     """Process yesterday's bus LAMP data, to ensure we have everything we need."""
