@@ -286,8 +286,14 @@ def ingest_bus_pq_file(
     return processed.sort_values(by=["event_time"])
 
 
-def upload_bus_to_s3(group_key_and_events: Tuple[tuple, pd.DataFrame], service_date: date) -> None:
-    """Upload bus events to S3, grouped by route-direction-stop."""
+def upload_bus_to_s3(
+    group_key_and_events: Tuple[tuple, pd.DataFrame], service_date: date, remote_etags: dict | None = None
+) -> list:
+    """Upload bus events to S3, grouped by route-direction-stop.
+
+    A file whose bytes already match S3 is skipped; remote_etags works as in
+    s3.upload_df_as_csv_if_changed. Returns [group key] if uploaded, else [].
+    """
     (route_id, direction_id, stop_id), stop_events = group_key_and_events
 
     s3_key = BUS_S3_KEY_TEMPLATE.format(
@@ -300,7 +306,8 @@ def upload_bus_to_s3(group_key_and_events: Tuple[tuple, pd.DataFrame], service_d
     )
     logger.debug(f"Uploading {len(stop_events)} events for {route_id}-{direction_id}-{stop_id}")
     try:
-        s3.upload_df_as_csv(BUS_S3_BUCKET, s3_key, stop_events)
+        if not s3.upload_df_as_csv_if_changed(BUS_S3_BUCKET, s3_key, stop_events, remote_etags):
+            return []
     except Exception as e:
         logger.error(f"Failed to upload bus events for {route_id}-{direction_id}-{stop_id}: {e}")
         raise
@@ -333,7 +340,9 @@ def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
     num_groups = len(group_event_groups)
     logger.info(f"Uploading events for {num_groups} route-direction-stop groups to S3")
     try:
-        _parallel_upload(group_event_groups, service_date)
+        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~10,500 files don't
+        # exist yet and checking each one would only add requests.
+        _parallel_upload(group_event_groups, service_date, remote_etags={})
     except Exception as e:
         logger.exception(f"Error uploading bus data for {service_date}: {e}")
         raise

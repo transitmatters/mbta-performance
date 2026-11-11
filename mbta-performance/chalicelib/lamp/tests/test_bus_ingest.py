@@ -314,7 +314,7 @@ class TestBusIngest(unittest.TestCase):
     def test_upload_bus_to_s3_key_format(self):
         df = pd.DataFrame({col: ["test"] for col in bus_constants.BUS_S3_COLUMNS})
 
-        with mock.patch("chalicelib.lamp.bus_ingest.s3.upload_df_as_csv") as mock_upload:
+        with mock.patch("chalicelib.lamp.bus_ingest.s3.upload_df_as_csv_if_changed") as mock_upload:
             result = bus_ingest.upload_bus_to_s3((("1", 0, "110"), df), date(2026, 4, 7))
 
             mock_upload.assert_called_once()
@@ -323,6 +323,20 @@ class TestBusIngest(unittest.TestCase):
             expected_key = "Events-lamp/bus-daily-data/1-0-110/Year=2026/Month=4/Day=7/events.csv"
             self.assertEqual(call_args[0][1], expected_key)
             self.assertEqual(result, [("1", 0, "110")])
+
+    def test_upload_bus_to_s3_skips_unchanged_when_given_remote_etags(self):
+        df = pd.DataFrame({col: ["test"] for col in bus_constants.BUS_S3_COLUMNS})
+        key = "Events-lamp/bus-daily-data/1-0-110/Year=2026/Month=4/Day=7/events.csv"
+
+        with mock.patch("chalicelib.lamp.bus_ingest.s3.upload_df_as_csv_if_changed", return_value=False) as mock_upload:
+            result = bus_ingest.upload_bus_to_s3((("1", 0, "110"), df), date(2026, 4, 7), remote_etags={key: "abc"})
+
+        self.assertEqual(mock_upload.call_args[0][1], key)
+        self.assertEqual(result, [])
+
+        with mock.patch("chalicelib.lamp.bus_ingest.s3.upload_df_as_csv_if_changed", return_value=True):
+            result = bus_ingest.upload_bus_to_s3((("1", 0, "110"), df), date(2026, 4, 7), remote_etags={})
+        self.assertEqual(result, [("1", 0, "110")])
 
     def test_ingest_bus_data_end_to_end(self):
         mock_response = mock.Mock(status_code=200, content=self.data)

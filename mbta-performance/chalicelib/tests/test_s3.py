@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import io
 import os
 import tempfile
@@ -6,6 +7,7 @@ import unittest
 import zlib
 from unittest import mock
 
+import botocore.exceptions
 import pandas as pd
 
 from .. import s3 as s3_module
@@ -122,6 +124,81 @@ class TestS3(unittest.TestCase):
         call_args = self.mock_s3.upload_fileobj.call_args
         self.assertEqual(call_args[1]["Key"], "12345")
 
+    # --- upload_df_as_csv_if_changed ---
+
+    def test_upload_df_as_csv_if_changed_skips_matching_etag(self):
+        df = pd.DataFrame({"col_a": [1, 2], "col_b": ["x", "y"]})
+        etag = hashlib.md5(s3_module.df_to_csv_bytes(df)).hexdigest()
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            uploaded = s3_module.upload_df_as_csv_if_changed("my-bucket", "my/key.csv", df, {"my/key.csv": etag})
+
+        self.assertFalse(uploaded)
+        self.mock_s3.put_object.assert_not_called()
+        self.mock_s3.upload_fileobj.assert_not_called()
+
+    def test_upload_df_as_csv_if_changed_puts_changed_or_new_files(self):
+        df = pd.DataFrame({"col_a": [1, 2], "col_b": ["x", "y"]})
+
+        for remote_etags in ({"my/key.csv": "0" * 32}, {}):
+            self.mock_s3.reset_mock()
+            with mock.patch("chalicelib.s3.s3", self.mock_s3):
+                uploaded = s3_module.upload_df_as_csv_if_changed("my-bucket", "my/key.csv", df, remote_etags)
+
+            self.assertTrue(uploaded)
+            # A single put_object, so the new object's ETag is the MD5 of these bytes
+            self.mock_s3.put_object.assert_called_once_with(
+                Bucket="my-bucket", Key="my/key.csv", Body=s3_module.df_to_csv_bytes(df), ContentType="text/csv"
+            )
+
+    def test_upload_df_as_csv_if_changed_heads_the_key_without_remote_etags(self):
+        df = pd.DataFrame({"col_a": [1, 2]})
+        etag = hashlib.md5(s3_module.df_to_csv_bytes(df)).hexdigest()
+        self.mock_s3.head_object.return_value = {"ETag": f'"{etag}"'}
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            uploaded = s3_module.upload_df_as_csv_if_changed("my-bucket", "my/key.csv", df)
+
+        self.assertFalse(uploaded)
+        self.mock_s3.head_object.assert_called_once_with(Bucket="my-bucket", Key="my/key.csv")
+        self.mock_s3.put_object.assert_not_called()
+
+    def test_upload_df_as_csv_if_changed_never_heads_with_remote_etags(self):
+        df = pd.DataFrame({"col_a": [1, 2]})
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            uploaded = s3_module.upload_df_as_csv_if_changed("my-bucket", "my/key.csv", df, {})
+
+        self.assertTrue(uploaded)
+        self.mock_s3.head_object.assert_not_called()
+        self.mock_s3.put_object.assert_called_once()
+
+    def test_head_etag_treats_403_and_404_as_missing(self):
+        for code in ("403", "404"):
+            self.mock_s3.head_object.side_effect = botocore.exceptions.ClientError(
+                {"Error": {"Code": code}}, "HeadObject"
+            )
+            with mock.patch("chalicelib.s3.s3", self.mock_s3):
+                self.assertIsNone(s3_module.head_etag("my-bucket", "missing"))
+
+    def test_head_etag_raises_other_errors(self):
+        self.mock_s3.head_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "SlowDown"}}, "HeadObject"
+        )
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            with self.assertRaises(botocore.exceptions.ClientError):
+                s3_module.head_etag("my-bucket", "k")
+
+    def test_upload_df_as_csv_and_if_changed_send_the_same_bytes(self):
+        df = pd.DataFrame({"col_a": [1.5, None], "col_b": ["x", "y"]})
+
+        with mock.patch("chalicelib.s3.s3", self.mock_s3):
+            s3_module.upload_df_as_csv("my-bucket", "k", df)
+            s3_module.upload_df_as_csv_if_changed("my-bucket", "k", df, {})
+
+        fileobj_bytes = self.mock_s3.upload_fileobj.call_args[0][0].getvalue()
+        self.assertEqual(fileobj_bytes, self.mock_s3.put_object.call_args[1]["Body"])
+
     # --- download_csv_as_df ---
 
     def test_download_csv_as_df(self):
@@ -195,6 +272,18 @@ class TestS3(unittest.TestCase):
             result = s3_module.ls_etags("my-bucket", "p/")
 
         self.assertEqual(result, {"p/a": "abc", "p/b": "def"})
+
+    def test_ls_etags_parallel_merges_each_sub_prefix(self):
+        listings = {"p/a/": {"p/a/1": "e1"}, "p/b/": {"p/b/1": "e2", "p/b/2": "e3"}}
+
+        with (
+            mock.patch("chalicelib.s3.ls_prefixes", return_value=["p/a/", "p/b/"]) as mock_prefixes,
+            mock.patch("chalicelib.s3.ls_etags", side_effect=lambda bucket, prefix: listings[prefix]),
+        ):
+            result = s3_module.ls_etags_parallel("my-bucket", "p/", workers=2)
+
+        mock_prefixes.assert_called_once_with("my-bucket", "p/")
+        self.assertEqual(result, {"p/a/1": "e1", "p/b/1": "e2", "p/b/2": "e3"})
 
     # --- ls_prefixes ---
 
