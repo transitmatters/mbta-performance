@@ -188,12 +188,15 @@ def _round_for_tiles(frame):
     double. Measured on 2026-10-28's band archive (11.4MB before length and time were added):
     they'd add 24% as floats and 10% as integers, while rounding speed saves 12%, so with both
     the archive comes out 5% smaller than before.
+
+    The integers are nullable (Int64), so a NaN is left off its feature rather than failing the
+    whole upload. median_dwell_seconds is NaN wherever no dwell was observed.
     """
     return frame.assign(
         p50_speed_mph=frame.p50_speed_mph.round(1),
-        segment_length_m=frame.segment_length_m.round().astype(int),
-        p50_total_time_seconds=frame.p50_total_time_seconds.round().astype(int),
-        median_dwell_seconds=(frame.median_dwell_seconds / DWELL_ROUNDING_SECONDS).round().astype(int)
+        segment_length_m=frame.segment_length_m.round().astype("Int64"),
+        p50_total_time_seconds=frame.p50_total_time_seconds.round().astype("Int64"),
+        median_dwell_seconds=(frame.median_dwell_seconds / DWELL_ROUNDING_SECONDS).round().astype("Int64")
         * DWELL_ROUNDING_SECONDS,
         p10_speed_mph=_round_range_speed(frame.p10_speed_mph, frame.n_traversals),
         p90_speed_mph=_round_range_speed(frame.p90_speed_mph, frame.n_traversals),
