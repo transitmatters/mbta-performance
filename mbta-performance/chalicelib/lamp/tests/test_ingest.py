@@ -254,8 +254,8 @@ class TestIngest(unittest.TestCase):
         stop_groups = processed_df.groupby("stop_id")
         stop_id, stop_events = next(iter(stop_groups))
 
-        # Mock the s3.upload_df_as_csv function
-        with mock.patch("chalicelib.lamp.ingest.s3.upload_df_as_csv") as mock_upload:
+        # Mock the S3 upload (the Lambda path: no remote_etags, so it HEADs each key)
+        with mock.patch("chalicelib.lamp.ingest.s3.upload_df_as_csv_if_changed") as mock_upload:
             result = ingest.upload_to_s3((stop_id, stop_events), date(2024, 2, 7))
 
             # Verify the upload was called once
@@ -270,8 +270,26 @@ class TestIngest(unittest.TestCase):
             # Verify that the dataframe is the expected stop events
             pd.testing.assert_frame_equal(call_args[0][2], stop_events)
 
+            # No remote_etags: the upload HEADs the key itself
+            self.assertIsNone(call_args[0][3])
+
             # Verify the return value contains the stop_id
             self.assertEqual(result, [stop_id])
+
+    def test_upload_to_s3_skips_unchanged_when_given_remote_etags(self):
+        stop_events = pd.DataFrame({"stop_id": ["70001"], "event_time": ["2024-02-07 05:00:00"]})
+        key = "Events-lamp/daily-data/70001/Year=2024/Month=2/Day=7/events.csv"
+
+        with mock.patch("chalicelib.lamp.ingest.s3.upload_df_as_csv_if_changed", return_value=False) as mock_upload:
+            result = ingest.upload_to_s3(("70001", stop_events), date(2024, 2, 7), remote_etags={key: "abc"})
+
+        self.assertEqual(mock_upload.call_args[0][:2], ("tm-mbta-performance", key))
+        self.assertEqual(mock_upload.call_args[0][3], {key: "abc"})
+        self.assertEqual(result, [])
+
+        with mock.patch("chalicelib.lamp.ingest.s3.upload_df_as_csv_if_changed", return_value=True):
+            result = ingest.upload_to_s3(("70001", stop_events), date(2024, 2, 7), remote_etags={})
+        self.assertEqual(result, ["70001"])
 
     def test_ingest_lamp_data(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
@@ -729,7 +747,7 @@ class TestIngest(unittest.TestCase):
         stop_groups = processed_df.groupby("stop_id")
         stop_id, stop_events = next(iter(stop_groups))
 
-        with mock.patch("chalicelib.lamp.ingest.s3.upload_df_as_csv", side_effect=RuntimeError("S3 error")):
+        with mock.patch("chalicelib.lamp.ingest.s3.upload_df_as_csv_if_changed", side_effect=RuntimeError("S3 error")):
             with self.assertRaises(RuntimeError):
                 ingest.upload_to_s3((stop_id, stop_events), date(2024, 2, 7))
 

@@ -3,12 +3,18 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from ... import parallel
-from ..ingest import fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
+from ... import parallel, s3
+from ..ingest import S3_BUCKET, S3_KEY_TEMPLATE, fetch_pq_file_from_remote, ingest_pq_file, upload_to_s3
 
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 EARLIEST_LAMP_DATA = date(2019, 9, 15)
+
+# One events.csv per stop per day: there are ~500 stop prefixes, and S3 charges $0.005 per 1,000 PUTs.
+# Listing what's already there costs ~1,300 LISTs (~$0.01) and holds ~1.3M keys in memory (a few hundred MB).
+STOP_FILES_PER_DAY = 500
+PUT_COST_PER_1000 = 0.005
+S3_PREFIX = S3_KEY_TEMPLATE.split("{stop_id}")[0]
 
 # GTFS feeds are cached here between runs, which matters more than it looks:
 # objects in s3://tm-gtfs transition to Glacier Instant Retrieval 180 days after
@@ -37,19 +43,34 @@ if GTFS_DATA_DIR:
     os.makedirs(os.path.expanduser(GTFS_DATA_DIR), exist_ok=True)
 
 
-def backfill_all_in_index():
-    """Backfill all the dates in the LAMP index."""
+def backfill_all_in_index(force: bool = False):
+    """Backfill all the dates in the LAMP index.
+
+    Files whose bytes already match S3 are skipped, so a re-run only pays for what changed.
+    force=True uploads every file regardless.
+    """
+
+    # all dates that LAMP has data for, starting from 2019-09-15
+    dates = pd.date_range(EARLIEST_LAMP_DATA, date.today() - timedelta(days=1), freq="d")
+    max_cost = len(dates) * STOP_FILES_PER_DAY * PUT_COST_PER_1000 / 1000
 
     confirmation = input(
-        "This will backfill all dates in the LAMP index from today going back to September 15th 2019. This will cost about $1 per 30 days backfilled and will take hours. Are you sure you want to proceed? (yes/no): "
+        f"This will backfill {len(dates)} days of LAMP data, from yesterday back to {EARLIEST_LAMP_DATA}. "
+        f"It costs at most ~${max_cost:.2f} in S3 PUTs if every file changes"
+        f"{'' if force else ' (unchanged files are skipped)'}, and will take hours. "
+        "Are you sure you want to proceed? (yes/no): "
     )
     if confirmation.lower() != "yes" and confirmation.lower() != "y":
         print("You must enter 'yes' to proceed. Exiting.")
         exit(1)
 
-    # all dates that LAMP has data for, starting from 2019-09-15
-    dates = pd.date_range(EARLIEST_LAMP_DATA, date.today() - timedelta(days=1), freq="d")
+    remote_etags = {}  # force: upload everything, no checks
+    if not force:
+        print(f"Listing s3://{S3_BUCKET}/{S3_PREFIX} to skip unchanged files...")
+        remote_etags = s3.ls_etags_parallel(S3_BUCKET, S3_PREFIX)
+        print(f"Found {len(remote_etags)} existing files")
 
+    total_uploaded = total_files = 0
     # Backfill each date, most recent to oldest
     for backfill_timestamp in dates[::-1]:
         date_to_backfill = backfill_timestamp.date()
@@ -68,12 +89,22 @@ def backfill_all_in_index():
 
         # split daily events by stop_id and parallel upload to s3
         stop_event_groups = processed_daily_events.groupby("stop_id")
-        _parallel_upload(stop_event_groups, date_to_backfill)
+        uploaded = _parallel_upload(stop_event_groups, date_to_backfill, remote_etags=remote_etags)
+        total_uploaded += len(uploaded)
+        total_files += len(stop_event_groups)
+        print(f"{date_to_backfill}: uploaded {len(uploaded)}, unchanged {len(stop_event_groups) - len(uploaded)}")
+
+    print(f"Done: uploaded {total_uploaded}, unchanged {total_files - total_uploaded}")
 
 
 if __name__ == "__main__":
+    import argparse
     import logging
     import os
+
+    parser = argparse.ArgumentParser(description="Backfill rapid transit LAMP data from yesterday back to 2019-09-15.")
+    parser.add_argument("--force", action="store_true", help="Upload every file, even ones already identical in S3.")
+    args = parser.parse_args()
 
     # Configure logging for local execution
     # Set LOG_LEVEL=DEBUG in environment to enable debug logging
@@ -83,4 +114,4 @@ if __name__ == "__main__":
         format="%(asctime)s - %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    backfill_all_in_index()
+    backfill_all_in_index(force=args.force)

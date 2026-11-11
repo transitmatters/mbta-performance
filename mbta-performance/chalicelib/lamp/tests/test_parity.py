@@ -7,12 +7,15 @@ S3, rendered through the same serialization upload_df_as_csv uses.
 
 Goldens capture current behaviour. They only change in isolated commits that
 re-bless them deliberately, such as:
-  * switching the sorts to kind="stable" (reorders ~2.9% of rows -- 21% of rows
-    share an event_time, so today's order is a quicksort artifact)
   * the .in_() rewrite of fetch_stop_times_from_gtfs (changes read_sql row order,
     which feeds a merge_asof(direction="nearest") that breaks ties by position)
   * averaging scheduled_headway per trunk and scheduled_headway_branch per branch
     (#25): only those two columns change, and branch values gain a trailing ".0"
+
+Every sort in ingest uses kind="stable". Unstable sorts broke ties (many rows share an
+event_time) differently on the arm64 Lambda than on a laptop, so the same day produced
+different bytes depending on where it ran, which defeats skipping unchanged uploads.
+Switching re-blessed these goldens: 14 of 17,074 rows moved, no values changed.
 
 Regenerate with:
     REGENERATE_GOLDEN=1 uv run pytest mbta-performance/chalicelib/lamp/tests/test_parity.py
