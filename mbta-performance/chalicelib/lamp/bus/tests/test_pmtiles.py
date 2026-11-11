@@ -144,6 +144,20 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         self.assertIsNone(properties.get("p10_speed_mph"))
         self.assertIsNone(properties.get("p90_speed_mph"))
 
+    def test_a_nan_is_left_null_rather_than_failing_the_upload(self):
+        # median_dwell_seconds is NaN on a segment with no observed dwell, as where every trip starts.
+        frame = _segments().assign(median_dwell_seconds=float("nan"), p50_total_time_seconds=float("nan"))
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(frame)
+
+        properties = self.written_properties[0]
+        self.assertIsNone(properties.get("median_dwell_seconds"))
+        self.assertIsNone(properties.get("p50_total_time_seconds"))
+        self.assertEqual(properties["segment_length_m"], 500)
+
     def test_moving_speed_stays_off_the_map(self):
         # See TILE_PROPERTIES: it reads as impossible speeds on short segments.
         self.assertFalse([column for column in pmtiles.TILE_PROPERTIES if "moving" in column])
@@ -250,6 +264,7 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             ],
             ignore_index=True,
         )
+        frame.loc[0, "median_dwell_seconds"] = float("nan")
         with tempfile.TemporaryDirectory() as tmp_dir:
             tileset_path = Path(tmp_dir) / "segments.pmtiles"
             tileset_path.write_bytes(pmtiles.build_pmtiles_bytes(frame))
@@ -263,11 +278,12 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             for layer in tile["features"]
             for feature in layer["features"]
         }
-        for column in ("shared_routes", "terminal_section", "p10_speed_mph", "p90_speed_mph"):
+        for column in ("shared_routes", "terminal_section", "p10_speed_mph", "p90_speed_mph", "median_dwell_seconds"):
             self.assertNotIn(column, by_band["am_peak"])
         self.assertEqual(by_band["midday"]["shared_routes"], "1,2")
         self.assertEqual(by_band["midday"]["terminal_section"], "last")
         self.assertEqual(by_band["midday"]["p10_speed_mph"], 14)
+        self.assertEqual(by_band["midday"]["median_dwell_seconds"], 25)
 
     @staticmethod
     def _time_bands(decoded: str) -> set[str]:
