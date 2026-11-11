@@ -9,6 +9,7 @@ import requests
 from .. import parallel, s3
 from ..date import EASTERN_TIME, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
+from ..schedule import RTE_DIR_STOP, add_scheduled_travel_times, smooth_scheduled_headways
 from .bus_constants import (
     BUS_COLUMN_RENAME_MAP,
     BUS_DAILY_URL_TEMPLATE,
@@ -19,8 +20,6 @@ from .bus_constants import (
 )
 
 logger = logging.getLogger(__name__)
-
-RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
 
 
 def fetch_bus_pq_file_from_remote(service_date: date) -> pd.DataFrame:
@@ -92,7 +91,7 @@ def _recalculate_bus_fields_from_gtfs(
 
     Replaces LAMP's plan_travel_time_seconds with a scheduled_tt computed from
     GTFS (arrival_time - trip start time), matching each LAMP trip to its
-    nearest scheduled GTFS trip by route/direction/stop.
+    nearest scheduled GTFS trip by route/direction/stop (see chalicelib/schedule.py).
 
     Args:
         allow_build: Whether this caller may build a missing GTFS feed itself. False in
@@ -121,57 +120,9 @@ def _recalculate_bus_fields_from_gtfs(
     pq_df["direction_id"] = pq_df["direction_id"].astype("int16")
     gtfs_stops["direction_id"] = gtfs_stops["direction_id"].astype("int16")
 
-    pq_df = pq_df.drop(columns=["scheduled_tt"])
-
-    trip_start_times = gtfs_stops.groupby("trip_id").arrival_time.transform("min")
-    gtfs_stops["scheduled_tt"] = gtfs_stops["arrival_time"] - trip_start_times
-    gtfs_stops["arrival_time"] = gtfs_stops["arrival_time"].astype(float)
-
-    route_starts = pq_df.loc[pq_df.groupby("trip_id").event_time.idxmin()]
-    route_starts["arrival_time"] = (
-        route_starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
-    ).dt.total_seconds()
-
-    trip_id_map = pd.merge_asof(
-        route_starts.sort_values(by="arrival_time", kind="stable"),
-        gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]].drop_duplicates(),
-        on="arrival_time",
-        direction="nearest",
-        by=RTE_DIR_STOP,
-        suffixes=["", "_scheduled"],
+    pq_df = add_scheduled_travel_times(
+        pq_df, gtfs_stops, service_date, match_on=tuple(RTE_DIR_STOP), stop_on=("stop_id", "visit_rank")
     )
-    trip_id_map = trip_id_map.drop_duplicates("trip_id").set_index("trip_id").trip_id_scheduled
-
-    pq_df["scheduled_trip_id"] = pq_df.trip_id.map(trip_id_map)
-    pq_df = pd.merge(
-        pq_df,
-        gtfs_stops[["trip_id", "stop_id", "visit_rank", "scheduled_tt"]].drop_duplicates(
-            subset=["trip_id", "stop_id", "visit_rank"]
-        ),
-        how="left",
-        left_on=["scheduled_trip_id", "stop_id", "visit_rank"],
-        right_on=["trip_id", "stop_id", "visit_rank"],
-        suffixes=["", "_gtfs"],
-    )
-
-    missing_tt_mask = pq_df["scheduled_tt"].isna()
-    if missing_tt_mask.any():
-        logger.debug(f"Attempting fallback scheduled_tt matching for {missing_tt_mask.sum()} events")
-        gtfs_stops["time_bucket"] = (gtfs_stops["arrival_time"] // 1800).astype(int)
-        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median()
-
-        event_seconds = (
-            pq_df.loc[missing_tt_mask, "event_time"] - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
-        ).dt.total_seconds()
-        event_buckets = (event_seconds // 1800).astype(int)
-
-        lookup_keys = pq_df.loc[missing_tt_mask, RTE_DIR_STOP].copy()
-        lookup_keys["time_bucket"] = event_buckets.values
-        fallback_tt = lookup_keys.apply(lambda row: bucketed_median_tt.get(tuple(row)), axis=1)
-
-        pq_df.loc[missing_tt_mask, "scheduled_tt"] = fallback_tt.values
-        filled_count = (~fallback_tt.isna()).sum()
-        logger.debug(f"Fallback matching filled {filled_count} events with bucketed median scheduled_tt")
 
     unmatched_trips = pq_df["scheduled_trip_id"].isna().sum()
     if unmatched_trips > 0:
@@ -196,31 +147,6 @@ def _filter_to_checkpoints(pq_df: pd.DataFrame, gtfs_stops: pd.DataFrame) -> pd.
     pq_df = pq_df.merge(checkpoints, how="inner", on=RTE_DIR_STOP)
     logger.info(f"Kept {len(pq_df)} of {events_before} bus events at {len(checkpoints)} route checkpoints")
     return pq_df
-
-
-def _average_bus_scheduled_headways(pq_df: pd.DataFrame, service_date: date) -> pd.DataFrame:
-    """Bucket scheduled bus headways into 30-minute buckets to smooth the benchmark."""
-    logger.debug(f"Calculating average scheduled bus headways for {len(pq_df)} events")
-    start_time = pd.Timestamp(service_date.year, service_date.month, service_date.day)
-    end_time = start_time + pd.Timedelta(hours=48)
-    buckets = pd.date_range(start_time, end_time, freq="30min")
-
-    _enriched = []
-    for bucket in buckets:
-        bucket_start = pd.to_datetime(bucket, unit="s").tz_localize(
-            EASTERN_TIME, ambiguous=True, nonexistent="shift_forward"
-        )
-        bucket_end = pd.to_datetime(bucket + pd.Timedelta(minutes=30), unit="s").tz_localize(
-            EASTERN_TIME, ambiguous=True, nonexistent="shift_forward"
-        )
-        filtered = pq_df[(pq_df["event_time"] >= bucket_start) & (pq_df["event_time"] < bucket_end)]
-
-        average_scheduled_headway = filtered.groupby(RTE_DIR_STOP)["scheduled_headway"].mean()
-        average_scheduled_headway = average_scheduled_headway.round(-1)
-
-        enriched = filtered.merge(average_scheduled_headway, how="left", on=RTE_DIR_STOP, suffixes=["_lamp", ""])
-        _enriched.append(enriched)
-    return pd.concat(_enriched)[BUS_S3_COLUMNS]
 
 
 def ingest_bus_pq_file(
@@ -265,7 +191,7 @@ def ingest_bus_pq_file(
     processed = _recalculate_bus_fields_from_gtfs(processed, service_date, local_archive_path, allow_build=allow_build)
 
     logger.info("Averaging scheduled headways")
-    processed = _average_bus_scheduled_headways(processed, service_date)
+    processed = smooth_scheduled_headways(processed, service_date)[BUS_S3_COLUMNS]
 
     logger.info(f"Processing complete: {len(processed)} events ready for upload")
     return processed.sort_values(by=["event_time"], kind="stable")

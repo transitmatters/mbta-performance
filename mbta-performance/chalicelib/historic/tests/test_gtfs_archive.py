@@ -378,22 +378,45 @@ class TestGTFSArchive(unittest.TestCase):
         trips, stops, events = self._shared_stop_gtfs(["Green-B", "Green-C"])
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
-            result = gtfs_archive.add_gtfs_headways(events).sort_values("event_time")
+            result = gtfs_archive.add_gtfs_headways(events)
 
-        # gaps between consecutive trains of either branch, not between trains of the same branch (600s)
-        self.assertListEqual(list(result.scheduled_headway[1:]), [240, 360, 240])
+        # gaps between consecutive trains of either branch (240, 360, 240), not of one branch (600),
+        # smoothed over the 8:00-8:30 window like LAMP's
+        self.assertListEqual(list(result.scheduled_headway), [280] * 4)
         self.assertListEqual(list(result.scheduled_tt), [300] * 4)
-        self.assertNotIn("trunk_route_id", result.columns)
+        self.assertListEqual(list(result.event_time), sorted(events.event_time))
+
+    def test_add_gtfs_headways_adds_only_benchmark_columns(self):
+        """Matching internals (arrival_time, scheduled_trip_id, branches) don't leak into the monthly files."""
+        trips, stops, events = self._shared_stop_gtfs(["Green-B", "Green-C"])
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.columns), list(events.columns) + ["scheduled_headway", "scheduled_tt"])
+
+    def test_add_gtfs_headways_tied_branches_are_one_arrival(self):
+        """Two branches scheduled at a shared stop in the same second don't make a 0s headway (#131)."""
+        trips, stops, events = self._shared_stop_gtfs(["Green-B", "Green-C"])
+        # sched1 (Green-C) now reaches the shared stop at 8:00, the same second as sched0 (Green-B)
+        stops.loc[(stops.trip_id == "sched1") & (stops.stop_id == "shared"), "arrival_time"] = pd.Timedelta(hours=8)
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        # Arrivals at 8:00, 8:10 and 8:14: gaps of 600 and 240. Before the fix, 8:00 counted twice with a 0s gap.
+        self.assertNotIn(0, list(result.scheduled_headway))
+        self.assertListEqual(list(result.scheduled_headway), [420] * 4)
 
     def test_add_gtfs_headways_keeps_bus_routes_separate(self):
         """Routes without a trunk (bus) still get per-route scheduled headways at a shared stop."""
         trips, stops, events = self._shared_stop_gtfs(["1", "47"])
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
-            result = gtfs_archive.add_gtfs_headways(events).sort_values("event_time")
+            result = gtfs_archive.add_gtfs_headways(events)
 
-        self.assertListEqual(list(result.scheduled_headway[2:]), [600, 600])
-        self.assertTrue(result.scheduled_headway[:2].isna().all())
+        # each route's own 600s gaps, never the 240/360 between the two routes' buses
+        self.assertListEqual(list(result.scheduled_headway), [600] * 4)
 
     def test_add_gtfs_headways_with_incomplete_gtfs(self):
         """add_gtfs_headways keeps events for dates with incomplete GTFS, without scheduled values."""
@@ -433,7 +456,7 @@ class TestGTFSArchive(unittest.TestCase):
             gtfs_archive.add_gtfs_headways(events_df)
 
     def test_add_gtfs_headways_no_matching_routes(self):
-        """add_gtfs_headways skips a date when no GTFS trips match the events' route."""
+        """add_gtfs_headways keeps a date's events, without scheduled values, when no GTFS trips match their route."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07")],
@@ -461,12 +484,13 @@ class TestGTFSArchive(unittest.TestCase):
         )
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
-            # All dates are skipped (empty gtfs_stops_clean) → results list is empty → ValueError on concat
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertListEqual(list(result.trip_id), ["trip1"])
+        self.assertTrue(result[["scheduled_headway", "scheduled_tt"]].isna().all().all())
 
     def test_add_gtfs_headways_null_event_times(self):
-        """add_gtfs_headways skips a date when all event_times are null (arrival_time becomes NaT)."""
+        """add_gtfs_headways keeps events with a null event_time, without scheduled values."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07")],
@@ -484,9 +508,10 @@ class TestGTFSArchive(unittest.TestCase):
         )
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
-            # days_events_clean becomes empty after dropna on arrival_time → results list empty → ValueError
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertListEqual(list(result.trip_id), ["trip1"])
+        self.assertTrue(result[["scheduled_headway", "scheduled_tt"]].isna().all().all())
 
     def test_to_dateint_integration(self):
         """Test that to_dateint function is available and works correctly."""
