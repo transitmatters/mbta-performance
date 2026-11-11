@@ -2,9 +2,8 @@ name: lint
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
+  # Main runs this from deploy.yml, which doesn't deploy unless it passes
+  workflow_call:
 
 jobs:
   server:

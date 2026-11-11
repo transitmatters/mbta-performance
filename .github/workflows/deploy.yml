@@ -8,12 +8,33 @@ on:
 
 # Serialize deploys: CloudFormation rejects a change set while the stack is
 # UPDATE_IN_PROGRESS, which silently drops the later of two close merges.
+# Every run from main shares one group however it was triggered, and the group
+# covers the checks too, so runs reach the deploy job in the order they started
+# and an older commit can't deploy over a newer one. Runs from other branches
+# never deploy (see the deploy job's `if`), so each gets a group of its own and
+# can't cancel a deploy from main that's waiting its turn.
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: ${{ github.ref == 'refs/heads/main' && 'deploy-prod' || format('deploy-{0}', github.run_id) }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
+  # The same checks a PR runs. Main runs them only here, so nothing deploys
+  # unless they pass.
+  lint:
+    uses: ./.github/workflows/lint.yml
+  test:
+    uses: ./.github/workflows/test.yml
+  layer:
+    uses: ./.github/workflows/layer.yml
+    secrets: inherit
+
   deploy:
+    needs: [lint, test, layer]
+    # workflow_dispatch can be run from any branch, but prod is only ever main
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     env:
       AWS_PROFILE: transitmatters
