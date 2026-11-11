@@ -59,7 +59,7 @@ def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
     """
     logger.debug(f"Processing arrival/departure times for {len(df)} rows")
 
-    df = df.sort_values(["trip_id", "stop_sequence"])
+    df = df.sort_values(["trip_id", "stop_sequence"], kind="stable")
     df["visit_rank"] = df.groupby(["trip_id", "stop_id"]).cumcount()
 
     # Arrivals: use stop_arrival_dt and the current stop_id. This row's own visit_rank applies
@@ -81,8 +81,8 @@ def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
         columns={"stop_id": "previous_stop_id", "visit_rank": "_prev_visit_rank"}
     )
     dep_df = pd.merge_asof(
-        dep_df.sort_values("stop_sequence"),
-        visited_stops.sort_values("stop_sequence"),
+        dep_df.sort_values("stop_sequence", kind="stable"),
+        visited_stops.sort_values("stop_sequence", kind="stable"),
         on="stop_sequence",
         by=["trip_id", "previous_stop_id"],
         direction="backward",
@@ -124,10 +124,10 @@ def _recalculate_bus_fields_from_gtfs(
     # visit_rank: which occurrence of this stop_id within this scheduled trip, so a loop/
     # circulator route that revisits a stop matches the correct GTFS stop_time below instead of
     # fanning out into one output row per (LAMP visit x GTFS visit) pair.
-    gtfs_stops = gtfs_stops.sort_values(by=["trip_id", "stop_sequence"])
+    gtfs_stops = gtfs_stops.sort_values(by=["trip_id", "stop_sequence"], kind="stable")
     gtfs_stops["visit_rank"] = gtfs_stops.groupby(["trip_id", "stop_id"]).cumcount()
 
-    gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
+    gtfs_stops = gtfs_stops.sort_values(by="arrival_time", kind="stable")
 
     # Normalize merge-key dtypes so pd.merge_asof's strict by= check doesn't reject string vs. object.
     for col in ("route_id", "stop_id", "trip_id"):
@@ -148,7 +148,7 @@ def _recalculate_bus_fields_from_gtfs(
     ).dt.total_seconds()
 
     trip_id_map = pd.merge_asof(
-        route_starts.sort_values(by="arrival_time"),
+        route_starts.sort_values(by="arrival_time", kind="stable"),
         gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]].drop_duplicates(),
         on="arrival_time",
         direction="nearest",
@@ -283,7 +283,7 @@ def ingest_bus_pq_file(
     processed = _average_bus_scheduled_headways(processed, service_date)
 
     logger.info(f"Processing complete: {len(processed)} events ready for upload")
-    return processed.sort_values(by=["event_time"])
+    return processed.sort_values(by=["event_time"], kind="stable")
 
 
 def upload_bus_to_s3(

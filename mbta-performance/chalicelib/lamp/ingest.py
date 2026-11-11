@@ -122,7 +122,7 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
     logger.debug(f"Processing arrival/departure times for {len(pq_df)} rows")
     pq_df["dep_time"] = pd.to_datetime(pq_df["move_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
     pq_df["arr_time"] = pd.to_datetime(pq_df["stop_timestamp"], unit="s", utc=True).dt.tz_convert(EASTERN_TIME)
-    pq_df = pq_df.sort_values(by=["stop_sequence"])
+    pq_df = pq_df.sort_values(by=["stop_sequence"], kind="stable")
 
     # explode departure and arrival times
     arr_df = pq_df[pq_df["arr_time"].notna()]
@@ -259,7 +259,7 @@ def _recalculate_fields_from_gtfs(
         trip_ids, service_date, local_archive_path=local_archive_path, allow_build=allow_build
     )
     logger.debug(f"Fetched {len(gtfs_stops)} GTFS stop times")
-    gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
+    gtfs_stops = gtfs_stops.sort_values(by="arrival_time", kind="stable")
 
     # remove the reported travel times, because we use a slightly different metric.
     pq_df = pq_df.drop(columns=["scheduled_tt"])
@@ -289,7 +289,7 @@ def _recalculate_fields_from_gtfs(
     ).dt.total_seconds()
 
     trip_id_map = pd.merge_asof(
-        route_starts.sort_values(by="arrival_time"),
+        route_starts.sort_values(by="arrival_time", kind="stable"),
         gtfs_stops[match_columns + ["arrival_time", "trip_id"]].drop_duplicates(),
         on="arrival_time",
         direction="nearest",
@@ -431,7 +431,7 @@ def ingest_pq_file(
     processed_daily_events = _average_scheduled_headways(processed_daily_events, service_date)
 
     logger.info(f"Processing complete: {len(processed_daily_events)} events ready for upload")
-    return processed_daily_events.sort_values(by=["event_time"])
+    return processed_daily_events.sort_values(by=["event_time"], kind="stable")
 
 
 def upload_to_s3(
