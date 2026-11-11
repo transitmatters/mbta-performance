@@ -2,6 +2,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 from .. import download
@@ -103,6 +104,19 @@ class TestDownload(unittest.TestCase):
                     call_args = mock_run.call_args[0][0]
                     self.assertEqual(call_args[0], "unzip")
 
+    def test_unzip_historic_data_replaces_previous_extraction(self):
+        """Files left from an earlier extraction (say, before the MBTA renamed them) are removed, not processed again."""
+        zip_file = pathlib.Path(self.temp_dir) / "2026.zip"
+        with zipfile.ZipFile(zip_file, "w") as zf:
+            zf.writestr("2026-01_HREvents.csv", "new")
+        output_dir = pathlib.Path(self.temp_dir) / "input" / "2026"
+        output_dir.mkdir(parents=True)
+        (output_dir / "2026-01_HR_Events_old_name.csv").write_text("old")
+
+        download.unzip_historic_data(str(zip_file), str(output_dir))
+
+        self.assertEqual(os.listdir(output_dir), ["2026-01_HREvents.csv"])
+
     def test_list_files_in_dir(self):
         """Test listing files in directory recursively."""
         # Create a temporary directory structure
@@ -152,23 +166,6 @@ class TestDownload(unittest.TestCase):
             with self.assertRaises(ValueError) as context:
                 download.download_bus_data(year)
             self.assertIn("Failed to fetch bus data", str(context.exception))
-
-    def test_unzip_bus_data(self):
-        """Test unzipping of bus data."""
-        zip_file = f"{self.temp_dir}/test.zip"
-        output_dir = f"{self.temp_dir}/output"
-
-        mock_zip = mock.MagicMock()
-        mock_zip_context = mock.MagicMock()
-        mock_zip_context.__enter__ = mock.Mock(return_value=mock_zip)
-        mock_zip_context.__exit__ = mock.Mock(return_value=False)
-
-        with mock.patch("pathlib.Path.mkdir"):
-            with mock.patch("chalicelib.historic.download.ZipFile", return_value=mock_zip_context):
-                _ = download.unzip_bus_data(zip_file, output_dir)
-
-                # Verify extractall was called
-                mock_zip.extractall.assert_called_once_with(output_dir)
 
     def test_process_bus_file_names_2021_plus(self):
         """Test processing of bus file names for years 2021 and later."""
@@ -274,27 +271,6 @@ class TestDownload(unittest.TestCase):
             content = f.read()
         self.assertEqual(content, original_content)
 
-    def test_unzip_bus_data_with_unsupported_compression(self):
-        """Test unzip_bus_data fallback to system unzip when NotImplementedError is raised."""
-        zip_file = f"{self.temp_dir}/test.zip"
-        output_dir = f"{self.temp_dir}/output"
-
-        mock_zip = mock.MagicMock()
-        mock_zip.extractall.side_effect = NotImplementedError("Unsupported compression")
-        mock_zip_context = mock.MagicMock()
-        mock_zip_context.__enter__ = mock.Mock(return_value=mock_zip)
-        mock_zip_context.__exit__ = mock.Mock(return_value=False)
-
-        with mock.patch("pathlib.Path.mkdir"):
-            with mock.patch("chalicelib.historic.download.ZipFile", return_value=mock_zip_context):
-                with mock.patch("subprocess.run") as mock_run:
-                    result = download.unzip_bus_data(zip_file, output_dir)
-
-                    mock_run.assert_called_once()
-                    call_args = mock_run.call_args[0][0]
-                    self.assertEqual(call_args[0], "unzip")
-                    self.assertEqual(result, output_dir)
-
     def test_download_all_bus_data(self):
         """Test download_all_bus_data function."""
         mock_response = mock.Mock(status_code=200, content=b"mock content")
@@ -302,7 +278,7 @@ class TestDownload(unittest.TestCase):
         with mock.patch("requests.get", return_value=mock_response):
             with mock.patch("chalicelib.historic.download.prep_local_dir"):
                 with mock.patch("chalicelib.historic.download.download_bus_data", return_value="/fake/path.zip"):
-                    with mock.patch("chalicelib.historic.download.unzip_bus_data"):
+                    with mock.patch("chalicelib.historic.download.unzip_historic_data"):
                         with mock.patch("chalicelib.historic.download.process_bus_file_names"):
                             with mock.patch("pathlib.Path.exists", return_value=False):
                                 # Mock the clean_unicode_bom to avoid file operations
@@ -315,7 +291,7 @@ class TestDownload(unittest.TestCase):
             with mock.patch(
                 "chalicelib.historic.download.download_bus_data", return_value="/fake/path.zip"
             ) as mock_download:
-                with mock.patch("chalicelib.historic.download.unzip_bus_data"):
+                with mock.patch("chalicelib.historic.download.unzip_historic_data"):
                     with mock.patch("chalicelib.historic.download.process_bus_file_names"):
                         with mock.patch("pathlib.Path.exists", return_value=False):
                             download.download_all_bus_data([2026])
@@ -326,7 +302,7 @@ class TestDownload(unittest.TestCase):
         """Test download_all_bus_data calls clean_unicode_bom when 2020-Q3.csv exists."""
         with mock.patch("chalicelib.historic.download.prep_local_dir"):
             with mock.patch("chalicelib.historic.download.download_bus_data", return_value="/fake/path.zip"):
-                with mock.patch("chalicelib.historic.download.unzip_bus_data"):
+                with mock.patch("chalicelib.historic.download.unzip_historic_data"):
                     with mock.patch("chalicelib.historic.download.process_bus_file_names"):
                         with mock.patch("pathlib.Path.exists", return_value=True):
                             with mock.patch("chalicelib.historic.download.clean_unicode_bom") as mock_clean:

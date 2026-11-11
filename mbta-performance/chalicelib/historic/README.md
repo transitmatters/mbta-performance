@@ -32,7 +32,7 @@ ferry  2025-10       none          MBTA Ferry Daily Ridership by Trip, Route, an
 
 ### 2. Download and process
 
-Each command re-downloads that year's source zip, so you always get the latest version of the file.
+Each command re-downloads that year's source zip and replaces the files extracted last time, so you always get the latest version of the file.
 
 ```sh
 # Rapid transit, current year (~270 MB download)
@@ -48,6 +48,7 @@ uv run python -m mbta-performance.chalicelib.historic.backfill.ferry --start-dat
 
 Things to expect:
 
+- Ferry first checks that the ArcGIS Hub's copy of the CSV is newer than the MBTA's last change to the data. If it isn't, the command has the Hub regenerate it and waits, for up to 30 minutes. The CSV is saved to `data/input/ferry.csv`.
 - GTFS archives for scheduled headways are downloaded into `data/gtfs_archives/` and cached there. There is one archive per feed version, at roughly 100 MB unzipped each. If you process the whole ferry history without `--start-date`, it downloads hundreds of them (50+ GB) and takes hours.
 - A year of processed rapid transit and bus data is several GB. `data/` is gitignored.
 - `backfill.main` also accepts `--start-date/--end-date` to process only part of a year.
@@ -95,7 +96,7 @@ The MBTA publishes each calendar year as a new ArcGIS item, usually once January
 1. Find the new items on the hub by searching for "MBTA Rapid Transit Events YYYY" and "MBTA Bus Arrival Departure Times YYYY". The item ID is the 32-character hex string in the item URL.
 2. Add them to `ARCGIS_IDS` and `BUS_ARCGIS_IDS` in `constants.py`. Example: [#84](https://github.com/transitmatters/mbta-performance/pull/84).
 3. Run the new year once and check the output before uploading. Things that have changed between years before:
-   - Column names. Rapid transit switched to LAMP-style columns (`sync_stop_sequence`) in 2024. See `HISTORIC_COLUMNS_LAMP`.
+   - Column names. Rapid transit switched to LAMP-style columns (`sync_stop_sequence`) in 2024. See `HISTORIC_COLUMNS_LAMP`. Of the bus files, only Oct–Dec 2020 uses PascalCase headers (`ServiceDate`, `Stop`, ...); `load_bus_data` maps them.
    - Bus zip layout and file names. See `process_bus_file_names` in `download.py`.
    - Timezones (see below).
 4. Re-run the **previous** year one last time. The MBTA often re-publishes it with December filled in weeks later (the 2025 files were updated 2026-02-10). The upload sync skips the months that didn't change.

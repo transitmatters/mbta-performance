@@ -59,6 +59,8 @@ FERRY_UPDATE_CACHE_URL = (
     f"https://hub.arcgis.com/api/download/v1/items/{FERRY_ARCGIS_ID}/csv?redirect=false&layers=0&updateCache=true"
 )
 FERRY_RIDERSHIP_ARCGIS_URL = f"https://hub.arcgis.com/api/v3/datasets/{FERRY_ARCGIS_ID}_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1"
+# The feature layer behind FERRY_ARCGIS_ID (the item's "url", layer 0); it reports when its data last changed
+FERRY_LAYER_URL = "https://services1.arcgis.com/ceiitspzDAHrdGO1/arcgis/rest/services/MBTA_Ferry_Daily_Ridership_by_Trip_Route_and_Stop/FeatureServer/0"
 
 # Where processed monthly outputs are uploaded. Local files under data/output/ map 1:1 to keys in this bucket.
 HISTORIC_S3_BUCKET = "tm-mbta-performance"
