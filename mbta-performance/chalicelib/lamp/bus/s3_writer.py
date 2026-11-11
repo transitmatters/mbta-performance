@@ -15,8 +15,12 @@ import pandas as pd
 from ... import s3
 from .constants import (
     ALL_DAY_PMTILES_KEY_TEMPLATE,
+    DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE,
+    DWELL_PMTILES_KEY_TEMPLATE,
     LEADERBOARD_KEY_TEMPLATE,
     MONTHLY_ALL_DAY_PMTILES_KEY_TEMPLATE,
+    MONTHLY_DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE,
+    MONTHLY_DWELL_PMTILES_KEY_TEMPLATE,
     MONTHLY_LEADERBOARD_KEY_TEMPLATE,
     MONTHLY_PMTILES_KEY_TEMPLATE,
     MONTHLY_S3_KEY_TEMPLATE,
@@ -24,12 +28,14 @@ from .constants import (
     S3_BUCKET,
     S3_KEY_TEMPLATE,
     WEEKLY_ALL_DAY_PMTILES_KEY_TEMPLATE,
+    WEEKLY_DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE,
+    WEEKLY_DWELL_PMTILES_KEY_TEMPLATE,
     WEEKLY_LEADERBOARD_KEY_TEMPLATE,
     WEEKLY_PMTILES_KEY_TEMPLATE,
     WEEKLY_S3_KEY_TEMPLATE,
 )
 from .geoparquet import build_geoparquet_bytes
-from .pmtiles import build_pmtiles_bytes, split_all_day
+from .pmtiles import build_dwell_pmtiles_bytes, build_pmtiles_bytes, split_all_day
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,28 @@ def monthly_all_day_pmtiles_key_for(year: int, month: int) -> str:
     return MONTHLY_ALL_DAY_PMTILES_KEY_TEMPLATE.format(year=year, month=month)
 
 
+def dwell_pmtiles_keys_for(service_date: date) -> tuple[str, str]:
+    """The (time band, all_day) object keys for a service date's dwell PMTiles (see dwells.py)."""
+    fields = {"YYYY": service_date.year, "_M": service_date.month, "_D": service_date.day}
+    return DWELL_PMTILES_KEY_TEMPLATE.format(**fields), DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE.format(**fields)
+
+
+def weekly_dwell_pmtiles_keys_for(year: int, week: int) -> tuple[str, str]:
+    """The (time band, all_day) object keys for an ISO (year, week)'s dwell PMTiles."""
+    return (
+        WEEKLY_DWELL_PMTILES_KEY_TEMPLATE.format(year=year, week=week),
+        WEEKLY_DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE.format(year=year, week=week),
+    )
+
+
+def monthly_dwell_pmtiles_keys_for(year: int, month: int) -> tuple[str, str]:
+    """The (time band, all_day) object keys for a (year, month)'s dwell PMTiles."""
+    return (
+        MONTHLY_DWELL_PMTILES_KEY_TEMPLATE.format(year=year, month=month),
+        MONTHLY_DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE.format(year=year, month=month),
+    )
+
+
 def leaderboard_key_for(service_date: date) -> str:
     """Build the object key for a service date's slowest-segments leaderboard."""
     return LEADERBOARD_KEY_TEMPLATE.format(YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
@@ -101,10 +129,12 @@ def _upload_geoparquet(segments: pd.DataFrame, key: str) -> str:
     return key
 
 
-def _upload_pmtiles(segments: pd.DataFrame, key: str, all_day_key: str) -> tuple[str, str]:
-    """Publish the time band rows to `key` and the all_day rows to `all_day_key`."""
+def _upload_pmtiles(segments: pd.DataFrame, key: str, all_day_key: str, dwells: bool = False) -> tuple[str, str]:
+    """Publish the time band rows to `key` and the all_day rows to `all_day_key`, as segment
+    lines, or as dwell points when `dwells` is set."""
+    build = build_dwell_pmtiles_bytes if dwells else build_pmtiles_bytes
     for rows, rows_key in zip(split_all_day(segments), (key, all_day_key)):
-        data = build_pmtiles_bytes(rows)
+        data = build(rows)
         logger.info(f"Uploading PMTiles ({len(rows)} rows, {len(data) / 1048576:.2f}MB) to s3://{S3_BUCKET}/{rows_key}")
         s3.upload_pmtiles(S3_BUCKET, rows_key, data)
     return key, all_day_key
@@ -168,6 +198,22 @@ def upload_monthly_pmtiles(segments: pd.DataFrame, year: int, month: int) -> tup
     pmtiles.py.
     """
     return _upload_pmtiles(segments, monthly_pmtiles_key_for(year, month), monthly_all_day_pmtiles_key_for(year, month))
+
+
+def upload_dwell_pmtiles(dwells: pd.DataFrame, service_date: date) -> tuple[str, str]:
+    """Build a day's dwell PMTiles (dwells.py) -- time bands, and all_day beside them -- and put
+    them in the performance bucket. Returns the keys written. Requires tippecanoe on PATH."""
+    return _upload_pmtiles(dwells, *dwell_pmtiles_keys_for(service_date), dwells=True)
+
+
+def upload_weekly_dwell_pmtiles(dwells: pd.DataFrame, year: int, week: int) -> tuple[str, str]:
+    """Build a week's dwell PMTiles (time bands, and all_day) and put them in the bucket."""
+    return _upload_pmtiles(dwells, *weekly_dwell_pmtiles_keys_for(year, week), dwells=True)
+
+
+def upload_monthly_dwell_pmtiles(dwells: pd.DataFrame, year: int, month: int) -> tuple[str, str]:
+    """Build a month's dwell PMTiles (time bands, and all_day) and put them in the bucket."""
+    return _upload_pmtiles(dwells, *monthly_dwell_pmtiles_keys_for(year, month), dwells=True)
 
 
 def upload_leaderboard(leaderboard: dict, service_date: date) -> str:

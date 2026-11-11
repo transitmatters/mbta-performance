@@ -10,8 +10,9 @@ from .constants import (
     MAX_PLAUSIBLE_SPEED_MPH,
     METERS_PER_SECOND_TO_MPH,
     MIN_PLAUSIBLE_SPEED_MPH,
-    MOVING_PERCENTILES,
+    MIN_RUNNING_SPEED_SEGMENT_M,
     PERCENTILES,
+    STOP_ZONE_M,
     TERMINAL_SECTION_SHARE,
     TIME_BANDS,
 )
@@ -118,17 +119,17 @@ def interpolate_missing_times(events: pd.DataFrame) -> pd.DataFrame:
 def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame:
     """One row per bus per segment: how long it took to get from one stop to the next.
 
-    Two clocks are reported, because "how fast is the bus" has two defensible answers:
+    Two clocks are reported:
 
-    * `moving_time_seconds` -- departure from the first stop to arrival at the second.
-      This is the running speed of the vehicle in traffic, and reproduces LAMP's own
-      `travel_time_seconds` column exactly.
-    * `total_time_seconds` -- arrival to arrival, so it also carries the dwell spent at the
-      first stop. This is the time a rider on board actually experiences, and matches the
-      convention the rail benchmarks in chalicelib.benchmarks already use.
-
-    Dwell is roughly as large as running time on MBTA bus routes (both median ~21s), so the
-    two speeds differ by more than a factor of two. `speed_mph` is the rider-experienced one.
+    * `running_time_seconds` -- departure from the first stop to arrival at the second: the
+      bus on the street, with no time at either stop. Reproduces LAMP's own
+      `travel_time_seconds` exactly. Those times aren't taken at the stops, so it only covers
+      the segment less STOP_ZONE_M, and `running_speed_mph` is over that `running_length_m`.
+      What the map shows.
+    * `total_time_seconds` -- arrival to arrival, so it also carries `dwell_seconds` at the
+      first stop. The time a rider on board experiences, as the rail benchmarks in
+      chalicelib.benchmarks count it; `speed_mph` is over the full segment. Kept for the
+      GeoParquet and the per-route daily metrics.
     """
     events = events.sort_values(TRIP_KEY + ["stop_sequence"])
     grouped = events.groupby(TRIP_KEY, sort=False)
@@ -158,37 +159,57 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
     traversal = traversal[traversal.next_trip == traversal.trip_id].drop(columns=["next_trip"])
     traversal = traversal.dropna(subset=["to_stop_id", "depart_seconds", "arrive_seconds"])
 
-    traversal["moving_time_seconds"] = traversal.arrive_seconds - traversal.depart_seconds
+    traversal["running_time_seconds"] = traversal.arrive_seconds - traversal.depart_seconds
     traversal["dwell_seconds"] = (traversal.depart_seconds - traversal.from_arrive_seconds).clip(lower=0)
     # The dwell at a trip's first stop is layover -- the bus sits at the terminal waiting for
     # its scheduled departure, often 10+ minutes. Charging that to the first segment makes it
     # look like a 0.5mph crawl. Nobody rides through it, so it is excluded, matching how the
     # rail benchmarks in chalicelib.benchmarks treat the dwell at an origin stop.
     traversal.loc[traversal.is_trip_start, "dwell_seconds"] = 0.0
-    traversal["total_time_seconds"] = traversal.moving_time_seconds + traversal.dwell_seconds
+    traversal["total_time_seconds"] = traversal.running_time_seconds + traversal.dwell_seconds
 
     segment_lengths = segments[["route_pattern_id", "from_stop_id", "to_stop_id", "segment_length_m"]].drop_duplicates(
         ["route_pattern_id", "from_stop_id", "to_stop_id"]
     )
     traversal = traversal.merge(segment_lengths, on=["route_pattern_id", "from_stop_id", "to_stop_id"], how="inner")
 
-    traversal["moving_speed_mph"] = (
-        traversal.segment_length_m / traversal.moving_time_seconds * METERS_PER_SECOND_TO_MPH
+    traversal["running_length_m"] = running_length(traversal.segment_length_m)
+    traversal["running_speed_mph"] = (
+        traversal.running_length_m / traversal.running_time_seconds * METERS_PER_SECOND_TO_MPH
     )
     traversal["speed_mph"] = traversal.segment_length_m / traversal.total_time_seconds * METERS_PER_SECOND_TO_MPH
     # .eq(True) treats the shifted NaN as False without pandas' object-dtype downcast warning.
     traversal["is_interpolated"] = traversal.from_interpolated.eq(True) | traversal.to_interpolated.eq(True)
 
     before = len(traversal)
-    # Plausibility is judged on the moving speed: the dwell-inclusive figure is legitimately
-    # near zero at a long layover, but no bus covers ground at 65mph between stops.
+    # Plausibility is judged on running time over the full segment, which every traversal has:
+    # the dwell-inclusive figure is legitimately near zero at a long layover, and the running
+    # speed is null on short segments. Full length reads faster than running_speed_mph, so
+    # nothing kept is over the cap on either.
+    full_length_speed = traversal.segment_length_m / traversal.running_time_seconds * METERS_PER_SECOND_TO_MPH
     traversal = traversal[
-        (traversal.moving_time_seconds > 0)
-        & (traversal.moving_speed_mph >= MIN_PLAUSIBLE_SPEED_MPH)
-        & (traversal.moving_speed_mph <= MAX_PLAUSIBLE_SPEED_MPH)
+        (traversal.running_time_seconds > 0)
+        & (full_length_speed >= MIN_PLAUSIBLE_SPEED_MPH)
+        & (full_length_speed <= MAX_PLAUSIBLE_SPEED_MPH)
     ]
     logger.info(f"Built {len(traversal)} traversals ({before - len(traversal)} dropped as implausible)")
     return traversal
+
+
+def running_length(segment_length_m: pd.Series) -> pd.Series:
+    """The part of a segment its running time covers: the length less STOP_ZONE_M, or null on a
+    segment too short for that to give a speed (MIN_RUNNING_SPEED_SEGMENT_M)."""
+    return (segment_length_m - STOP_ZONE_M).where(segment_length_m >= MIN_RUNNING_SPEED_SEGMENT_M)
+
+
+def has_observed_dwell(traversals: pd.DataFrame) -> pd.Series:
+    """Whether each traversal's dwell at its first stop was actually observed.
+
+    Two kinds have it forced to zero in build_traversals: a trip's first stop, where the wait is
+    layover, and a stop LAMP didn't record, whose interpolated pass-through has no dwell.
+    Counting them would drag a median or an average down.
+    """
+    return ~traversals.is_trip_start.eq(True) & ~traversals.from_interpolated.eq(True)
 
 
 def assign_time_band(departure_seconds: pd.Series) -> pd.Series:
@@ -247,14 +268,15 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         "trip_start_share": ("is_trip_start", "mean"),
         "trip_end_share": ("is_trip_end", "mean"),
     }
-    for measure, percentiles in (("total_time_seconds", PERCENTILES), ("moving_time_seconds", MOVING_PERCENTILES)):
-        for percentile in percentiles:
+    for measure in ("total_time_seconds", "running_time_seconds"):
+        for percentile in PERCENTILES:
             aggregation[f"p{percentile}_{measure}"] = (
                 measure,
                 lambda series, q=percentile: float(np.percentile(series, q)),
             )
 
     aggregated = grouped.agg(**aggregation).reset_index()
+    aggregated["running_length_m"] = running_length(aggregated.segment_length_m)
 
     # Speed comes from the matching time percentile, so p50 speed is the median trip's
     # speed. Note the ordering inverts: the p90 *time* is the slow tail, hence a low speed.
@@ -262,9 +284,8 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         aggregated[f"p{percentile}_speed_mph"] = (
             aggregated.segment_length_m / aggregated[f"p{percentile}_total_time_seconds"] * METERS_PER_SECOND_TO_MPH
         )
-    for percentile in MOVING_PERCENTILES:
-        aggregated[f"p{percentile}_moving_speed_mph"] = (
-            aggregated.segment_length_m / aggregated[f"p{percentile}_moving_time_seconds"] * METERS_PER_SECOND_TO_MPH
+        aggregated[f"p{percentile}_running_speed_mph"] = (
+            aggregated.running_length_m / aggregated[f"p{percentile}_running_time_seconds"] * METERS_PER_SECOND_TO_MPH
         )
 
     return _with_terminal_sections(aggregated)

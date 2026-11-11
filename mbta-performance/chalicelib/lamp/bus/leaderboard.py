@@ -30,21 +30,23 @@ from .constants import LEADERBOARD_MIN_TRAVERSALS, LEADERBOARD_SIZE
 logger = logging.getLogger(__name__)
 
 # Deliberately narrow, matching pmtiles.py's TILE_PROPERTIES allowlist: only what a
-# leaderboard entry needs to display, selected explicitly so a column like p90_speed_mph or
-# moving_speed_mph can't end up in the published file by accident. time_band/day_type are not
-# repeated per entry here -- they're already the dict keys the entry sits under.
-# segment_length_m and p50_total_time_seconds are the two numbers p50_speed_mph is computed
-# from, shown beside it as the segment's distance and median travel time.
+# leaderboard entry needs to display, selected explicitly so a column like p90_running_speed_mph
+# or median_dwell_seconds can't end up in the published file by accident. time_band/day_type are
+# not repeated per entry here -- they're already the dict keys the entry sits under.
+# Ranked by running speed, the same speed the map shows (see pmtiles.TILE_PROPERTIES), with the
+# same running_ names. running_length_m and p50_running_time_seconds are the two numbers
+# p50_running_speed_mph is computed from, shown beside it; segment_length_m is the whole segment.
 LEADERBOARD_COLUMNS = [
     "route_id",
     "direction_id",
     "from_stop_name",
     "to_stop_name",
-    "p50_speed_mph",
+    "p50_running_speed_mph",
     "n_traversals",
     "n_interpolated",
     "segment_length_m",
-    "p50_total_time_seconds",
+    "running_length_m",
+    "p50_running_time_seconds",
 ]
 
 
@@ -56,11 +58,12 @@ def _ranked_slice(rows: pd.DataFrame) -> list[dict]:
     and pandas' own JSON writer already handles that correctly. Length and time are rounded to
     whole metres and seconds, finer than the dashboard displays them and fewer bytes per row.
     """
-    ranked = rows.sort_values("p50_speed_mph").head(LEADERBOARD_SIZE)
+    ranked = rows.sort_values("p50_running_speed_mph").head(LEADERBOARD_SIZE)
     ranked = ranked[LEADERBOARD_COLUMNS].assign(
-        p50_speed_mph=lambda df: df.p50_speed_mph.round(1),
+        p50_running_speed_mph=lambda df: df.p50_running_speed_mph.round(1),
         segment_length_m=lambda df: df.segment_length_m.round().astype(int),
-        p50_total_time_seconds=lambda df: df.p50_total_time_seconds.round().astype(int),
+        running_length_m=lambda df: df.running_length_m.round().astype(int),
+        p50_running_time_seconds=lambda df: df.p50_running_time_seconds.round().astype(int),
     )
     return json.loads(ranked.to_json(orient="records", double_precision=1))
 
@@ -81,7 +84,8 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
     on a map among thousands, and verified against real data, the low end is dominated by
     3-6-traversal noise up through that lower bar. A single day often can't clear this for
     every band -- some may come back sparse or empty -- but the weekly/monthly rollups pool
-    enough traversals to comfortably clear it.
+    enough traversals to comfortably clear it. Segments too short to have a running speed
+    (constants.MIN_RUNNING_SPEED_SEGMENT_M) are dropped too.
 
     Returns a dict keyed by time_band, e.g. {"am_peak": [...]}. When `aggregated` carries a
     `day_type` column (the weekly/monthly rollups from trends.py -- a single day is already
@@ -90,7 +94,9 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
     matching the "only columns actually present" convention pmtiles.py's TILE_PROPERTIES
     already follows for the same column.
     """
-    filtered = aggregated[aggregated.n_traversals >= LEADERBOARD_MIN_TRAVERSALS]
+    filtered = aggregated[
+        (aggregated.n_traversals >= LEADERBOARD_MIN_TRAVERSALS) & aggregated.p50_running_speed_mph.notna()
+    ]
 
     if "day_type" in filtered.columns:
         result = {

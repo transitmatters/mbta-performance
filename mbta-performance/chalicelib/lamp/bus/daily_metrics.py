@@ -28,7 +28,7 @@ import pandas as pd
 
 from ... import dynamo
 from .constants import DYNAMO_TABLE_NAME, HEADWAY_POINT_TYPES, HEADWAY_RATIO_BUCKETS, METERS_PER_MILE
-from .segments import assign_time_band
+from .segments import assign_time_band, has_observed_dwell
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +90,9 @@ def build_daily_route_metrics(traversals: pd.DataFrame, events: pd.DataFrame | N
 
 
 def _with_observed_dwell(traversals: pd.DataFrame) -> pd.DataFrame:
-    """Mark the traversals whose dwell at their first stop was actually observed.
-
-    Two kinds have their dwell forced to zero in segments.py: a trip's first stop, where the wait
-    is layover, and a stop LAMP didn't record, whose interpolated pass-through has no dwell.
-    Counting them would drag an average down, so they're left out of both the dwell total and
-    the stop count.
-    """
-    has_dwell = ~traversals.is_trip_start.eq(True) & ~traversals.from_interpolated.eq(True)
+    """Mark the traversals whose dwell at their first stop was actually observed
+    (segments.has_observed_dwell), which alone count toward the dwell total and the stop count."""
+    has_dwell = has_observed_dwell(traversals)
     return traversals.assign(
         has_observed_dwell=has_dwell,
         observed_dwell_seconds=traversals.dwell_seconds.where(has_dwell, 0.0),

@@ -19,7 +19,7 @@ def _traversal_and_segment(service_date: date, total_time: float) -> tuple[pd.Da
                 "service_date": service_date,
                 "depart_seconds": 8 * 3600,
                 "total_time_seconds": total_time,
-                "moving_time_seconds": total_time,
+                "running_time_seconds": total_time,
                 "dwell_seconds": 0.0,
                 "is_interpolated": False,
                 "is_trip_start": False,
@@ -146,12 +146,16 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
             ),
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
+            mock.patch.object(trends, "aggregate_dwells", return_value="dwells") as aggregate_dwells,
+            mock.patch.object(trends, "upload_weekly_dwell_pmtiles") as upload_dwells,
             mock.patch.object(trends, "upload_weekly_leaderboard") as upload_leaderboard,
         ):
             trends.generate_weekly_speed_segments(2026, 2)
 
         upload_segments.assert_not_called()
         upload_pmtiles.assert_not_called()
+        aggregate_dwells.assert_not_called()
+        upload_dwells.assert_not_called()
         upload_leaderboard.assert_not_called()
 
     def test_upload_and_pmtiles_flags_are_forwarded(self):
@@ -162,6 +166,8 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
             ),
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
+            mock.patch.object(trends, "aggregate_dwells", return_value="dwells") as aggregate_dwells,
+            mock.patch.object(trends, "upload_weekly_dwell_pmtiles") as upload_dwells,
             mock.patch.object(trends, "upload_weekly_leaderboard") as upload_leaderboard,
             mock.patch.object(trends, "build_leaderboard", return_value={"am_peak": []}) as build_leaderboard,
             mock.patch.object(trends, "add_shared_segments", return_value="with shared") as add_shared,
@@ -172,6 +178,10 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
         # The tiles get the pooled shared rows; the GeoParquet and leaderboard don't.
         add_shared.assert_called_once_with(mock.ANY, mock.ANY, trends.PERIOD_GROUP_COLUMNS)
         upload_pmtiles.assert_called_once_with("with shared", 2026, 2)
+        # Dwell points from the unpooled result: a pooled row isn't a route's stop.
+        aggregate_dwells.assert_called_once_with(mock.ANY, mock.ANY, trends.PERIOD_GROUP_COLUMNS)
+        self.assertIsInstance(aggregate_dwells.call_args[0][1], pd.DataFrame)
+        upload_dwells.assert_called_once_with("dwells", 2026, 2)
         self.assertIsInstance(upload_segments.call_args[0][0], pd.DataFrame)
         build_leaderboard.assert_called_once()
         self.assertIsInstance(build_leaderboard.call_args[0][0], pd.DataFrame)
@@ -206,6 +216,8 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
             ),
             mock.patch.object(trends, "upload_monthly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_monthly_pmtiles") as upload_pmtiles,
+            mock.patch.object(trends, "aggregate_dwells", return_value="dwells") as aggregate_dwells,
+            mock.patch.object(trends, "upload_monthly_dwell_pmtiles") as upload_dwells,
             mock.patch.object(trends, "upload_monthly_leaderboard") as upload_leaderboard,
             mock.patch.object(trends, "build_leaderboard", return_value={"am_peak": []}),
             mock.patch.object(trends, "add_shared_segments", return_value="with shared"),
@@ -214,6 +226,8 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
 
         upload_segments.assert_called_once_with(mock.ANY, 2026, 1)
         upload_pmtiles.assert_called_once_with("with shared", 2026, 1)
+        aggregate_dwells.assert_called_once_with(mock.ANY, mock.ANY, trends.PERIOD_GROUP_COLUMNS)
+        upload_dwells.assert_called_once_with("dwells", 2026, 1)
         upload_leaderboard.assert_called_once_with({"am_peak": []}, 2026, 1)
 
     def test_raises_for_a_month_with_no_available_dates_yet(self):

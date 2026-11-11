@@ -12,7 +12,7 @@ def _row(
     direction_id,
     from_stop,
     to_stop,
-    p50_speed_mph,
+    p50_running_speed_mph,
     n_traversals,
     n_interpolated=0,
     time_band="am_peak",
@@ -24,11 +24,12 @@ def _row(
         "from_stop_name": from_stop,
         "to_stop_name": to_stop,
         "time_band": time_band,
-        "p50_speed_mph": p50_speed_mph,
+        "p50_running_speed_mph": p50_running_speed_mph,
         "n_traversals": n_traversals,
         "n_interpolated": n_interpolated,
         "segment_length_m": 402.3,
-        "p50_total_time_seconds": 72.6,
+        "running_length_m": 312.3,
+        "p50_running_time_seconds": 56.6,
     }
     if day_type is not None:
         row["day_type"] = day_type
@@ -49,7 +50,7 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
 
         result = leaderboard.build_leaderboard(aggregated)
 
-        speeds = [entry["p50_speed_mph"] for entry in result["am_peak"]]
+        speeds = [entry["p50_running_speed_mph"] for entry in result["am_peak"]]
         self.assertEqual(speeds, sorted(speeds))
         self.assertEqual(speeds[0], 5.0)
 
@@ -107,13 +108,25 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
         self.assertIsInstance(entry["n_traversals"], int)
         self.assertIsInstance(entry["n_interpolated"], int)
         self.assertIsInstance(entry["direction_id"], int)
-        self.assertIsInstance(entry["p50_speed_mph"], float)
-        self.assertAlmostEqual(entry["p50_speed_mph"], 12.3, places=1)
+        self.assertIsInstance(entry["p50_running_speed_mph"], float)
+        self.assertAlmostEqual(entry["p50_running_speed_mph"], 12.3, places=1)
         # Rounded to whole metres/seconds rather than kept as float64.
         self.assertEqual(entry["segment_length_m"], 402)
-        self.assertEqual(entry["p50_total_time_seconds"], 73)
+        self.assertEqual(entry["running_length_m"], 312)
+        self.assertEqual(entry["p50_running_time_seconds"], 57)
         self.assertIsInstance(entry["segment_length_m"], int)
-        self.assertIsInstance(entry["p50_total_time_seconds"], int)
+        self.assertIsInstance(entry["running_length_m"], int)
+        self.assertIsInstance(entry["p50_running_time_seconds"], int)
+
+    def test_drops_segments_too_short_for_a_running_speed(self):
+        short = {**_row("1", 0, "B", "C", None, 25), "running_length_m": None}
+        aggregated = pd.DataFrame([_row("1", 0, "A", "B", 12.0, 25), short]).astype(
+            {"p50_running_speed_mph": float, "running_length_m": float}
+        )
+
+        result = leaderboard.build_leaderboard(aggregated)
+
+        self.assertEqual([entry["from_stop_name"] for entry in result["am_peak"]], ["A"])
 
     def test_geometry_and_percentile_columns_are_not_exposed(self):
         aggregated = pd.DataFrame(
@@ -121,8 +134,9 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
                 {
                     **_row("1", 0, "A", "B", 10.0, 25),
                     "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
-                    "p90_speed_mph": 4.0,
-                    "moving_speed_mph": 15.0,
+                    "p90_running_speed_mph": 4.0,
+                    "p50_speed_mph": 8.0,
+                    "p50_total_time_seconds": 90.0,
                     "median_dwell_seconds": 12.0,
                 }
             ]
@@ -147,8 +161,8 @@ class TestBuildLeaderboardWithDayType(unittest.TestCase):
         result = leaderboard.build_leaderboard(aggregated)
 
         self.assertEqual(set(result.keys()), {"business_day", "weekend_or_holiday"})
-        self.assertEqual(result["business_day"]["am_peak"][0]["p50_speed_mph"], 20.0)
-        self.assertEqual(result["weekend_or_holiday"]["am_peak"][0]["p50_speed_mph"], 5.0)
+        self.assertEqual(result["business_day"]["am_peak"][0]["p50_running_speed_mph"], 20.0)
+        self.assertEqual(result["weekend_or_holiday"]["am_peak"][0]["p50_running_speed_mph"], 5.0)
 
 
 def _aggregated(day_types: list[str] | None = None) -> pd.DataFrame:
@@ -164,7 +178,7 @@ def _aggregated(day_types: list[str] | None = None) -> pd.DataFrame:
                 "service_date": date(2026, 9, 3),
                 "depart_seconds": depart_hour * 3600,
                 "total_time_seconds": total_time,
-                "moving_time_seconds": total_time,
+                "running_time_seconds": total_time,
                 "dwell_seconds": 0.0,
                 "is_interpolated": False,
                 "is_trip_start": False,

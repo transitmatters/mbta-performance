@@ -30,14 +30,17 @@ import pandas as pd
 from ...date import get_current_service_date
 from .constants import S3_BUCKET
 from .day_type import day_type_for
+from .dwells import aggregate_dwells
 from .geoparquet import write_geoparquet
 from .ingest import build_traversals_for_date
 from .leaderboard import build_leaderboard
 from .periods import dates_in_range, month_key_for, month_range, week_key_for, week_range
 from .s3_writer import (
+    upload_monthly_dwell_pmtiles,
     upload_monthly_leaderboard,
     upload_monthly_pmtiles,
     upload_monthly_speed_segments,
+    upload_weekly_dwell_pmtiles,
     upload_weekly_leaderboard,
     upload_weekly_pmtiles,
     upload_weekly_speed_segments,
@@ -58,7 +61,7 @@ def _build_period_result(service_dates: list[date]) -> tuple[pd.DataFrame, pd.Da
     band) table.
 
     Returns (that table, the traversals it was built from), the latter for
-    shared_segments.add_shared_segments.
+    shared_segments.add_shared_segments and dwells.aggregate_dwells.
 
     Dates with no usable data (a gap in LAMP's export, an unparseable feed) are logged and
     skipped rather than failing the whole period, matching how backfill.py treats a bad date.
@@ -127,6 +130,7 @@ def generate_weekly_speed_segments(
         upload_weekly_speed_segments(result, year, week)
     if write_pmtiles:
         upload_weekly_pmtiles(add_shared_segments(result, traversals, PERIOD_GROUP_COLUMNS), year, week)
+        upload_weekly_dwell_pmtiles(aggregate_dwells(traversals, result, PERIOD_GROUP_COLUMNS), year, week)
     if write_leaderboard:
         upload_weekly_leaderboard(build_leaderboard(result), year, week)
     return result
@@ -160,6 +164,7 @@ def generate_monthly_speed_segments(
         upload_monthly_speed_segments(result, year, month)
     if write_pmtiles:
         upload_monthly_pmtiles(add_shared_segments(result, traversals, PERIOD_GROUP_COLUMNS), year, month)
+        upload_monthly_dwell_pmtiles(aggregate_dwells(traversals, result, PERIOD_GROUP_COLUMNS), year, month)
     if write_leaderboard:
         upload_monthly_leaderboard(build_leaderboard(result), year, month)
     return result

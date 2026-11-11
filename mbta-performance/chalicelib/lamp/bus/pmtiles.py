@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import geopandas as gpd
+
 from .constants import ALL_DAY_BAND
 from .geoparquet import _to_geodataframe
 
@@ -48,10 +50,14 @@ MAXIMUM_ZOOM = 16
 # The speed range (p10_speed_mph and p90_speed_mph) takes that densest tile to 771KB, and a week's
 # zoom 10 from 600KB to 729KB, as more of a longer period's rows have the trips for one. The same
 # 7% or so of room again.
+#
+# Dwell and from_stop_id have since moved to the dwell layer, which hands back their 13-14%, while
+# running_length_m adds a little. Left at 825KB until it's been measured on real archives.
 MAXIMUM_TILE_BYTES = 825_000
 
-# Median dwells pile up around 5.5s and 11s, which looks like the spacing of the vehicle positions
-# behind LAMP's stop times, so a dwell is no better than this. Rounding to it rather than to the
+# Dwell points (build_dwell_pmtiles_bytes) round to this. Median dwells pile up around 5.5s and
+# 11s, which looks like the spacing of the vehicle positions behind LAMP's stop times, so a dwell
+# is no better than this. Rounding to it rather than to the
 # second also takes 1-3 points off what the column adds to an archive.
 DWELL_ROUNDING_SECONDS = 5
 
@@ -62,10 +68,15 @@ SPEED_RANGE_MINIMUM_TRAVERSALS = 10
 
 # What modules/busspeedmap/types.ts's BusSpeedSegmentProperties reads off a tile feature.
 # Selected explicitly, rather than handing tippecanoe the full GeoParquet schema, so a column
-# like moving_speed_mph can never end up on the map by accident. That one would mislead: LAMP's
-# stop times leave the moving clock about 86m short of each segment, going by where it hits zero,
-# so on 2026-10-28 segments of 100-150m read a median 41 mph, 63% of them over 35 mph, and 30% of
-# the segments under 5 mph read over 25 mph.
+# can never end up on the map by accident.
+#
+# The speeds are running speeds: departure from the first stop to arrival at the next, over the
+# segment less constants.STOP_ZONE_M (see segments.build_traversals). The time buses spend at a
+# stop goes on the dwell layer instead (DWELL_TILE_PROPERTIES). They're named running_ rather
+# than reusing p50_speed_mph, which tiles built before this change carry for arrival to arrival,
+# so a map reading old and new archives can't mix the two clocks without knowing. A segment
+# shorter than constants.MIN_RUNNING_SPEED_SEGMENT_M has no running speed at all, which
+# tippecanoe leaves off the feature, and the map draws as no data.
 #
 # day_type (business_day / weekend_or_holiday, see day_type.py) is only present on the
 # weekly/monthly trend rollups in trends.py -- a single day's file is already wholly one or
@@ -73,44 +84,61 @@ SPEED_RANGE_MINIMUM_TRAVERSALS = 10
 # columns actually present in a given frame reach tippecanoe (see build_pmtiles_bytes), so
 # this is a no-op for daily and picks the column up automatically for trends.
 #
-# segment_length_m and p50_total_time_seconds are the two numbers p50_speed_mph is computed
-# from, shown in the map's hover popup as the segment's distance and median travel time.
+# running_length_m and p50_running_time_seconds are the two numbers p50_running_speed_mph is
+# computed from, shown in the map's hover popup; segment_length_m is the whole segment.
 #
 # shared_routes marks the rows on a stop pair several routes share, so the map can draw the
 # pooled row in their place (see shared_segments.py). Null everywhere else, which tippecanoe
 # leaves off the feature entirely.
 #
-# median_dwell_seconds is how long buses stood at the segment's first stop, which p50_speed_mph
-# already counts, shown in the hover popups for the segment and for the stop. from_stop_id is
-# how the map finds a stop's segments for that second popup; the name won't do, since a name can
-# cover both sides of a street, or stops miles apart (Massachusetts Ave @ Albany St is both).
-#
-# p10_speed_mph and p90_speed_mph are the fastest and slowest tenth of trips, on the arrival to
-# arrival clock p50_speed_mph uses, for the range around it in the hover popup. That tells a
-# section that's always slow from one a few trips hold up, and, where even the fastest trips are
-# slow, says it's the street rather than the traffic. Each is left off a row with too few trips.
+# p10_running_speed_mph and p90_running_speed_mph are the fastest and slowest tenth of trips,
+# for the range around the median in the hover popup. That tells a section that's always slow
+# from one a few trips hold up, and, where even the fastest trips are slow, says it's the street
+# rather than the traffic. Each is left off a row with too few trips.
 #
 # terminal_section marks the first and last segments of most trips (see
 # segments._with_terminal_sections), which the map dashes.
 TILE_PROPERTIES = [
     "route_id",
     "direction_id",
-    "from_stop_id",
     "from_stop_name",
     "to_stop_name",
     "time_band",
     "day_type",
-    "p50_speed_mph",
+    "p50_running_speed_mph",
     "n_traversals",
     "n_interpolated",
     "segment_length_m",
-    "p50_total_time_seconds",
-    "median_dwell_seconds",
-    "p10_speed_mph",
-    "p90_speed_mph",
+    "running_length_m",
+    "p50_running_time_seconds",
+    "p10_running_speed_mph",
+    "p90_running_speed_mph",
     "terminal_section",
     "shared_routes",
 ]
+
+# The dwell points (dwells.py): one per (route, direction, stop, [day_type,] time band), in a
+# layer of their own so the map can style them apart from the segments. stop_id is how the map
+# matches a point to the reference layer's stop, since names can't: one can cover both sides of a
+# street, or stops miles apart (Massachusetts Ave @ Albany St is both).
+DWELL_LAYER_NAME = "dwells"
+DWELL_TILE_PROPERTIES = [
+    "route_id",
+    "direction_id",
+    "stop_id",
+    "stop_name",
+    "time_band",
+    "day_type",
+    "n_dwells",
+    "median_dwell_seconds",
+    "p90_dwell_seconds",
+]
+
+# Dwell points start where the reference layer's bus stops do (reference_tiles.BUS_STOP_MINIMUM_ZOOM):
+# a dot per stop is clutter any further out. Points gain nothing from deeper tiles either, as
+# MapLibre overzooms the last level.
+DWELL_MINIMUM_ZOOM = 11
+DWELL_MAXIMUM_ZOOM = 14
 
 
 def _require_tippecanoe() -> None:
@@ -122,7 +150,15 @@ def _require_tippecanoe() -> None:
         )
 
 
-def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
+def _run_tippecanoe(
+    geojson_path: Path,
+    output_path: Path,
+    layer: str = LAYER_NAME,
+    name: str = "Bus Speed Segments",
+    minimum_zoom: int = MINIMUM_ZOOM,
+    maximum_zoom: int = MAXIMUM_ZOOM,
+    extra_options: tuple[str, ...] = (),
+) -> None:
     command = [
         TIPPECANOE_BINARY,
         "--force",
@@ -130,13 +166,13 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
         "--output",
         str(output_path),
         "--layer",
-        LAYER_NAME,
+        layer,
         "--name",
-        "Bus Speed Segments",
+        name,
         "--minimum-zoom",
-        str(MINIMUM_ZOOM),
+        str(minimum_zoom),
         "--maximum-zoom",
-        str(MAXIMUM_ZOOM),
+        str(maximum_zoom),
         # Geometry is repeated per time band and direction (see the bus README), so a dense
         # area like downtown Boston has many overlapping near-duplicate lines -- enough to
         # blow past the tile size limit (MAXIMUM_TILE_BYTES) and fail outright without this.
@@ -150,6 +186,7 @@ def _run_tippecanoe(geojson_path: Path, output_path: Path) -> None:
         "--extend-zooms-if-still-dropping",
         "--maximum-tile-bytes",
         str(MAXIMUM_TILE_BYTES),
+        *extra_options,
         str(geojson_path),
     ]
     logger.info(f"Running tippecanoe on {geojson_path} -> {output_path}")
@@ -179,43 +216,77 @@ def _round_range_speed(speed, n_traversals):
     return rounded.where(n_traversals >= SPEED_RANGE_MINIMUM_TRAVERSALS)
 
 
+def _round_dwell(seconds):
+    return (seconds / DWELL_ROUNDING_SECONDS).round().astype(int) * DWELL_ROUNDING_SECONDS
+
+
 def _round_for_tiles(frame):
     """Round to what the dashboard shows: speed to 0.1 mph, length and time to whole metres and
-    seconds, as leaderboard.py does, dwell to DWELL_ROUNDING_SECONDS, and the speed range to
-    _round_range_speed.
+    seconds, as leaderboard.py does, and the speed range to _round_range_speed.
 
     Full-precision floats make nearly every value in a tile unique, and each one a full 8-byte
     double. Measured on 2026-10-28's band archive (11.4MB before length and time were added):
     they'd add 24% as floats and 10% as integers, while rounding speed saves 12%, so with both
     the archive comes out 5% smaller than before.
+
+    running_length_m stays a float, since it's null on a short segment, but a whole one.
     """
     return frame.assign(
-        p50_speed_mph=frame.p50_speed_mph.round(1),
+        p50_running_speed_mph=frame.p50_running_speed_mph.round(1),
         segment_length_m=frame.segment_length_m.round().astype(int),
-        p50_total_time_seconds=frame.p50_total_time_seconds.round().astype(int),
-        median_dwell_seconds=(frame.median_dwell_seconds / DWELL_ROUNDING_SECONDS).round().astype(int)
-        * DWELL_ROUNDING_SECONDS,
-        p10_speed_mph=_round_range_speed(frame.p10_speed_mph, frame.n_traversals),
-        p90_speed_mph=_round_range_speed(frame.p90_speed_mph, frame.n_traversals),
+        running_length_m=frame.running_length_m.round(),
+        p50_running_time_seconds=frame.p50_running_time_seconds.round().astype(int),
+        p10_running_speed_mph=_round_range_speed(frame.p10_running_speed_mph, frame.n_traversals),
+        p90_running_speed_mph=_round_range_speed(frame.p90_running_speed_mph, frame.n_traversals),
     )
+
+
+def _tile(geo_frame, **tippecanoe_options) -> bytes:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        geojson_path = Path(tmp_dir) / "features.geojsons"
+        pmtiles_path = Path(tmp_dir) / "features.pmtiles"
+        geo_frame.to_file(geojson_path, driver="GeoJSONSeq")
+        _run_tippecanoe(geojson_path, pmtiles_path, **tippecanoe_options)
+        return pmtiles_path.read_bytes()
 
 
 def build_pmtiles_bytes(frame, coordinates_column: str = "coordinates") -> bytes:
     """Serialise a DataFrame with a coordinate-list column to a PMTiles tileset, in memory.
 
     Only `TILE_PROPERTIES` (plus geometry) reach tippecanoe -- everything else in `frame`
-    (the moving-speed columns, say) is dropped first.
+    (the arrival-to-arrival and dwell columns, say) is dropped first.
     """
     _require_tippecanoe()
     columns = [coordinates_column] + [column for column in TILE_PROPERTIES if column in frame.columns]
-    geo_frame = _to_geodataframe(_round_for_tiles(frame[columns]), coordinates_column)
+    return _tile(_to_geodataframe(_round_for_tiles(frame[columns]), coordinates_column))
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        geojson_path = Path(tmp_dir) / "segments.geojsons"
-        pmtiles_path = Path(tmp_dir) / "segments.pmtiles"
-        geo_frame.to_file(geojson_path, driver="GeoJSONSeq")
-        _run_tippecanoe(geojson_path, pmtiles_path)
-        return pmtiles_path.read_bytes()
+
+def build_dwell_pmtiles_bytes(frame, coordinates_column: str = "coordinates") -> bytes:
+    """Serialise dwells.aggregate_dwells' output, one point per row, to a PMTiles tileset.
+
+    Only `DWELL_TILE_PROPERTIES` (plus geometry) reach tippecanoe. Dwell is rounded to
+    DWELL_ROUNDING_SECONDS.
+    """
+    _require_tippecanoe()
+    columns = [column for column in DWELL_TILE_PROPERTIES if column in frame.columns]
+    rounded = frame[columns].assign(
+        median_dwell_seconds=_round_dwell(frame.median_dwell_seconds),
+        p90_dwell_seconds=_round_dwell(frame.p90_dwell_seconds),
+    )
+    geometry = gpd.points_from_xy(
+        [point[0] for point in frame[coordinates_column]], [point[1] for point in frame[coordinates_column]]
+    )
+    return _tile(
+        gpd.GeoDataFrame(rounded, geometry=geometry, crs="EPSG:4326"),
+        layer=DWELL_LAYER_NAME,
+        name="Bus Stop Dwells",
+        minimum_zoom=DWELL_MINIMUM_ZOOM,
+        maximum_zoom=DWELL_MAXIMUM_ZOOM,
+        # tippecanoe thins points out below the maximum zoom by default, which left a day's zoom 11
+        # with 3.5k of 54k band points. Every stop is kept instead, as reference_tiles.py keeps
+        # its bus stops; --drop-densest-as-needed is still there should a tile overflow.
+        extra_options=("--drop-rate", "1"),
+    )
 
 
 def write_pmtiles(frame, path: str, coordinates_column: str = "coordinates") -> str:
