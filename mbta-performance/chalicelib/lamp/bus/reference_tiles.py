@@ -210,7 +210,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--date", type=date.fromisoformat, help="Use the GTFS feed active on this date (YYYY-MM-DD), default yesterday"
     )
-    parser.add_argument("--out", default="stops.pmtiles", help="Output PMTiles path")
+    # No default, as in ingest.py: the image's working directory isn't writable.
+    parser.add_argument("--out", help="Also write the PMTiles to this path")
     parser.add_argument(
         "--upload", action="store_true", help=f"Also publish to s3://{S3_BUCKET}/{REFERENCE_PMTILES_KEY}"
     )
