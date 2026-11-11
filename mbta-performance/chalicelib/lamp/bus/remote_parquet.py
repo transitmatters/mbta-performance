@@ -1,8 +1,8 @@
 """Read a single service date out of a remote parquet file using HTTP range requests.
 
 The LAMP bus exports are large (LAMP_ALL_Bus_Events is ~6.8GB) but are partitioned with
-one row group per service_date. Reading the footer and then a single row group pulls
-roughly 35MB for a day, rather than the whole file.
+one row group per service_date. Reading the footer and then only the row groups covering a
+date (one, in practice) pulls roughly 35MB for a day, rather than the whole file.
 """
 
 import io
@@ -94,20 +94,31 @@ class HttpRangeFile(io.RawIOBase):
         return response.content
 
 
-def _row_group_for_date(parquet_file: pq.ParquetFile, column: str, service_date: date) -> int | None:
-    """Find the row group whose statistics cover only `service_date`."""
+def _row_groups_for_date(parquet_file: pq.ParquetFile, column: str, service_date: date) -> list[int]:
+    """Every row group whose statistics cover `service_date`.
+
+    LAMP writes one group per date today, but if it ever splits a day across two, stopping at
+    the first would silently return only part of the day.
+    """
     metadata = parquet_file.metadata
     column_index = parquet_file.schema_arrow.get_field_index(column)
     if column_index < 0:
         raise ValueError(f"{column} not present in remote parquet schema")
 
+    groups = []
+    without_statistics = 0
     for group in range(metadata.num_row_groups):
         statistics = metadata.row_group(group).column(column_index).statistics
-        if statistics is None:
+        # Reading every group we can't rule out could mean the whole 6.8GB file, so these are
+        # skipped, but not silently.
+        if statistics is None or not statistics.has_min_max:
+            without_statistics += 1
             continue
         if statistics.min <= service_date <= statistics.max:
-            return group
-    return None
+            groups.append(group)
+    if without_statistics:
+        logger.warning(f"Skipped {without_statistics} row groups with no {column} statistics, which may hold more rows")
+    return groups
 
 
 def read_service_date(url: str, service_date: date, columns: list[str]) -> pd.DataFrame:
@@ -136,12 +147,12 @@ def _read_service_date_once(url: str, service_date: date, columns: list[str]) ->
     logger.info(f"Opening remote parquet {url}")
     parquet_file = pq.ParquetFile(HttpRangeFile(url))
 
-    group = _row_group_for_date(parquet_file, "service_date", service_date)
-    if group is None:
+    groups = _row_groups_for_date(parquet_file, "service_date", service_date)
+    if not groups:
         raise ServiceDateNotFoundError(f"{url} has no row group covering service date {service_date}")
 
-    logger.info(f"Reading row group {group} for {service_date} ({len(columns)} columns)")
-    table = parquet_file.read_row_group(group, columns=columns)
+    logger.info(f"Reading row groups {groups} for {service_date} ({len(columns)} columns)")
+    table = parquet_file.read_row_groups(groups, columns=columns)
     frame = table.to_pandas()
 
     # A row group's statistics are a range; when a file is not perfectly one-day-per-group
