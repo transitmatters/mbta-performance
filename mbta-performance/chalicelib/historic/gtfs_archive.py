@@ -170,10 +170,13 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         gtfs_stops = all_stops.merge(trip_info, on="trip_id", how="right")
         gtfs_stops["trunk_route_id"] = trunk_route_id(gtfs_stops.route_id)
 
-        # calculate gtfs headways
+        # calculate gtfs headways. Two branches can be scheduled at a shared stop at the same second, so
+        # count each time once; otherwise the tied row gets a 0s headway, and the backward merge_asof
+        # below gives that 0 to every event until the next scheduled arrival
         gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
-        headways = gtfs_stops.groupby(TRUNK_DIR_STOP).arrival_time.diff()
-        gtfs_stops["scheduled_headway"] = headways.dt.seconds
+        scheduled_arrivals = gtfs_stops[TRUNK_DIR_STOP + ["arrival_time"]].dropna().drop_duplicates()
+        headways = scheduled_arrivals.groupby(TRUNK_DIR_STOP).arrival_time.diff()
+        scheduled_arrivals = scheduled_arrivals.assign(scheduled_headway=headways.dt.seconds)
 
         # calculate gtfs traveltimes
         trip_start_times = gtfs_stops.groupby("trip_id").arrival_time.transform("min")
@@ -201,7 +204,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
         final = pd.merge_asof(
             days_events_clean.sort_values(by="arrival_time"),
-            gtfs_stops_clean[TRUNK_DIR_STOP + ["arrival_time", "scheduled_headway"]],
+            scheduled_arrivals,
             on="arrival_time",
             direction="backward",
             by=TRUNK_DIR_STOP,
