@@ -3,7 +3,7 @@ from datetime import date
 
 from ..constants import ARCGIS_IDS, HISTORIC_COLUMNS_LAMP, HISTORIC_COLUMNS_PRE_LAMP
 from ..download import download_historic_data, list_files_in_dir, prep_local_dir, unzip_historic_data
-from ..process import process_events
+from ..process import process_events, whole_months
 from ..upload import upload_monthly_outputs
 from .ferry import parse_date
 
@@ -36,7 +36,9 @@ def backfill_all_years():
 
 
 def backfill_date_range(start_date: date, end_date: date):
-    """Backfill only data within [start_date, end_date], spanning whichever years are needed."""
+    """Backfill the whole months covering [start_date, end_date], spanning whichever years are needed."""
+    start_date, end_date = whole_months(start_date, end_date)
+    print(f"Backfilling whole months from {start_date} to {end_date}")
     prep_local_dir()
 
     for year in range(start_date.year, end_date.year + 1):
@@ -65,8 +67,12 @@ if __name__ == "__main__":
         choices=list(ARCGIS_IDS.keys()),
         help="Year to backfill (repeatable). The monthly update is usually just the current year.",
     )
-    parser.add_argument("--start-date", type=parse_date, help="Only process service dates on/after this (YYYY-MM-DD).")
-    parser.add_argument("--end-date", type=parse_date, help="Only process service dates on/before this (YYYY-MM-DD).")
+    parser.add_argument(
+        "--start-date", type=parse_date, help="First month to process (YYYY-MM-DD; the whole month is processed)."
+    )
+    parser.add_argument(
+        "--end-date", type=parse_date, help="Last month to process (YYYY-MM-DD; the whole month is processed)."
+    )
     parser.add_argument("--upload", action="store_true", help="Upload changed outputs for the processed range to S3.")
     args = parser.parse_args()
 

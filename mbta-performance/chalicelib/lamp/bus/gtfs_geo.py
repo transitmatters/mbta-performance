@@ -98,9 +98,13 @@ def load_gtfs_slice(service_date: date) -> dict[str, pd.DataFrame]:
         "shapes", service_date, ["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"]
     )
 
-    # A feed can carry more than one row per stop_id across overlapping validity windows.
+    # A feed can carry more than one row per stop_id across overlapping validity windows. A
+    # doubled stop_time would double its pattern's stop positions, and so every event on it, and
+    # its trips would start on a copy of their first stop, charging the layover to the first
+    # segment. None were doubled on 2026-11-08 or 2026-11-10.
     stops = stops.drop_duplicates("stop_id")
     trips = trips.drop_duplicates("trip_id")
+    stop_times = stop_times.drop_duplicates(["trip_id", "stop_sequence"])
     shapes = shapes.drop_duplicates(["shape_id", "shape_pt_sequence"]).sort_values(["shape_id", "shape_pt_sequence"])
 
     logger.info(

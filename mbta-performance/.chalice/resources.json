@@ -83,6 +83,26 @@
         }
       }
     },
+    "RegenerateTmBenchmarks": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Description": "Regenerates TransitMatters travel-time benchmarks for rapid transit, once a month",
+        "Environment": {
+          "Variables": {
+            "DD_LAMBDA_HANDLER": "app.regenerate_tm_benchmarks",
+            "DD_API_KEY": {
+              "Ref": "DDApiKey"
+            },
+            "DD_VERSION": {
+              "Ref": "GitVersion"
+            },
+            "DD_TAGS": {
+              "Ref": "DDTags"
+            }
+          }
+        }
+      }
+    },
     "ProcessLampAlerts": {
       "Type": "AWS::Serverless::Function",
       "Properties": {

@@ -20,8 +20,13 @@
     },
     {
       "Effect": "Allow",
-      "Action": "s3:*",
-      "Resource": ["arn:aws:s3:::tm-gtfs", "arn:aws:s3:::tm-gtfs/*"]
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::tm-gtfs"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::tm-gtfs/*"]
     },
     {
       "Effect": "Allow",

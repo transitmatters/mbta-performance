@@ -17,6 +17,10 @@ event_time) differently on the arm64 Lambda than on a laptop, so the same day pr
 different bytes depending on where it ran, which defeats skipping unchanged uploads.
 Switching re-blessed these goldens: 14 of 17,074 rows moved, no values changed.
 
+Finding a departure's stop among all of the trip's rows, not just those with an arrival
+(#141), re-blessed them again: one Green-D departure moved from 70205 to 70503, and four
+departures whose previous stop had no arrival were no longer dropped (17,078 rows).
+
 Regenerate with:
     REGENERATE_GOLDEN=1 uv run pytest mbta-performance/chalicelib/lamp/tests/test_parity.py
 """
