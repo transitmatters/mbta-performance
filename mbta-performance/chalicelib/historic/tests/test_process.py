@@ -90,6 +90,51 @@ class TestProcess(unittest.TestCase):
                 # Verify to_disk was still called
                 mock_to_disk.assert_called_once()
 
+    def test_whole_months(self):
+        """Date ranges widen to whole calendar months, since each output file holds one month."""
+        d = datetime.date
+        self.assertEqual(process.whole_months(d(2026, 8, 15), d(2026, 8, 20)), (d(2026, 8, 1), d(2026, 8, 31)))
+        self.assertEqual(process.whole_months(d(2024, 1, 31), d(2024, 2, 10)), (d(2024, 1, 1), d(2024, 2, 29)))
+        self.assertEqual(process.whole_months(d(2025, 11, 1), d(2025, 12, 31)), (d(2025, 11, 1), d(2025, 12, 31)))
+        self.assertEqual(process.whole_months(d(2023, 2, 3), None), (d(2023, 2, 1), None))
+        self.assertEqual(process.whole_months(None, d(2023, 2, 3)), (None, d(2023, 2, 28)))
+        self.assertEqual(process.whole_months(None, None), (None, None))
+
+    def test_process_events_mid_month_range_writes_whole_month(self):
+        """A mid-month range still writes the whole month, so uploading it can't replace S3's month with part of one."""
+        service_dates = ["2026-07-31", "2026-08-03", "2026-08-10", "2026-08-17", "2026-08-24", "2026-09-01"]
+        events = pd.DataFrame(
+            {
+                "service_date": service_dates,
+                "route_id": "Red",
+                "trip_id": [f"trip{i}" for i in range(len(service_dates))],
+                "direction_id": 0,
+                "stop_id": "70061",
+                "stop_sequence": 1,
+                "vehicle_id": "R-001",
+                "vehicle_label": "1801",
+                "event_type": "DEP",
+                "event_time_sec": 28800,
+            }
+        )
+        events.to_csv(self.test_csv, index=False)
+
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=lambda x: x):
+            process.process_events(
+                str(self.test_csv),
+                self.temp_dir,
+                nozip=True,
+                start_date=datetime.date(2026, 8, 15),
+                end_date=datetime.date(2026, 8, 20),
+            )
+
+        stop_dir = pathlib.Path(self.temp_dir, "Events", "monthly-data", "70061", "Year=2026")
+        self.assertEqual(sorted(p.name for p in stop_dir.iterdir()), ["Month=8"])
+        written = pd.read_csv(stop_dir / "Month=8" / "events.csv.gz", compression=None)
+        self.assertEqual(
+            sorted(written["service_date"].str[:10]), ["2026-08-03", "2026-08-10", "2026-08-17", "2026-08-24"]
+        )
+
     def test_to_disk(self):
         """Test to_disk creates proper directory structure and files."""
         events_df = pd.DataFrame(
@@ -269,32 +314,21 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(deps["route_id"].tolist(), ["Boat-F1", "Boat-F2H"])
 
     def test_process_ferry_with_date_filtering(self):
-        """Test process_ferry with date range filtering."""
+        """process_ferry keeps the whole months covering the date range, and drops other months."""
+        days = ["2024-01-20", "2024-02-05", "2024-02-07", "2024-02-10", "2024-03-10"]
         ferry_data = pd.DataFrame(
             {
-                "service_date": [
-                    "2024-02-05 00:00:00+00:00",
-                    "2024-02-07 00:00:00+00:00",
-                    "2024-02-10 00:00:00+00:00",
-                ],
-                "route_id": ["F1", "F1", "F1"],
-                "trip_id": ["trip1", "trip2", "trip3"],
-                "travel_direction": ["To Boston", "To Boston", "To Boston"],
-                "departure_terminal": ["Hingham", "Hingham", "Hingham"],
-                "arrival_terminal": ["Boston", "Boston", "Boston"],
-                "mbta_sched_arrival": [
-                    "2024-02-05 08:00:00+00:00",
-                    "2024-02-07 08:00:00+00:00",
-                    "2024-02-10 08:00:00+00:00",
-                ],
-                "mbta_sched_departure": [
-                    "2024-02-05 07:45:00+00:00",
-                    "2024-02-07 07:45:00+00:00",
-                    "2024-02-10 07:45:00+00:00",
-                ],
-                "actual_arrival": ["2024-02-05 08:02:00", "2024-02-07 08:02:00", "2024-02-10 08:02:00"],
-                "actual_departure": ["2024-02-05 07:46:00", "2024-02-07 07:46:00", "2024-02-10 07:46:00"],
-                "vessel_time_slot": ["slot1", "slot1", "slot1"],
+                "service_date": [f"{day} 12:00:00+00:00" for day in days],
+                "route_id": "F1",
+                "trip_id": [f"trip{i}" for i in range(len(days))],
+                "travel_direction": "To Boston",
+                "departure_terminal": "Hingham",
+                "arrival_terminal": "Boston",
+                "mbta_sched_arrival": [f"{day} 13:00:00+00:00" for day in days],
+                "mbta_sched_departure": [f"{day} 12:45:00+00:00" for day in days],
+                "actual_arrival": [f"{day} 08:02:00" for day in days],
+                "actual_departure": [f"{day} 07:46:00" for day in days],
+                "vessel_time_slot": "slot1",
             }
         )
 
@@ -313,9 +347,9 @@ class TestProcess(unittest.TestCase):
                 # Get the dataframe
                 df = mock_to_disk.call_args[0][0]
 
-                # Should only have data from 2024-02-07 (within range)
-                # Multiply by 2 because each trip generates ARR and DEP events
-                self.assertEqual(len(df), 2)
+                # All of February, not just Feb 6-8: each trip generates an ARR and a DEP event
+                self.assertEqual(sorted(df["trip_id"].unique()), ["trip1", "trip2", "trip3"])
+                self.assertEqual(len(df), 6)
 
     def test_process_ferry_missing_trip_ids(self):
         """Test process_ferry generates UUIDs for missing trip_ids."""
@@ -576,10 +610,9 @@ class TestProcess(unittest.TestCase):
     def test_load_bus_data_pre_june_2024_z_suffix_treated_as_eastern(self):
         """Pre-June 2024 bus data with a Z suffix is treated as Eastern Time, not UTC.
 
-        Before June 2024 the MBTA labelled Eastern times with a Z suffix.
-        The loader detects this (service_date < 2024-06-01) and does NOT apply
-        a UTC→Eastern conversion, so the output time equals the wall-clock value
-        from the raw data.
+        Before June 2024 the MBTA labelled Eastern times with a Z suffix. One row is too few
+        for detection, so the loader falls back to BUS_SHIFTED_WINDOW, which starts at
+        2024-06-01, and takes no hours off: the output equals the raw wall-clock value.
         """
         bus_data = pd.DataFrame(
             {
@@ -606,7 +639,7 @@ class TestProcess(unittest.TestCase):
         result = process.load_bus_data(str(bus_csv))
 
         # Pre-June 2024: the "Z" is ignored as a UTC indicator.
-        # 08:06 stays as 08:06 on the service date (no UTC→Eastern shift).
+        # 08:06 stays as 08:06 on the service date (no 5-hour shift).
         expected_actual = datetime.datetime(2024, 1, 15, 8, 6, 0)
         self.assertEqual(result.iloc[0]["actual"], expected_actual)
 
@@ -737,8 +770,8 @@ class TestProcess(unittest.TestCase):
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2025, 1, 1)))
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2026, 1, 31)))
 
-    def test_load_bus_data_feb_2026_z_suffix_treated_as_eastern(self):
-        """Feb 2026+ bus data is Eastern wall-clock time again despite the Z suffix: no UTC shift."""
+    def test_load_bus_data_2026_z_suffix_treated_as_eastern(self):
+        """Bus data from 2025 on is Eastern wall-clock time again despite the Z suffix: no hours come off."""
         bus_data = pd.DataFrame(
             {
                 "service_date": ["2026-03-01"],

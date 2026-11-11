@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 # downloading and diffing schemas across dates -- don't move this earlier without re-checking.
 EARLIEST_BUS_LAMP_DATA = date(2025, 7, 30)
 
-# One events.csv per route-direction-stop per day, ~10,500 a day; S3 charges $0.005 per 1,000 PUTs.
-# Listing what's already there costs ~5,000 LISTs (~$0.03) and holds ~5M keys in memory (about 1 GB).
-FILES_PER_DAY = 10_500
+# One events.csv per route checkpoint per day: since #101 only checkpoint stops are written, which
+# came to 2,276-2,282 on weekdays in November 2026 (~1,500-1,750 on weekends). S3 charges $0.005 per
+# 1,000 PUTs. Listing what's already there costs ~5,000 LISTs (~$0.03) and holds ~5M keys in memory
+# (about 1 GB): files from before #101, ~10,500 a day at every stop, are still in S3.
+FILES_PER_DAY = 2_300
 PUT_COST_PER_1000 = 0.005
 S3_PREFIX = BUS_S3_KEY_TEMPLATE.split("{route_id}")[0]
 

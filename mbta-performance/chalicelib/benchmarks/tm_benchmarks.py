@@ -14,7 +14,7 @@ of travel time (departure from origin -> arrival at destination), which
 includes dwells at all intermediate stops but not at the endpoints.
 
 The TM benchmark for a pair is the median of those per-day cumulative sums,
-rounded up to the nearest 15s.
+rounded up to the nearest 30s (ROUND_UP_TO_SECONDS).
 
 Output: s3://tm-mbta-performance/Benchmarks-tm/traveltimes/{Color}.json as
 `{"color": "...", "benchmarks": {"{from}|{to}": seconds}}`.
@@ -84,7 +84,7 @@ def _load_p50(key: str) -> pd.Series:
     return pd.Series(df["50%"].values, index=df["service_date"].values, dtype="float64")
 
 
-def _ceil_to_15s(seconds: float) -> int:
+def _round_up_seconds(seconds: float) -> int:
     return int(math.ceil(seconds / ROUND_UP_TO_SECONDS) * ROUND_UP_TO_SECONDS)
 
 
@@ -95,7 +95,7 @@ def _benchmark_from_series(cumulative: pd.Series) -> int | None:
     median = float(cumulative.median())
     if not math.isfinite(median) or median <= 0:
         return None
-    return _ceil_to_15s(median)
+    return _round_up_seconds(median)
 
 
 def _expand_downstream(
@@ -217,13 +217,24 @@ def _upload_benchmarks(color: str, benchmarks: dict[str, int]) -> None:
 
 
 def generate_travel_time_benchmarks(colors: tuple[str, ...] = RAPID_TRANSIT_COLORS) -> None:
-    """Regenerate TransitMatters travel-time benchmarks for all rapid-transit lines."""
+    """Regenerate TransitMatters travel-time benchmarks for all rapid-transit lines.
+
+    Every color is attempted even if an earlier one fails, so one bad line doesn't
+    leave the rest stale. If any color failed, this raises afterwards so the Lambda
+    invocation errors instead of reporting success.
+    """
     logger.info(f"Generating TM travel-time benchmarks for colors: {colors}")
+    failed: list[str] = []
     for color in colors:
         try:
             generate_travel_time_benchmarks_for_color(color)
         except Exception as e:
             logger.exception(f"Failed to generate benchmarks for {color}: {e}")
+            failed.append(color)
+    if failed:
+        raise RuntimeError(
+            f"Failed to generate TM benchmarks for {len(failed)} of {len(colors)} colors: {', '.join(failed)}"
+        )
 
 
 if __name__ == "__main__":

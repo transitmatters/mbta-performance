@@ -1,12 +1,14 @@
 import argparse
 from datetime import datetime
-from ..process import process_ferry
+from ..process import process_ferry, whole_months
 from ..arcgis import download_latest_ferry_data, ferry_update_cache
 from ..upload import upload_monthly_outputs
 
 
 def backfill_ferry_data(start_date=None, end_date=None):
     print("Processing Ferry Data")
+    # Each output file is a whole month, so process whole months
+    start_date, end_date = whole_months(start_date, end_date)
     if start_date:
         print(f"Start date: {start_date}")
     if end_date:
@@ -33,12 +35,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start-date",
         type=parse_date,
-        help="Start date for processing (YYYY-MM-DD format). If not specified, all dates are processed.",
+        help="First month to process (YYYY-MM-DD; the whole month is processed). Default: all dates.",
     )
     parser.add_argument(
         "--end-date",
         type=parse_date,
-        help="End date for processing (YYYY-MM-DD format). If not specified, all dates are processed.",
+        help="Last month to process (YYYY-MM-DD; the whole month is processed). Default: all dates.",
     )
     parser.add_argument("--upload", action="store_true", help="Upload changed outputs for the processed range to S3.")
 

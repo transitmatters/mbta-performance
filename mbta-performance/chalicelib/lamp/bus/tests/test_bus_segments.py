@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -68,6 +69,42 @@ class TestCutSegment(unittest.TestCase):
         line = LineString([(0.0, 0.0), (0.0, 0.0)])
 
         self.assertIsNone(gtfs_geo.cut_segment(line, 0.0, 10.0))
+
+
+class TestLoadGtfsSlice(unittest.TestCase):
+    def test_drops_a_stop_time_that_overlapping_feeds_both_carry(self):
+        frames = {
+            "trips": pd.DataFrame(
+                {
+                    "trip_id": ["t1"],
+                    "route_id": ["1"],
+                    "direction_id": [0],
+                    "shape_id": ["sh"],
+                    "route_pattern_id": ["1-0"],
+                }
+            ),
+            "stop_times": pd.DataFrame(
+                {"trip_id": ["t1"] * 4, "stop_id": ["s1", "s2", "s1", "s2"], "stop_sequence": [1, 2, 1, 2]}
+            ),
+            "stops": pd.DataFrame(
+                {"stop_id": ["s1", "s2"], "stop_name": ["A", "B"], "stop_lat": [42.0, 42.1], "stop_lon": [-71.0, -71.1]}
+            ),
+            "shapes": pd.DataFrame(
+                {
+                    "shape_id": ["sh"] * 2,
+                    "shape_pt_lat": [42.0, 42.1],
+                    "shape_pt_lon": [-71.0, -71.1],
+                    "shape_pt_sequence": [1, 2],
+                }
+            ),
+        }
+
+        with mock.patch.object(
+            gtfs_geo, "read_gtfs_archive_file", side_effect=lambda filename, *_: frames[filename].copy()
+        ):
+            stop_times = gtfs_geo.load_gtfs_slice(date(2026, 11, 10))["stop_times"]
+
+        self.assertEqual(stop_times[["stop_id", "stop_sequence"]].values.tolist(), [["s1", 1], ["s2", 2]])
 
 
 def _events(rows: list[dict]) -> pd.DataFrame:
@@ -184,6 +221,33 @@ class TestInterpolation(unittest.TestCase):
 
         self.assertFalse(result.is_interpolated.any())
 
+    def _gap(self, trip_id: str | None, tm_pullout_id: str | None) -> pd.DataFrame:
+        """A trip with an interior gap at stop 2, as in the first test."""
+        return _events(
+            [
+                {
+                    "trip_id": trip_id,
+                    "tm_pullout_id": tm_pullout_id,
+                    "stop_sequence": sequence,
+                    "shape_distance_m": distance,
+                    "stop_arrival_seconds": arrival,
+                    "stop_departure_seconds": arrival,
+                }
+                for sequence, distance, arrival in [(1, 0.0, 100.0), (2, 300.0, np.nan), (3, 400.0, 200.0)]
+            ]
+        )
+
+    def test_interpolates_a_trip_with_no_pullout(self):
+        result = segments.interpolate_missing_times(self._gap("t1", None))
+
+        self.assertTrue(bool(result[result.stop_sequence == 2].iloc[0].is_interpolated))
+
+    def test_does_not_interpolate_across_rows_with_no_trip_id(self):
+        # They group together, but they aren't one trip.
+        result = segments.interpolate_missing_times(self._gap(None, "pullout"))
+
+        self.assertFalse(result.is_interpolated.any())
+
 
 class TestTraversals(unittest.TestCase):
     def _trip(self, trip_id: str, times: list[tuple[float, float]]) -> list[dict]:
@@ -263,6 +327,121 @@ class TestTraversals(unittest.TestCase):
 
         self.assertEqual(len(traversals), 0)
 
+    def test_a_traversal_with_no_time_arrival_to_arrival_is_dropped(self):
+        # A trip's first segment has no dwell, so arrival to arrival is the moving clock: zero here.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 100.0), (100.0, 130.0), (190.0, 190.0)]))
+
+        traversals = segments.build_traversals(events, self._segments())
+
+        self.assertEqual(traversals.from_stop_id.tolist(), ["s2"])
+
+    def test_a_moving_clock_reading_zero_keeps_the_traversal_without_a_moving_time(self):
+        # Left s2 at 90s and reached s3 at 90s, but 30s arrival to arrival is 37mph over 500m.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 90.0), (90.0, 100.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+        second = traversals.iloc[1]
+
+        self.assertEqual(len(traversals), 2)
+        self.assertEqual(second.total_time_seconds, 30.0)
+        self.assertTrue(np.isnan(second.moving_time_seconds))
+        self.assertTrue(np.isnan(second.moving_speed_mph))
+        # The other segment's moving clock is fine and is left alone.
+        self.assertEqual(traversals.iloc[0].moving_time_seconds, 60.0)
+
+    def test_a_moving_clock_faster_than_any_bus_keeps_the_traversal_without_a_moving_time(self):
+        # 5s from s2 to s3 is 224mph over 500m, but 30s arrival to arrival is 37mph.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 85.0), (90.0, 100.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+        second = traversals.iloc[1]
+
+        self.assertEqual(second.total_time_seconds, 30.0)
+        self.assertTrue(np.isnan(second.moving_time_seconds))
+        self.assertTrue(np.isnan(second.moving_speed_mph))
+
+    def test_a_bus_held_mid_trip_is_kept_however_slow(self):
+        # Ten minutes at s2, then 50 minutes to s3: 0.37mph moving, 0.31mph arrival to arrival.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 660.0), (3660.0, 3660.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+        second = traversals.iloc[1]
+
+        self.assertEqual(len(traversals), 2)
+        self.assertEqual(second.total_time_seconds, 3600.0)
+        self.assertEqual(second.moving_time_seconds, 3000.0)
+
+    def test_a_trip_with_no_pullout_still_has_traversals(self):
+        rows = [{**row, "tm_pullout_id": None} for row in self._trip("t1", [(0.0, 10.0), (70.0, 80.0), (140.0, 150.0)])]
+
+        traversals = segments.build_traversals(pd.DataFrame(rows), self._segments()).sort_values("from_stop_id")
+
+        self.assertEqual(traversals.from_stop_id.tolist(), ["s1", "s2"])
+        self.assertEqual(traversals.is_trip_start.tolist(), [True, False])
+
+    def test_a_departure_with_no_arrival_is_dropped_rather_than_timed_as_nan(self):
+        # s2 has a departure but no arrival: s1 -> s2 has no arrival to end on, which was
+        # already dropped, and s2 -> s3 has no dwell to count, so no total time.
+        events = pd.DataFrame(self._trip("t1", [(0.0, 10.0), (np.nan, 80.0), (140.0, 150.0)]))
+
+        traversals = segments.build_traversals(events, self._segments())
+
+        self.assertTrue(traversals.empty)
+
+    def test_a_departure_with_no_arrival_at_a_trips_first_stop_is_kept(self):
+        # Dwell at a trip's first stop is zeroed anyway, so the missing arrival doesn't matter.
+        events = pd.DataFrame(self._trip("t1", [(np.nan, 10.0), (70.0, 80.0), (140.0, 150.0)]))
+
+        traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
+
+        self.assertEqual(traversals.from_stop_id.tolist(), ["s1", "s2"])
+        self.assertEqual(traversals.iloc[0].total_time_seconds, 60.0)
+
+
+class TestMedianDwell(unittest.TestCase):
+    """median_dwell_seconds counts only observed dwells, as daily_metrics' total_dwell does."""
+
+    def _median_dwell(self, dwells: list[tuple[float, bool, bool]]) -> float:
+        """am_peak median_dwell_seconds from (dwell_seconds, is_trip_start, from_interpolated) traversals."""
+        traversals = pd.DataFrame(
+            [
+                {
+                    "route_id": "1",
+                    "direction_id": 0,
+                    "from_stop_id": "s1",
+                    "to_stop_id": "s2",
+                    "service_date": date(2026, 11, 10),
+                    "depart_seconds": 8 * 3600,
+                    "total_time_seconds": 60.0 + dwell,
+                    "moving_time_seconds": 60.0,
+                    "dwell_seconds": dwell,
+                    "is_interpolated": from_interpolated,
+                    "from_interpolated": from_interpolated,
+                    "is_trip_start": is_trip_start,
+                    "is_trip_end": False,
+                    "segment_length_m": 500.0,
+                }
+                for dwell, is_trip_start, from_interpolated in dwells
+            ]
+        )
+        aggregated = segments.aggregate_segments(traversals)
+        return aggregated[aggregated.time_band == "am_peak"].iloc[0].median_dwell_seconds
+
+    def test_leaves_out_dwells_forced_to_zero(self):
+        # Two trips start here and one passes it interpolated, all zeroed; two really stopped.
+        dwells = [
+            (0.0, True, False),
+            (0.0, True, False),
+            (0.0, False, True),
+            (20.0, False, False),
+            (30.0, False, False),
+        ]
+
+        self.assertEqual(self._median_dwell(dwells), 25.0)
+
+    def test_is_nan_where_no_dwell_was_observed(self):
+        self.assertTrue(np.isnan(self._median_dwell([(0.0, True, False), (0.0, False, True)])))
+
 
 class TestAggregateSegments(unittest.TestCase):
     def _traversals(self) -> pd.DataFrame:
@@ -281,6 +460,7 @@ class TestAggregateSegments(unittest.TestCase):
                         "moving_time_seconds": total_time,
                         "dwell_seconds": 0.0,
                         "is_interpolated": False,
+                        "from_interpolated": False,
                         "is_trip_start": False,
                         "is_trip_end": False,
                         "segment_length_m": 500.0,
@@ -308,6 +488,24 @@ class TestAggregateSegments(unittest.TestCase):
         self.assertEqual(row.n_traversals, 4)
         self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
 
+    def test_moving_percentiles_leave_out_traversals_without_a_moving_time(self):
+        # build_traversals nulls the moving time where the moving clock is unusable.
+        traversals = self._traversals()
+        traversals.loc[traversals.service_date == date(2026, 9, 2), "moving_time_seconds"] = np.nan
+
+        pooled = segments.aggregate_segments(traversals, extra_group_columns=())
+        row = pooled[pooled.time_band == "am_peak"].iloc[0]
+        self.assertEqual(row.n_traversals, 4)
+        self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
+        self.assertAlmostEqual(row.p50_moving_time_seconds, 100.0)
+
+        # A row with no moving times at all has no moving speed, and keeps its other columns.
+        daily = segments.aggregate_segments(traversals)
+        row = daily[(daily.time_band == "am_peak") & (daily.service_date == date(2026, 9, 2))].iloc[0]
+        self.assertAlmostEqual(row.p50_total_time_seconds, 200.0)
+        self.assertTrue(np.isnan(row.p50_moving_time_seconds))
+        self.assertTrue(np.isnan(row.p90_moving_speed_mph))
+
 
 class TestTerminalSections(unittest.TestCase):
     def _section(self, starts: int = 0, ends: int = 0, others: int = 0):
@@ -326,6 +524,7 @@ class TestTerminalSections(unittest.TestCase):
                     "moving_time_seconds": 60.0,
                     "dwell_seconds": 0.0,
                     "is_interpolated": False,
+                    "from_interpolated": False,
                     "is_trip_start": is_trip_start,
                     "is_trip_end": is_trip_end,
                     "segment_length_m": 500.0,
@@ -365,6 +564,7 @@ class TestTerminalSections(unittest.TestCase):
                         "moving_time_seconds": 60.0,
                         "dwell_seconds": 0.0,
                         "is_interpolated": False,
+                        "from_interpolated": False,
                         "is_trip_start": True,
                         "is_trip_end": False,
                         "segment_length_m": 500.0,
@@ -390,6 +590,7 @@ class TestAllDayBand(unittest.TestCase):
             "moving_time_seconds": total_time * 0.8,
             "dwell_seconds": total_time * 0.2,
             "is_interpolated": is_interpolated,
+            "from_interpolated": False,
             "is_trip_start": False,
             "is_trip_end": False,
             "segment_length_m": 500.0,

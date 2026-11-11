@@ -20,6 +20,7 @@ def _traversal(route_id: str, total_time: float, **overrides) -> dict:
         "moving_time_seconds": total_time * 0.8,
         "dwell_seconds": total_time * 0.2,
         "is_interpolated": False,
+        "from_interpolated": False,
         "is_trip_start": False,
         "is_trip_end": False,
         "segment_length_m": 500.0,
