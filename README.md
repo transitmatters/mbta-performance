@@ -75,6 +75,15 @@ uv run python -m mbta-performance.chalicelib.lamp.ingest
 uv run python -m mbta-performance.chalicelib.lamp.backfill.main
 ```
 
+### Missed days
+
+The daily rail and bus "yesterday" jobs write a marker for each service date they finish, at `s3://tm-mbta-performance/Events-lamp/ingest-markers/{daily-data,bus-daily-data}/YYYY-MM-DD.json`. Each run also retries any day in the last 7 that has no marker, and fails the Lambda if a day fails, so Datadog shows it. A day older than that needs the backfill script. To stop a day from being retried (for example, one LAMP will never publish), write its marker by hand:
+
+```shell
+echo '{"service_date": "2026-11-10", "files": 0, "note": "skipped by hand"}' | \
+  aws s3 cp - s3://tm-mbta-performance/Events-lamp/ingest-markers/bus-daily-data/2026-11-10.json
+```
+
 ### Monthly (historic) data
 
 Monthly updates for rapid transit, bus, and ferry use their own runbook, covering processing, S3 upload, verification, and the dashboard follow-ups. See [`mbta-performance/chalicelib/historic/README.md`](mbta-performance/chalicelib/historic/README.md).

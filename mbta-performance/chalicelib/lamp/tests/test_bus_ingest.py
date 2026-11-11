@@ -7,6 +7,7 @@ from unittest import mock
 import pandas as pd
 
 from .. import bus_constants, bus_ingest
+from ..constants import LAMP_REQUEST_TIMEOUT
 
 DATA_PREFIX = os.path.join(os.path.dirname(__file__), "sample_data")
 SAMPLE_BUS_DATA_PATH = os.path.join(DATA_PREFIX, "bus-20260407-sample.parquet")
@@ -350,22 +351,38 @@ class TestBusIngest(unittest.TestCase):
                     mock_upload.assert_called_once()
 
     def test_ingest_bus_data_no_file_found(self):
-        mock_response = mock.Mock(status_code=404)
-        with mock.patch("requests.get", return_value=mock_response):
-            # Should not raise - logs error and returns
-            bus_ingest.ingest_bus_data(date(2026, 4, 7))
+        """#133: this used to log and return, so the Lambda reported success and the day was lost."""
+        for status in (403, 404, 500):
+            with self.subTest(status=status):
+                with mock.patch("requests.get", return_value=mock.Mock(status_code=status)):
+                    with mock.patch("chalicelib.lamp.bus_ingest._parallel_upload") as mock_upload:
+                        with self.assertRaises(ValueError):
+                            bus_ingest.ingest_bus_data(date(2026, 4, 7))
+                mock_upload.assert_not_called()
+
+    def test_ingest_bus_data_raises_on_unreadable_parquet(self):
+        """A schema change raises ArrowInvalid, a ValueError subclass, which used to be swallowed too."""
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=200, content=b"not a parquet file")):
+            with self.assertRaises(ValueError):
+                bus_ingest.ingest_bus_data(date(2026, 4, 7))
+
+    def test_fetch_bus_pq_file_from_remote_sets_a_timeout(self):
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=200, content=self.data)) as mock_get:
+            bus_ingest.fetch_bus_pq_file_from_remote(date(2026, 4, 7))
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], LAMP_REQUEST_TIMEOUT)
 
     def test_ingest_yesterday_bus_data(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
-        with mock.patch("requests.get", return_value=mock_response):
-            with mock.patch("chalicelib.lamp.bus_ingest._parallel_upload"):
-                with mock.patch(
-                    "chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data
-                ):
-                    with mock.patch(
-                        "chalicelib.lamp.bus_ingest.get_current_service_date", return_value=date(2026, 4, 8)
-                    ):
-                        bus_ingest.ingest_yesterday_bus_data()
+        with (
+            mock.patch("requests.get", return_value=mock_response),
+            mock.patch("chalicelib.lamp.bus_ingest._parallel_upload"),
+            mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data),
+            mock.patch("chalicelib.lamp.catch_up.get_current_service_date", return_value=date(2026, 4, 8)),
+            mock.patch("chalicelib.lamp.catch_up.is_ingested", side_effect=lambda _, day: day != date(2026, 4, 7)),
+            mock.patch("chalicelib.lamp.catch_up.mark_ingested") as mock_mark,
+        ):
+            bus_ingest.ingest_yesterday_bus_data()
+        mock_mark.assert_called_once_with("bus-daily-data", date(2026, 4, 7), mock.ANY)
 
     def test_column_rename_map(self):
         df = self.sample_df.copy()

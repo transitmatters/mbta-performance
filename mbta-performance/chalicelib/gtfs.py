@@ -43,14 +43,29 @@ def fetch_stop_times_from_gtfs(
     """Fetch scheduled stop time information from GTFS.
 
     Args:
+        local_archive_path: Where to keep downloaded feeds between calls. Without one, the
+            feed goes in a temporary directory that is deleted before returning.
         allow_build: Whether this caller may build a missing feed itself. False in
             Lambda, where a build cannot fit; True for the backfill scripts, which
             run on a laptop with the disk and time to do it.
     """
+    if local_archive_path:
+        return _fetch_stop_times(trip_ids, service_date, local_archive_path, allow_build)
+    # A feed is ~310 MiB (gtfs.sqlite3 plus the compact copy) and Lambda's /tmp is 512 MB, so a
+    # second download in the same container -- the yesterday jobs' catch-up, or a warm container --
+    # only fits if the first one was deleted.
+    with TemporaryDirectory() as tmp_dir:
+        return _fetch_stop_times(trip_ids, service_date, tmp_dir, allow_build)
+
+
+def _fetch_stop_times(
+    trip_ids: Iterable[str],
+    service_date: date,
+    local_archive_path: str,
+    allow_build: bool,
+) -> pd.DataFrame:
     logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
-    if not local_archive_path:
-        local_archive_path = TemporaryDirectory().name
     mbta_gtfs = MbtaGtfsArchive(
         local_archive_path=local_archive_path,
         s3_bucket=s3.Bucket("tm-gtfs"),
@@ -79,7 +94,8 @@ def fetch_stop_times_from_gtfs(
         # so download_or_build() could only ever time out -- and it did, every 30
         # minutes for 5 hours on 2026-09-15, when the MBTA published feed 20260907
         # (and later retracted it). Fail in ~2s and let data-ingestion's worker
-        # build it; a later scheduled run picks it up.
+        # build it. The same-day job's next run picks it up, and the yesterday jobs
+        # retry the day on later runs (see lamp/catch_up.py).
         _enqueue_gtfs_build(feed.key)
         raise RuntimeError(
             f"GTFS feed {feed.key} is not in s3://tm-gtfs; enqueued a build on "
@@ -93,26 +109,31 @@ def fetch_stop_times_from_gtfs(
     gtfs_stops = []
     num_batches = (len(trip_ids) + MAX_QUERY_DEPTH - 1) // MAX_QUERY_DEPTH
     logger.debug(f"Querying GTFS in {num_batches} batches")
-    for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
-        gtfs_stops.append(
-            pd.read_sql(
-                session.query(
-                    StopTime.trip_id,
-                    StopTime.stop_id,
-                    StopTime.arrival_time,
-                    StopTime.stop_sequence,
-                    StopTime.checkpoint_id,
-                    Trip.route_id,
-                    Trip.direction_id,
+    try:
+        for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
+            gtfs_stops.append(
+                pd.read_sql(
+                    session.query(
+                        StopTime.trip_id,
+                        StopTime.stop_id,
+                        StopTime.arrival_time,
+                        StopTime.stop_sequence,
+                        StopTime.checkpoint_id,
+                        Trip.route_id,
+                        Trip.direction_id,
+                    )
+                    .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
+                    .join(Trip, Trip.trip_id == StopTime.trip_id)
+                    .statement,
+                    session.bind,
+                    dtype_backend="numpy_nullable",
+                    dtype={"direction_id": "int16"},
                 )
-                .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
-                .join(Trip, Trip.trip_id == StopTime.trip_id)
-                .statement,
-                session.bind,
-                dtype_backend="numpy_nullable",
-                dtype={"direction_id": "int16"},
             )
-        )
+    finally:
+        # Close the pooled connection too: an open handle keeps a deleted feed's disk space in use.
+        session.close()
+        session.bind.dispose()
 
     # A batch that matches no trips comes back with object columns, not the nullable
     # dtypes, and concatenating it downcasts every string column to object. pandas 3's

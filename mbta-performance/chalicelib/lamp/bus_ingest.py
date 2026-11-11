@@ -7,8 +7,10 @@ import pandas as pd
 import requests
 
 from .. import parallel, s3
-from ..date import EASTERN_TIME, get_current_service_date
+from ..date import EASTERN_TIME
 from ..gtfs import fetch_stop_times_from_gtfs
+from . import catch_up
+from .constants import LAMP_REQUEST_TIMEOUT
 from .bus_constants import (
     BUS_COLUMN_RENAME_MAP,
     BUS_DAILY_URL_TEMPLATE,
@@ -22,12 +24,16 @@ logger = logging.getLogger(__name__)
 
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
 
+# The bus job's slowest run over 30 days to 2026-11-11 was 61s (avg 44s) against a 300s timeout.
+# It starts another day only with twice that left, so one run handles up to 3 days.
+SECONDS_PER_DAY = 120
+
 
 def fetch_bus_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     """Fetch a bus parquet file from LAMP for a given service date."""
     url = BUS_DAILY_URL_TEMPLATE.format(YYYYMMDD=service_date.strftime("%Y%m%d"))
     logger.info(f"Fetching bus LAMP parquet file from {url}")
-    result = requests.get(url)
+    result = requests.get(url, timeout=LAMP_REQUEST_TIMEOUT)
 
     if result.status_code != 200:
         logger.error(f"Failed to fetch bus LAMP parquet file from {url}. Status code: {result.status_code}")
@@ -317,16 +323,17 @@ def upload_bus_to_s3(
 _parallel_upload = parallel.make_parallel(upload_bus_to_s3)
 
 
-def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
-    """Ingest and upload bus LAMP data for a given service date."""
+def ingest_bus_data(service_date: date, local_archive_path: str | None = None) -> int:
+    """Ingest and upload bus LAMP data for a given service date.
+
+    Returns the number of route-direction-stop files written. Raises if anything fails, including
+    the fetch: there's no same-day bus job, so a missing file is never expected.
+    """
     logger.info(f"Starting bus LAMP data ingestion for service date {service_date}")
     try:
         df = fetch_bus_pq_file_from_remote(service_date)
-    except ValueError as e:
-        logger.error(f"Failed to fetch bus data for {service_date}: {e}")
-        return
     except Exception as e:
-        logger.exception(f"Unexpected error fetching bus data for {service_date}: {e}")
+        logger.exception(f"Error fetching bus data for {service_date}: {e}")
         raise
 
     try:
@@ -347,13 +354,15 @@ def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
         logger.exception(f"Error uploading bus data for {service_date}: {e}")
         raise
     logger.info(f"Bus LAMP data ingestion complete for service date {service_date}")
+    return num_groups
 
 
-def ingest_yesterday_bus_data():
-    """Ingest and upload yesterday's bus LAMP data."""
-    service_date = get_current_service_date() - pd.Timedelta(days=1)
-    logger.info(f"Ingesting yesterday's bus data (service date: {service_date})")
-    ingest_bus_data(service_date)
+def ingest_yesterday_bus_data(context=None):
+    """Ingest yesterday's bus LAMP data, and retry any recent day whose run never finished.
+
+    context is the Lambda context, used to stop before the timeout; see catch_up.ingest_recent_days.
+    """
+    catch_up.ingest_recent_days("bus-daily-data", ingest_bus_data, SECONDS_PER_DAY, context)
 
 
 if __name__ == "__main__":

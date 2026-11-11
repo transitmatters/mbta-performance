@@ -389,6 +389,19 @@ class TestAlerts(unittest.TestCase):
         window = mock_read.call_args[0][1]
         self.assertEqual(window, (date(2026, 9, 15), date(2026, 10, 14)))
 
+    def test_fetch_alerts_parquet_sets_a_timeout(self):
+        """Without one, a hung download runs until the 900s Lambda timeout."""
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.iter_content.return_value = [b"parquet bytes"]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = os.path.join(tmp_dir, "alerts.parquet")
+            with mock.patch("chalicelib.lamp.alerts.requests.get", return_value=response) as mock_get:
+                alerts.fetch_alerts_parquet(dest)
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), b"parquet bytes")
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], alerts.LAMP_REQUEST_TIMEOUT)
+
     def test_upload_day_alerts_writes_expected_bucket_and_key(self):
         alerts_by_id = {"1": {"id": "1", "type": "alert", "attributes": {}}}
         day_index = {date(2026, 9, 8): ["1"]}

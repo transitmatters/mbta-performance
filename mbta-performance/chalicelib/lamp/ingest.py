@@ -12,8 +12,10 @@ from .. import parallel, s3
 from ..date import EASTERN_TIME, format_dateint, get_current_service_date
 from ..gtfs import fetch_stop_times_from_gtfs
 from ..routes import trunk_route_id
+from . import catch_up
 from .constants import (
     LAMP_COLUMNS,
+    LAMP_REQUEST_TIMEOUT,
     OCCUPANCY_COLUMNS,
     RED_LINE_ASHMONT_STOPS,
     RED_LINE_BRAINTREE_STOPS,
@@ -36,6 +38,18 @@ COLUMN_RENAME_MAP = {
     "scheduled_headway_trunk": "scheduled_headway",
     "scheduled_travel_time": "scheduled_tt",
 }
+
+# The yesterday job's slowest run over 30 days to 2026-11-11 was 18.6s (avg 14.0s) against a 90s
+# timeout. It starts another day only with twice that left, so one run handles up to 3 days.
+SECONDS_PER_DAY = 40
+
+
+class LampFileNotFound(ValueError):
+    """LAMP has no parquet file for this date, usually because it hasn't published it yet.
+
+    A ValueError so the backfill scripts, which skip dates they can't fetch, still catch it.
+    """
+
 
 # if a trip_id begins with NONREV-, it is not revenue producing and thus not something we want to benchmark
 # but only if it happens before December 2023 as it's an unreliable indicator of actual revenue service.
@@ -166,12 +180,18 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
-    """Fetch a parquet file from LAMP for a given service date."""
-    # TODO(check if file exists in index, throw if it doesn't)
+    """Fetch a parquet file from LAMP for a given service date.
+
+    Raises LampFileNotFound if LAMP has no file for the date, and ValueError for any other failure,
+    including a parquet file this code can't read (pyarrow's ArrowInvalid is a ValueError).
+    """
     url = RAPID_DAILY_URL_TEMPLATE.format(YYYY_MM_DD=service_date.strftime("%Y-%m-%d"))
     logger.info(f"Fetching LAMP parquet file from {url}")
-    result = requests.get(url)
+    result = requests.get(url, timeout=LAMP_REQUEST_TIMEOUT)
 
+    # performancedata.mbta.com answers 403, not 404, for a file that isn't published yet.
+    if result.status_code in (403, 404):
+        raise LampFileNotFound(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
     if result.status_code != 200:
         logger.error(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
         raise ValueError(f"Failed to fetch LAMP parquet file from {url}. Status code: {result.status_code}")
@@ -469,16 +489,19 @@ def upload_to_s3(
 _parallel_upload = parallel.make_parallel(upload_to_s3)
 
 
-def ingest_lamp_data(service_date: date):
+def ingest_lamp_data(service_date: date) -> int:
+    """Fetch, process and upload one service date. Returns the number of stop files written.
+
+    Raises if anything fails, including the fetch. Only the same-day job tolerates a missing file;
+    see ingest_today_lamp_data.
+    """
     logger.info(f"Starting LAMP data ingestion for service date {service_date}")
     try:
         pq_df = fetch_pq_file_from_remote(service_date)
-    except ValueError as e:
-        # If we can't fetch the file, we can't process it
-        logger.error(f"Failed to fetch LAMP data for {service_date}: {e}")
-        return
+    except LampFileNotFound:
+        raise  # whether a missing file is an error is up to the caller
     except Exception as e:
-        logger.exception(f"Unexpected error fetching LAMP data for {service_date}: {e}")
+        logger.exception(f"Error fetching LAMP data for {service_date}: {e}")
         raise
 
     try:
@@ -497,20 +520,29 @@ def ingest_lamp_data(service_date: date):
         logger.exception(f"Error uploading LAMP data for {service_date}: {e}")
         raise
     logger.info(f"LAMP data ingestion complete for service date {service_date}")
+    return num_stops
 
 
 def ingest_today_lamp_data():
     """Ingest and upload today's LAMP data."""
     service_date = get_current_service_date()
     logger.info(f"Ingesting today's LAMP data (service date: {service_date})")
-    ingest_lamp_data(service_date)
+    try:
+        ingest_lamp_data(service_date)
+    except LampFileNotFound as e:
+        # LAMP may not have published today's file yet. This job runs every 30 minutes, so the next
+        # run picks it up. Any other failure raises.
+        logger.warning(f"No LAMP file for today yet ({service_date}): {e}")
 
 
-def ingest_yesterday_lamp_data():
-    """Ingest and upload yesterday's LAMP data."""
-    service_date = get_current_service_date() - pd.Timedelta(days=1)
-    logger.info(f"Ingesting yesterday's LAMP data (service date: {service_date})")
-    ingest_lamp_data(service_date)
+def ingest_yesterday_lamp_data(context=None):
+    """Ingest yesterday's LAMP data, and retry any recent day whose run never finished.
+
+    The same-day job writes the same keys during the day. This run replaces them with LAMP's later
+    version, so a day only counts as done once this job has finished it. context is the Lambda
+    context, used to stop before the timeout; see catch_up.ingest_recent_days.
+    """
+    catch_up.ingest_recent_days("daily-data", ingest_lamp_data, SECONDS_PER_DAY, context)
 
 
 if __name__ == "__main__":
