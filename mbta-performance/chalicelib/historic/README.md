@@ -49,6 +49,7 @@ uv run python -m mbta-performance.chalicelib.historic.backfill.ferry --start-dat
 Things to expect:
 
 - GTFS archives for scheduled headways are downloaded into `data/gtfs_archives/` and cached there. There is one archive per feed version, at roughly 100 MB unzipped each. If you process the whole ferry history without `--start-date`, it downloads hundreds of them (50+ GB) and takes hours.
+- A day that GTFS can't cover (no archive for the date, or no trips matching the events) is still written, just without scheduled headways or travel times, and the day is printed. If a bus file fails to process, the other files still run, then the command lists the failures and stops before `--upload`.
 - A year of processed rapid transit and bus data is several GB. `data/` is gitignored.
 - `backfill.main` also accepts `--start-date/--end-date` to process only part of a year.
 - Every backfill command accepts `--upload` to go straight to step 3. For a normal update it's safer to process first, then dry-run the upload.

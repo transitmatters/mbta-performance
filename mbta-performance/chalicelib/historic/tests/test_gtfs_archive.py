@@ -105,6 +105,15 @@ class TestGTFSArchive(unittest.TestCase):
         mock_unpack.assert_called_once()
         self.assertTrue((result / "trips.txt").exists())
 
+    def test_date_without_an_archive_is_skipped(self):
+        """A date no archive covers skips GTFS for that day, rather than raising IndexError and
+        costing every other day in the file its benchmarks."""
+        with mock.patch.object(gtfs_archive, "ARCHIVES", self.mock_archives):
+            with mock.patch("urllib.request.urlretrieve") as mock_retrieve:
+                self.assertIsNone(gtfs_archive.get_gtfs_archive(20300101))
+                self.assertEqual(gtfs_archive.read_gtfs(datetime.date(2030, 1, 1)), (None, None))
+        mock_retrieve.assert_not_called()
+
     def test_get_gtfs_archive_concurrent_download(self):
         """Test get_gtfs_archive when another process extracts the same archive first."""
         dateint = 20240207
@@ -414,9 +423,12 @@ class TestGTFSArchive(unittest.TestCase):
 
         self.assertEqual(len(result), 2)
         self.assertEqual(list(result.trip_id), ["trip1", "trip2"])
+        # Callers select these, so they must exist even when no day had GTFS (bus raised KeyError)
+        self.assertTrue(result.scheduled_headway.isna().all())
+        self.assertTrue(result.scheduled_tt.isna().all())
 
     def test_add_gtfs_headways_empty_events(self):
-        """Test add_gtfs_headways with empty events dataframe."""
+        """No events gives no events back, with the scheduled columns, rather than a concat error."""
         events_df = pd.DataFrame(
             {
                 "service_date": [],
@@ -428,12 +440,31 @@ class TestGTFSArchive(unittest.TestCase):
             }
         )
 
-        # Should raise ValueError for empty concat
-        with self.assertRaises(ValueError):
-            gtfs_archive.add_gtfs_headways(events_df)
+        result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertTrue(result.empty)
+        self.assertIn("scheduled_headway", result.columns)
+        self.assertIn("scheduled_tt", result.columns)
+
+    def test_add_gtfs_headways_keeps_days_without_matching_trips(self):
+        """A day with no matching GTFS trips keeps its events, and other days still get benchmarks."""
+        trips, stops, events = self._shared_stop_gtfs(["1", "47"])
+        unmatched = events.iloc[[0]].assign(
+            service_date=pd.Timestamp("2024-02-08"), event_time=pd.Timestamp("2024-02-08 08:00:30"), route_id="99"
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(pd.concat([events, unmatched]))
+
+        self.assertEqual(len(result), 5)
+        matched_day = result[result.service_date == pd.Timestamp("2024-02-07")]
+        unmatched_day = result[result.service_date == pd.Timestamp("2024-02-08")]
+        self.assertListEqual(list(matched_day.scheduled_tt), [300] * 4)
+        self.assertEqual(list(unmatched_day.trip_id), ["actual0"])
+        self.assertTrue(unmatched_day.scheduled_tt.isna().all())
 
     def test_add_gtfs_headways_no_matching_routes(self):
-        """add_gtfs_headways skips a date when no GTFS trips match the events' route."""
+        """add_gtfs_headways keeps a date's events when no GTFS trips match the events' route."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07")],
@@ -461,12 +492,14 @@ class TestGTFSArchive(unittest.TestCase):
         )
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
-            # All dates are skipped (empty gtfs_stops_clean) → results list is empty → ValueError on concat
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertEqual(list(result.trip_id), ["trip1"])
+        self.assertTrue(result.scheduled_headway.isna().all())
+        self.assertTrue(result.scheduled_tt.isna().all())
 
     def test_add_gtfs_headways_null_event_times(self):
-        """add_gtfs_headways skips a date when all event_times are null (arrival_time becomes NaT)."""
+        """add_gtfs_headways keeps a date's events when all event_times are null (arrival_time becomes NaT)."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07")],
@@ -484,9 +517,10 @@ class TestGTFSArchive(unittest.TestCase):
         )
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
-            # days_events_clean becomes empty after dropna on arrival_time → results list empty → ValueError
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertEqual(list(result.trip_id), ["trip1"])
+        self.assertTrue(result.scheduled_tt.isna().all())
 
     def test_to_dateint_integration(self):
         """Test that to_dateint function is available and works correctly."""

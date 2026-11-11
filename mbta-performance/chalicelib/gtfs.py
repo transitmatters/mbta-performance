@@ -19,6 +19,23 @@ MAX_QUERY_DEPTH = 900  # actually 1000
 # queue -- see transitmatters/data-ingestion ingestor/chalicelib/gtfs/enqueue.py.
 GTFS_BUILD_QUEUE = "gtfs-ingest-keys"
 
+# What read_sql returns when the query matches at least one trip. When it matches none, the
+# string and integer columns come back as object instead, which merge_asof won't match
+# against LAMP's StringDtype keys -- so an empty result is always built from this.
+STOP_TIMES_DTYPES = {
+    "trip_id": "string",
+    "stop_id": "string",
+    "arrival_time": "Int64",
+    "stop_sequence": "Int64",
+    "checkpoint_id": "string",
+    "route_id": "string",
+    "direction_id": "int16",
+}
+
+
+def _empty_stop_times() -> pd.DataFrame:
+    return pd.DataFrame({col: pd.array([], dtype=dtype) for col, dtype in STOP_TIMES_DTYPES.items()})
+
 
 def _enqueue_gtfs_build(feed_key: str) -> None:
     """Ask data-ingestion to build a feed we need but do not have.
@@ -46,7 +63,14 @@ def fetch_stop_times_from_gtfs(
         allow_build: Whether this caller may build a missing feed itself. False in
             Lambda, where a build cannot fit; True for the backfill scripts, which
             run on a laptop with the disk and time to do it.
+
+    Returns an empty frame, with the same dtypes as a full one, if there are no trip_ids or
+    none of them are in the feed. Callers then go ahead without scheduled values.
     """
+    if len(trip_ids) == 0:
+        logger.info(f"No trips to look up in GTFS for {service_date}")
+        return _empty_stop_times()
+
     logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
     if not local_archive_path:
@@ -56,6 +80,13 @@ def fetch_stop_times_from_gtfs(
         s3_bucket=s3.Bucket("tm-gtfs"),
     )
     feed = mbta_gtfs.get_feed_for_date(service_date)
+    if feed is None:
+        # No feed key, so there's nothing to enqueue: data-ingestion can only build feeds the
+        # index lists. This clears once the MBTA adds a feed covering the date.
+        raise RuntimeError(
+            f"No GTFS feed covers {service_date} in the MBTA's archive index "
+            f"({mbta_gtfs.archive_url}), so there's no schedule to match against."
+        )
     logger.info(f"GTFS feed key: {feed.key}")
 
     if feed.exists_locally():
@@ -120,6 +151,14 @@ def fetch_stop_times_from_gtfs(
     # whenever the last batch is all ADDED- trips, which aren't in the schedule -- as on
     # 2026-10-19, which failed the same-day job for hours.
     non_empty = [df for df in gtfs_stops if not df.empty]
-    result = pd.concat(non_empty) if non_empty else gtfs_stops[0]
+    if not non_empty:
+        # Usually the wrong feed for these trips. Logged as an error so it's visible, but not
+        # raised: the events are still worth keeping without scheduled values.
+        logger.error(
+            f"None of the {len(trip_ids)} trip_ids for {service_date} are in GTFS feed {feed.key} "
+            f"(e.g. {', '.join(map(str, trip_ids[:5]))}). Continuing without scheduled values."
+        )
+        return _empty_stop_times()
+    result = pd.concat(non_empty)
     logger.info(f"Fetched {len(result)} GTFS stop times")
     return result

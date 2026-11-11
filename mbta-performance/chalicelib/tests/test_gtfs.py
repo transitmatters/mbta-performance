@@ -1,8 +1,12 @@
+import os
+import tempfile
 import unittest
 from datetime import date
 from unittest import mock
 
 import pandas as pd
+from mbta_gtfs_sqlite.models import StopTime, Trip
+from mbta_gtfs_sqlite.session import create_sqlalchemy_session
 
 from .. import gtfs
 
@@ -193,6 +197,83 @@ class TestGTFS(unittest.TestCase):
         self.assertIn("20260907", str(ctx.exception))
         mock_feed.build_locally.assert_not_called()
         mock_feed.upload_to_s3.assert_not_called()
+
+    def test_no_feed_for_date_raises_a_clear_error(self):
+        """get_feed_for_date returns None when no feed in the MBTA's index covers the date, which
+        used to surface as AttributeError: 'NoneType' object has no attribute 'key'."""
+        mock_archive = self._make_mock_archive(None)
+        mock_archive.archive_url = "https://cdn.mbta.com/archive/archived_feeds.txt"
+
+        with mock.patch("chalicelib.gtfs.boto3.resource"):
+            with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=mock_archive):
+                with mock.patch("chalicelib.gtfs._enqueue_gtfs_build") as mock_enqueue:
+                    with self.assertRaisesRegex(RuntimeError, "No GTFS feed covers 2030-01-01"):
+                        gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2030, 1, 1))
+
+        # With no feed key there's nothing data-ingestion could build
+        mock_enqueue.assert_not_called()
+
+    def test_no_trip_ids_returns_empty_without_touching_the_feed(self):
+        """Zero trip_ids used to raise IndexError. There's nothing to look up, so skip the download."""
+        with mock.patch("chalicelib.gtfs.MbtaGtfsArchive") as mock_archive_cls:
+            result = gtfs.fetch_stop_times_from_gtfs([], date(2024, 2, 7))
+
+        mock_archive_cls.assert_not_called()
+        self.assertTrue(result.empty)
+        self.assertEqual({col: str(dtype) for col, dtype in result.dtypes.items()}, gtfs.STOP_TIMES_DTYPES)
+
+    def test_unmatched_trips_return_the_matched_dtypes(self):
+        """Against a real feed database: a query that matches no trips comes back with object
+        columns, which merge_asof rejects against LAMP's string keys. The empty result has to
+        match the dtypes of a real one, and the mismatch is logged as an error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "gtfs.sqlite3")
+            session = create_sqlalchemy_session(db_path)
+            session.add(
+                Trip(
+                    **dict.fromkeys(["trip_headsign", "trip_short_name", "block_id", "shape_id"], ""),
+                    route_id="Red",
+                    service_id="weekday",
+                    trip_id="trip1",
+                    direction_id="0",
+                    start_time=28800,
+                    end_time=28800,
+                    stop_count=1,
+                    feed_info_id=1,
+                )
+            )
+            session.add(
+                StopTime(
+                    **dict.fromkeys(["stop_headsign", "pickup_type", "drop_off_type"], ""),
+                    trip_id="trip1",
+                    stop_id="70061",
+                    arrival_time=28800,
+                    departure_time=28800,
+                    stop_sequence=1,
+                    checkpoint_id="alfcl",
+                    feed_info_id=1,
+                )
+            )
+            session.commit()
+
+            mock_feed = self._make_mock_feed()
+            mock_feed.key = "20240201"
+            mock_feed.exists_locally.return_value = True
+            mock_feed.create_sqlite_session.side_effect = lambda: create_sqlalchemy_session(db_path)
+            mock_archive = self._make_mock_archive(mock_feed)
+
+            with mock.patch("chalicelib.gtfs.boto3.resource"):
+                with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=mock_archive):
+                    matched = gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2024, 2, 7))
+                    with self.assertLogs(gtfs.logger, "ERROR") as logs:
+                        unmatched = gtfs.fetch_stop_times_from_gtfs(["ADDED-1"], date(2024, 2, 7))
+
+        self.assertEqual(len(matched), 1)
+        self.assertTrue(unmatched.empty)
+        pd.testing.assert_series_equal(unmatched.dtypes, matched.dtypes)
+        self.assertEqual({col: str(dtype) for col, dtype in matched.dtypes.items()}, gtfs.STOP_TIMES_DTYPES)
+        self.assertIn("20240201", logs.output[0])
+        self.assertIn("ADDED-1", logs.output[0])
 
     def test_enqueue_failure_does_not_mask_the_error(self):
         """If SQS is unreachable the RuntimeError is still the actionable signal."""

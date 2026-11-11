@@ -54,11 +54,9 @@ def process_events(
     if "sync_stop_sequence" in df.columns:
         df.rename(columns={"sync_stop_sequence": "stop_sequence"}, inplace=True)
 
-    try:
-        df = add_gtfs_headways(df)
-    except IndexError:
-        # failure to add gtfs benchmarks
-        pass
+    # Days GTFS can't cover are kept without benchmarks. Anything else it raises is a bug, and
+    # writing the whole file without benchmarks would overwrite good ones in S3 on upload.
+    df = add_gtfs_headways(df)
 
     # Write to disk
     to_disk(df, outdir, nozip)
@@ -216,12 +214,8 @@ def process_ferry(
     df.loc[:, "event_time"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # Calculate GTFS headways once for all events
-    # This adds scheduled_tt and scheduled_headway
-    try:
-        df = add_gtfs_headways(df)
-    except IndexError:
-        # failure to add gtfs benchmarks
-        pass
+    # This adds scheduled_tt and scheduled_headway (see process_events on why errors aren't caught)
+    df = add_gtfs_headways(df)
 
     # Load route constants and add stop sequence information
     # route_dicts = load_constants()
@@ -327,7 +321,19 @@ def load_bus_data(input_csv: str, routes: list = None):
         df.scheduled -= BUS_SHIFT
         df.actual -= BUS_SHIFT
 
-    df.direction_id = df.direction_id.map({"Outbound": 0, "Inbound": 1})
+    direction_id = df.direction_id.map({"Outbound": 0, "Inbound": 1})
+    unknown = direction_id.isna()
+    if unknown.all() and not df.empty:
+        raise ValueError(f"No recognized direction in {input_csv}: {sorted(df.direction_id.astype(str).unique())[:10]}")
+    if unknown.any():
+        # A NaN makes direction_id float64, which merge_asof won't match against GTFS's int64.
+        # These rows couldn't be written anyway: to_disk_bus groups by direction.
+        print(
+            f"Warning: dropping {unknown.sum()} rows of {input_csv} with an unrecognized direction: "
+            f"{sorted(df.direction_id[unknown].astype(str).unique())[:10]}"
+        )
+        df = df[~unknown]
+    df.direction_id = direction_id[~unknown].astype(int)
 
     return df
 

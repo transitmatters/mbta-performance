@@ -79,16 +79,28 @@ class TestProcess(unittest.TestCase):
                 self.assertNotIn("sync_stop_sequence", df.columns)
 
     def test_process_events_gtfs_failure(self):
-        """Test process_events handles GTFS failures gracefully."""
+        """An unexpected GTFS error stops the file, rather than writing it all without benchmarks
+        (which the upload would then push over good files in S3)."""
         self.sample_events.to_csv(self.test_csv, index=False)
 
         with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=IndexError("GTFS error")):
             with mock.patch("chalicelib.historic.process.to_disk") as mock_to_disk:
-                # Should not raise exception
+                with self.assertRaises(IndexError):
+                    process.process_events(str(self.test_csv), self.temp_dir, nozip=True)
+
+        mock_to_disk.assert_not_called()
+
+    def test_process_events_keeps_days_without_gtfs(self):
+        """A day no GTFS archive covers is still written, just without benchmarks."""
+        self.sample_events.to_csv(self.test_csv, index=False)
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(None, None)):
+            with mock.patch("chalicelib.historic.process.to_disk") as mock_to_disk:
                 process.process_events(str(self.test_csv), self.temp_dir, nozip=True)
 
-                # Verify to_disk was still called
-                mock_to_disk.assert_called_once()
+        df = mock_to_disk.call_args[0][0]
+        self.assertEqual(len(df), 3)
+        self.assertTrue(df.scheduled_headway.isna().all())
 
     def test_to_disk(self):
         """Test to_disk creates proper directory structure and files."""
@@ -385,6 +397,62 @@ class TestProcess(unittest.TestCase):
         self.assertTrue(all(result["scheduled"].dt.year == 2020))
         self.assertTrue(all(result["actual"].dt.year == 2020))
 
+    def _bus_csv(self, directions):
+        """A bus CSV with one route 1, stop 67 Midpoint row per direction value."""
+        n = len(directions)
+        bus_csv = pathlib.Path(self.temp_dir) / "bus.csv"
+        pd.DataFrame(
+            {
+                "service_date": ["2020-01-15"] * n,
+                "route_id": ["01"] * n,
+                "direction": directions,
+                "half_trip_id": [str(46374001 + i) for i in range(n)],
+                "stop_id": ["67"] * n,
+                "time_point_id": ["maput"] * n,
+                "time_point_order": [2] * n,
+                "point_type": ["Midpoint"] * n,
+                "standard_type": ["Schedule"] * n,
+                "scheduled": ["1900-01-01 05:08:00"] * n,
+                "actual": [f"1900-01-01 05:{9 + i:02d}:07" for i in range(n)],
+                "scheduled_headway": [-5] * n,
+                "headway": [None] * n,
+            }
+        ).to_csv(bus_csv, index=False)
+        return str(bus_csv)
+
+    def test_bus_unrecognized_direction_is_dropped(self):
+        """A blank direction used to make direction_id float64, which merge_asof rejected against
+        GTFS's int64 with a MergeError, failing the whole month."""
+        gtfs_trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["1"], "direction_id": [1]})
+        gtfs_stops = pd.DataFrame(
+            {"trip_id": ["sched1"], "stop_id": ["67"], "arrival_time": [pd.Timedelta(hours=5, minutes=8)]}
+        )
+        bus_csv = self._bus_csv(["Inbound", None, "Inbound"])
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(gtfs_trips, gtfs_stops)):
+            data = process.load_bus_data(bus_csv)
+            events = process.process_bus_events_data(data)
+
+        self.assertEqual(data.direction_id.dtype, "int64")
+        self.assertEqual(set(events.trip_id), {46374001, 46374003})
+        # Matched to the scheduled trip
+        self.assertListEqual(list(events.scheduled_tt), [0] * 4)
+
+    def test_bus_no_recognized_direction_raises(self):
+        """If no direction maps, the format changed: say so rather than write an empty month."""
+        with self.assertRaisesRegex(ValueError, "No recognized direction.*'I', 'O'"):
+            process.load_bus_data(self._bus_csv(["I", "O"]))
+
+    def test_bus_events_without_gtfs_for_any_day(self):
+        """With no GTFS for any day, bus events are written without benchmarks. This used to raise
+        KeyError, because the scheduled columns were missing."""
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(None, None)):
+            events = process.process_bus_events_data(process.load_bus_data(self._bus_csv(["Inbound"])))
+
+        self.assertEqual(len(events), 2)  # a Midpoint is an ARR and a DEP
+        self.assertTrue(events.scheduled_headway.isna().all())
+        self.assertTrue(events.scheduled_tt.isna().all())
+
     def test_load_bus_data_with_route_filter(self):
         """Test load_bus_data filters routes correctly."""
         bus_data = pd.DataFrame(
@@ -644,7 +712,7 @@ class TestProcess(unittest.TestCase):
             mock_to_disk.assert_not_called()
 
     def test_process_ferry_gtfs_failure(self):
-        """process_ferry continues to write output even when add_gtfs_headways raises IndexError."""
+        """An unexpected GTFS error stops process_ferry, rather than writing output without benchmarks."""
         ferry_data = pd.DataFrame(
             {
                 "service_date": ["2024-02-07 00:00:00+00:00"],
@@ -666,10 +734,10 @@ class TestProcess(unittest.TestCase):
 
         with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=IndexError("GTFS error")):
             with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
-                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+                with self.assertRaises(IndexError):
+                    process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
 
-                # to_disk_ferry should still be called despite the GTFS failure
-                mock_to_disk.assert_called_once()
+        mock_to_disk.assert_not_called()
 
     def test_load_bus_data_shifted_times(self):
         """June to December 2024 bus data is Eastern + 5 hours all year, so 5 hours come off even under DST.

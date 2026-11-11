@@ -21,9 +21,12 @@ REQUIRED_ARCHIVE_FILES = ["calendar.txt", "calendar_dates.txt", "stop_times.txt"
 def get_gtfs_archive(dateint: int):
     """
     Determine which GTFS archive corresponds to the date.
-    Returns that archive folder, downloading if it doesn't yet exist.
+    Returns that archive folder, downloading if it doesn't yet exist, or None if no archive covers the date.
     """
     matches = ARCHIVES[(ARCHIVES.feed_start_date <= dateint) & (ARCHIVES.feed_end_date >= dateint)]
+    if matches.empty:
+        print(f"Warning: no GTFS archive in archived_feeds.txt covers {dateint}")
+        return None
     archive_url = matches.iloc[0].archive_url
 
     archive_name = pathlib.Path(archive_url).stem
@@ -85,11 +88,13 @@ def read_gtfs(date: datetime.date):
     - Find the appropriate gtfs archive (downloading if necessary)
     - Determine which services ran on that date
     - Return two dataframes containing just the trips and stop_times that ran on that date
-    - Return None if the archive is incomplete (missing required files)
+    - Return None if no archive covers the date, or it is incomplete (missing required files)
     """
     dateint = to_dateint(date)
 
     archive_dir = get_gtfs_archive(dateint)
+    if archive_dir is None:
+        return None, None
 
     # Check if required files exist
     trips_file = archive_dir / "trips.txt"
@@ -134,6 +139,16 @@ def read_gtfs(date: datetime.date):
         return None, None
 
 
+# Added even to days GTFS can't cover, so the output has these columns when no day matched
+BLANK_SCHEDULE = {"scheduled_headway": float("nan"), "scheduled_tt": float("nan")}
+
+
+def _without_schedule(days_events: pd.DataFrame, service_date: pd.Timestamp, reason: str) -> pd.DataFrame:
+    """Keep a day GTFS can't cover, with blank scheduled values, rather than drop its events."""
+    print(f"{reason} for {service_date.date()}; keeping its events without scheduled values")
+    return days_events.assign(**BLANK_SCHEDULE)
+
+
 def add_gtfs_headways(events_df: pd.DataFrame):
     """
     This will calculate scheduled headway and traveltime information
@@ -142,12 +157,17 @@ def add_gtfs_headways(events_df: pd.DataFrame):
     time-of-day, so is not an excact match. Luckily, pandas helps us out
     with merge_asof.
     https://pandas.pydata.org/docs/reference/api/pandas.merge_asof.html
+
+    Days GTFS can't cover keep their events, with blank scheduled values.
     """
 
     # defining these columns in particular becasue we use them everywhere
     RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
     # scheduled headways are per trunk, so trunk stops count every Green Line branch
     TRUNK_DIR_STOP = ["trunk_route_id", "direction_id", "stop_id"]
+
+    if events_df.empty:
+        return events_df.assign(**BLANK_SCHEDULE)
 
     results = []
 
@@ -157,9 +177,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
 
         # Skip this date if GTFS data is incomplete
         if all_trips is None or all_stops is None:
-            # Keep the day's events, just without scheduled headways/travel times, rather than dropping them
-            print(f"Incomplete GTFS data for {service_date.date()}; keeping its events without scheduled values")
-            results.append(days_events)
+            results.append(_without_schedule(days_events, service_date, "No complete GTFS archive"))
             continue
 
         # filter out the trips of interest
@@ -184,6 +202,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         gtfs_stops_clean = gtfs_stops.dropna(subset=RTE_DIR_STOP)
 
         if days_events_clean.empty or gtfs_stops_clean.empty:
+            results.append(_without_schedule(days_events, service_date, "No GTFS trips match the events"))
             continue
 
         # assign each actual timepoint a scheduled headway
@@ -197,6 +216,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         gtfs_stops_clean = gtfs_stops_clean.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
 
         if days_events_clean.empty or gtfs_stops_clean.empty:
+            results.append(_without_schedule(days_events, service_date, "No event or GTFS times"))
             continue
 
         final = pd.merge_asof(
@@ -214,6 +234,7 @@ def add_gtfs_headways(events_df: pd.DataFrame):
         # Additional null check for route_starts
         route_starts = route_starts.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
         if route_starts.empty:
+            results.append(_without_schedule(days_events, service_date, "No trip start times"))
             continue
 
         trip_id_map = pd.merge_asof(

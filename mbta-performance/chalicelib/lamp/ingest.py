@@ -237,6 +237,10 @@ def _derive_lamp_branch_route_id(pq_df: pd.DataFrame) -> pd.DataFrame:
         # For all other lines (including Green-B, Green-C, etc.), use route_id
         return route_id
 
+    if pq_df.empty:
+        # groupby().apply() on no rows returns an empty DataFrame, not a Series, and the merge fails
+        return pq_df.assign(branch_route_id=pq_df["route_id"])
+
     # Group by trip_id and determine branch for each trip
     trip_branches = pq_df.groupby("trip_id", group_keys=False).apply(get_branch_for_trip, include_groups=False)
     trip_branches.name = "branch_route_id"
@@ -268,6 +272,13 @@ def _recalculate_fields_from_gtfs(
     # This is critical for Red Line trips originating on the trunk and ending on Ashmont/Braintree
     logger.debug("Deriving branch_route_id for LAMP trips")
     pq_df = _derive_lamp_branch_route_id(pq_df)
+
+    if gtfs_stops.empty:
+        # fetch_stop_times_from_gtfs logged why. Keep the events and LAMP's headways, and leave
+        # scheduled_tt blank rather than use LAMP's, which is measured differently.
+        pq_df["scheduled_tt"] = pd.Series(pd.NA, index=pq_df.index, dtype="Int64")
+        return pq_df[S3_COLUMNS + ["branch_route_id"]]
+
     logger.debug("Deriving branch_route_id for GTFS trips")
     gtfs_stops = _derive_gtfs_branch_route_id(gtfs_stops)
 
@@ -322,7 +333,9 @@ def _recalculate_fields_from_gtfs(
         # Bucket GTFS data into 30-minute windows and calculate median scheduled_tt
         # per route/direction/stop per bucket (same smoothing approach as headways)
         gtfs_stops["time_bucket"] = (gtfs_stops["arrival_time"] // 1800).astype(int)  # 1800 seconds = 30 min
-        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median()
+        # Rounded to the second: the median of an even count can land on a half second, which the
+        # Int64 scheduled_tt column refuses.
+        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median().round()
 
         # Calculate time bucket for missing events
         event_seconds = (

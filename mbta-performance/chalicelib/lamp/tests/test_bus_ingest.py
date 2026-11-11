@@ -245,6 +245,59 @@ class TestBusIngest(unittest.TestCase):
         # first visit to A (visit_rank 0) should differ from the second (visit_rank 1)
         self.assertEqual(set(stop_a_tts.tolist()), {0.0, 600.0})
 
+    def test_fallback_scheduled_tt_with_a_half_second_median(self):
+        """As in rail: a half-second fallback median used to be rejected by the Int64 scheduled_tt."""
+        raw = pd.DataFrame(
+            {
+                "service_date": ["20260407"] * 3,
+                "route_id": ["1"] * 3,
+                "trip_id": ["trip-1"] * 3,
+                "stop_id": ["stop-A", "stop-B", "stop-C"],
+                "direction_id": [0] * 3,
+                "stop_sequence": [1, 2, 3],
+                "vehicle_label": ["y0001"] * 3,
+                "previous_stop_id": [None, "stop-A", "stop-B"],
+                # 8:00, 8:05 and 8:10am Eastern
+                "stop_arrival_dt": pd.to_datetime(
+                    ["2026-04-07T12:00:00Z", "2026-04-07T12:05:00Z", "2026-04-07T12:10:00Z"]
+                ),
+                "stop_departure_dt": pd.to_datetime([pd.NaT, "2026-04-07T12:00:30Z", "2026-04-07T12:05:30Z"]),
+                "travel_time_seconds": [0, 300, 300],
+                "dwell_time_seconds": [30] * 3,
+                "headway_seconds": [600] * 3,
+                "scheduled_tt": [0, 300, 600],
+                "scheduled_headway": [600] * 3,
+            }
+        )
+        processed = bus_ingest._process_bus_arrival_departure_times(raw)
+
+        # trip-1 matches sched-1, which skips stop-C, so stop-C falls back to the median of 60s and 61s
+        rows = [
+            ("sched-1", "stop-A", 28800, 1),
+            ("sched-1", "stop-B", 29100, 2),
+            ("sched-2", "stop-A", 30000, 1),
+            ("sched-2", "stop-C", 30060, 3),
+            ("sched-3", "stop-A", 30100, 1),
+            ("sched-3", "stop-C", 30161, 3),
+        ]
+        mock_gtfs = pd.DataFrame(
+            {
+                "trip_id": pd.array([r[0] for r in rows], dtype="string"),
+                "stop_id": pd.array([r[1] for r in rows], dtype="string"),
+                "arrival_time": pd.array([r[2] for r in rows], dtype="Int64"),
+                "stop_sequence": pd.array([r[3] for r in rows], dtype="Int64"),
+                "checkpoint_id": pd.array(["cp"] * len(rows), dtype="string"),
+                "route_id": pd.array(["1"] * len(rows), dtype="string"),
+                "direction_id": pd.array([0] * len(rows), dtype="int16"),
+            }
+        )
+        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=mock_gtfs):
+            result = bus_ingest._recalculate_bus_fields_from_gtfs(processed, date(2026, 4, 7))
+
+        scheduled_tt = result.set_index(["stop_id", "event_type"])["scheduled_tt"]
+        self.assertEqual(scheduled_tt[("stop-B", "ARR")], 300)
+        self.assertEqual(scheduled_tt[("stop-C", "ARR")], 60)  # 60.5, rounded half to even
+
     def test_ingest_bus_pq_file(self):
         with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
             result = bus_ingest.ingest_bus_pq_file(self.sample_df, date(2026, 4, 7))
