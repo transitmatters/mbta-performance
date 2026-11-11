@@ -29,7 +29,7 @@ from .day_type import day_type_for
 from .geoparquet import write_geoparquet
 from .leaderboard import build_leaderboard
 from .patterns import build_pattern_geometry
-from .remote_parquet import read_service_date
+from .remote_parquet import ServiceDateNotFoundError, read_service_date
 from .s3_writer import upload_leaderboard, upload_pmtiles, upload_speed_segments
 from .segments import (
     aggregate_segments,
@@ -61,8 +61,19 @@ def source_url_for(service_date: date) -> str:
 
 
 def read_events_for_date(service_date: date) -> pd.DataFrame:
-    """One service date of LAMP bus events, as published: every scheduled stop, observed or not."""
-    events = read_service_date(source_url_for(service_date), service_date, BUS_COLUMNS)
+    """One service date of LAMP bus events, as published: every scheduled stop, observed or not.
+
+    Reads from the other export when `source_url_for`'s choice doesn't have the date. MBTA
+    rewrites the two separately, so if one stops updating for a few days the other can still
+    have those dates. Costs one more footer read, and only when the first export is missing the date.
+    """
+    preferred = source_url_for(service_date)
+    try:
+        events = read_service_date(preferred, service_date, BUS_COLUMNS)
+    except ServiceDateNotFoundError:
+        other = BUS_ALL_URL if preferred == BUS_RECENT_URL else BUS_RECENT_URL
+        logger.warning(f"{preferred} has no row group for {service_date}; trying {other}")
+        events = read_service_date(other, service_date, BUS_COLUMNS)
     if events.empty:
         raise ValueError(f"No LAMP bus events for {service_date}")
     return events

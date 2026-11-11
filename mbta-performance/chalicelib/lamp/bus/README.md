@@ -43,14 +43,36 @@ of each run, so merging here is all it takes to ship a change. Every morning, Bo
 | monthly | `trends --latest-month --upload --write-pmtiles --write-leaderboard` |
 | reference (Mondays) | `reference_tiles --upload` |
 
-`--latest-week` and `--latest-month` pick the period containing yesterday, which keeps the
-dashboard's in-progress week and month current and, on the day after one ends, finishes it.
+`--latest-week` and `--latest-month` build every period holding one of the last three service
+dates, newest first. That keeps the dashboard's in-progress week and month current, and it
+builds a period that just ended on the morning after its last day and on the two mornings after
+that.
+
+A late LAMP morning is why it keeps going back. These runs won't publish a period without its
+newest date: a date LAMP hasn't published yet counts as missing, the same thing that fails the
+daily job. They read that date first, so a missing one fails in seconds. They still try every
+other period, then exit non-zero, so all three jobs fail together and a rerun of each fixes it.
+Without a rerun, one of the next two mornings fills in a finished week's or month's last day
+by itself. An older date with no data is still skipped and logged, since that's a gap in
+LAMP's export rather than lateness. A file that can't be parsed (`ArrowInvalid`, which MBTA's
+rewrites can briefly cause) fails the period instead of being skipped as a date without data.
+If LAMP is out for longer than that window, rebuild the periods by hand with `--year` and
+`--week` or `--month` once it has caught up.
+
+Each extra build runs on basement-dweller and costs 4 PUTs: about 45 more PUTs a month, a
+fraction of a cent. Measured without tiles on 2026-11-11, one week took ~1.5 minutes (1.7GB
+peak with the current week built first in the same process). A whole month took ~5 minutes,
+with a 5.5GB peak after building the new month's first two days, against the ~8GB a full month
+peaks at in production with tiles. Both fit the jobs' memory limits.
 
 ## Pipeline
 
 1. **Read one service date** from the LAMP bus export. Both exports are partitioned one
    parquet row group per `service_date`, so `remote_parquet.py` reads the footer over HTTP
    and pulls just that row group — ~35MB, rather than downloading the 6.8GB all-time file.
+   The last seven days come from the small rolling export and older dates from the all-time
+   one; if the chosen export doesn't have the date, `ingest.read_events_for_date` tries the
+   other.
 2. **Locate every stop along its route pattern's shape** (`gtfs_geo.py`, `patterns.py`).
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
 4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a

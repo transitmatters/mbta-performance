@@ -11,6 +11,7 @@ import time
 from datetime import date
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
@@ -24,11 +25,22 @@ RANGE_TIMEOUT_SECONDS = 120
 # replaced can pair a footer parsed from the old file with byte ranges served from the new
 # one -- surfacing as a truncated HTTP read (requests.exceptions.ChunkedEncodingError) or a
 # corrupt parquet footer (pyarrow raises a plain OSError, e.g. "Couldn't deserialize
-# thrift"). Both are IOError/OSError under the hood. Retrying re-opens the file and re-reads
-# the footer from scratch, which self-heals once the rewrite finishes -- observed in
-# practice needing at most one retry once the file has settled.
+# thrift"). Both are IOError/OSError under the hood. It can also be a footer that isn't parquet
+# at all ("Parquet magic bytes not found in footer"), which pyarrow raises as ArrowInvalid, a
+# ValueError. On 2026-11-10 the weekly job got the thrift error, then ArrowInvalid on every
+# reopen for at least 40 seconds. Retrying re-opens the file and re-reads the footer from
+# scratch, which self-heals once the rewrite finishes. The waits grow (5s, 15s, 45s) to outlast that.
 MAX_READ_ATTEMPTS = 4
 READ_RETRY_DELAY_SECONDS = 5
+READ_RETRY_BACKOFF = 3
+
+
+class ServiceDateNotFoundError(ValueError):
+    """The file has no row group for the date: LAMP hasn't published it there yet, or never did.
+
+    A ValueError like the other data problems callers already skip on, but its own type so
+    ingest.read_events_for_date can tell "not in this export" apart and try the other one.
+    """
 
 
 class HttpRangeFile(io.RawIOBase):
@@ -108,14 +120,15 @@ def read_service_date(url: str, service_date: date, columns: list[str]) -> pd.Da
     for attempt in range(1, MAX_READ_ATTEMPTS + 1):
         try:
             return _read_service_date_once(url, service_date, columns)
-        except OSError as error:
+        except (OSError, pa.ArrowInvalid) as error:
             if attempt == MAX_READ_ATTEMPTS:
                 raise
+            delay = READ_RETRY_DELAY_SECONDS * READ_RETRY_BACKOFF ** (attempt - 1)
             logger.warning(
                 f"Attempt {attempt}/{MAX_READ_ATTEMPTS} to read {service_date} from {url} failed "
-                f"({error!r}); retrying in {READ_RETRY_DELAY_SECONDS}s"
+                f"({error!r}); retrying in {delay}s"
             )
-            time.sleep(READ_RETRY_DELAY_SECONDS)
+            time.sleep(delay)
     raise AssertionError("unreachable")  # loop always returns or raises
 
 
@@ -125,7 +138,7 @@ def _read_service_date_once(url: str, service_date: date, columns: list[str]) ->
 
     group = _row_group_for_date(parquet_file, "service_date", service_date)
     if group is None:
-        raise ValueError(f"{url} has no row group covering service date {service_date}")
+        raise ServiceDateNotFoundError(f"{url} has no row group covering service date {service_date}")
 
     logger.info(f"Reading row group {group} for {service_date} ({len(columns)} columns)")
     table = parquet_file.read_row_group(group, columns=columns)
