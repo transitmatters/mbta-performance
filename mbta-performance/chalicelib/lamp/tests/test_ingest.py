@@ -6,6 +6,7 @@ from unittest import mock
 
 import pandas as pd
 
+from ...routes import branch_route_id
 from .. import constants, ingest
 
 # The sample file attached here is 10k events sampled from Feb 7th, 2024.
@@ -109,7 +110,7 @@ class TestIngest(unittest.TestCase):
         pq_df_before = ingest._normalize_occupancy(pq_df_before)
         pq_df_before = ingest._process_arrival_departure_times(pq_df_before)
         pq_df_before = pq_df_before[pq_df_before["stop_id"].notna()]
-        pq_df_before = ingest._derive_lamp_branch_route_id(pq_df_before)
+        pq_df_before = pq_df_before.assign(branch_route_id=branch_route_id(pq_df_before).array)
         # ensure that no values are dropped during calculation
         pq_df_after = ingest._average_scheduled_headways(pq_df_before, date(2024, 2, 7))
         self.assertEqual(pq_df_before[constants.S3_COLUMNS].shape, pq_df_after.shape)
@@ -120,10 +121,16 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(null_headway_events_after.shape, (227, 20))
         self.assertTrue(len(null_headway_events_after) <= len(null_headway_events_before))
 
-        # pick a route/dir and directly compare
-        oak_grove_recalced = pq_df_after[
-            (pq_df_after.route_id == "Orange") & (pq_df_after.direction_id == True) & (pq_df_after.stop_id == "70036")
-        ].scheduled_headway
+        # pick a route/dir and directly compare, in time order as ingest_pq_file outputs them
+        oak_grove_recalced = (
+            pq_df_after[
+                (pq_df_after.route_id == "Orange")
+                & (pq_df_after.direction_id == True)
+                & (pq_df_after.stop_id == "70036")
+            ]
+            .sort_values("event_time", kind="stable")
+            .scheduled_headway
+        )
         self.assertListEqual(
             list(oak_grove_recalced),
             [
@@ -484,77 +491,6 @@ class TestIngest(unittest.TestCase):
             sorted_event_times = sorted(event_times)
             self.assertEqual(event_times, sorted_event_times, "Output should be sorted by event_time")
 
-    # --- _derive_lamp_branch_route_id ---
-
-    def test__derive_lamp_branch_route_id_ashmont(self):
-        """Red Line trips that visit Ashmont-branch stops should get 'Red-A' as branch_route_id."""
-        df = pd.DataFrame(
-            {
-                "trip_id": ["trip_a", "trip_a", "trip_a"],
-                "route_id": ["Red", "Red", "Red"],
-                # trunk stop + a stop unique to the Ashmont branch
-                "stop_id": ["70061", "70063", "70085"],
-            }
-        )
-        result = ingest._derive_lamp_branch_route_id(df)
-        branch_ids = result[result["trip_id"] == "trip_a"]["branch_route_id"].unique()
-        self.assertIn("Red-A", branch_ids)
-        self.assertNotIn("Red-B", branch_ids)
-
-    def test__derive_lamp_branch_route_id_braintree(self):
-        """Red Line trips that visit Braintree-branch stops should get 'Red-B' as branch_route_id."""
-        df = pd.DataFrame(
-            {
-                "trip_id": ["trip_b", "trip_b", "trip_b"],
-                "route_id": ["Red", "Red", "Red"],
-                # trunk stop + a stop unique to the Braintree branch
-                "stop_id": ["70061", "70063", "70095"],
-            }
-        )
-        result = ingest._derive_lamp_branch_route_id(df)
-        branch_ids = result[result["trip_id"] == "trip_b"]["branch_route_id"].unique()
-        self.assertIn("Red-B", branch_ids)
-        self.assertNotIn("Red-A", branch_ids)
-
-    def test__derive_lamp_branch_route_id_trunk_only(self):
-        """Red Line trips visiting only trunk stops (no branch-specific stops) keep 'Red'."""
-        df = pd.DataFrame(
-            {
-                "trip_id": ["trip_trunk", "trip_trunk"],
-                "route_id": ["Red", "Red"],
-                "stop_id": ["70061", "70063"],  # trunk-only stops
-            }
-        )
-        result = ingest._derive_lamp_branch_route_id(df)
-        branch_ids = result[result["trip_id"] == "trip_trunk"]["branch_route_id"].unique()
-        self.assertListEqual(list(branch_ids), ["Red"])
-
-    def test__derive_lamp_branch_route_id_non_red_line(self):
-        """Non-Red Line trips should use route_id unchanged as branch_route_id."""
-        df = pd.DataFrame(
-            {
-                "trip_id": ["trip_o", "trip_o"],
-                "route_id": ["Orange", "Orange"],
-                "stop_id": ["70001", "70003"],
-            }
-        )
-        result = ingest._derive_lamp_branch_route_id(df)
-        branch_ids = result[result["trip_id"] == "trip_o"]["branch_route_id"].unique()
-        self.assertListEqual(list(branch_ids), ["Orange"])
-
-    def test__derive_lamp_branch_route_id_green_line_unchanged(self):
-        """Green Line sub-routes already have distinct route_ids and should pass through unchanged."""
-        df = pd.DataFrame(
-            {
-                "trip_id": ["trip_gb", "trip_gb"],
-                "route_id": ["Green-B", "Green-B"],
-                "stop_id": ["70107", "70110"],
-            }
-        )
-        result = ingest._derive_lamp_branch_route_id(df)
-        branch_ids = result[result["trip_id"] == "trip_gb"]["branch_route_id"].unique()
-        self.assertListEqual(list(branch_ids), ["Green-B"])
-
     # --- Helpers for pipeline tests ---
 
     def _make_minimal_lamp_df(self, service_date_int, trip_stop_pairs, base_ts=1707825600):
@@ -712,23 +648,6 @@ class TestIngest(unittest.TestCase):
             for sdate in service_dates:
                 self.assertIsInstance(sdate, str)
                 self.assertRegex(sdate, r"^\d{4}-\d{2}-\d{2}$", "service_date should be YYYY-MM-DD format")
-
-    # --- _derive_gtfs_branch_route_id ---
-
-    def test__derive_gtfs_branch_route_id_trunk_only(self):
-        """Red Line GTFS trips visiting only trunk stops fall back to route_id."""
-        gtfs_stops = pd.DataFrame(
-            {
-                "trip_id": ["gtfs_trunk", "gtfs_trunk"],
-                "route_id": ["Red", "Red"],
-                "stop_id": ["70061", "70063"],  # trunk-only stops
-                "direction_id": [0, 0],
-                "arrival_time": [28800.0, 28900.0],
-            }
-        )
-        result = ingest._derive_gtfs_branch_route_id(gtfs_stops)
-        branch_ids = result[result["trip_id"] == "gtfs_trunk"]["branch_route_id"].unique()
-        self.assertListEqual(list(branch_ids), ["Red"])
 
     # --- upload_to_s3 error handling ---
 
