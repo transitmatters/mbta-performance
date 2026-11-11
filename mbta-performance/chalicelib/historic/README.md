@@ -77,7 +77,13 @@ The upload works like a sync. Processing is deterministic (gzip `mtime=0`), so a
   aws s3 ls s3://tm-mbta-performance/Events/monthly-data/70061/Year=2026/
   aws s3 cp s3://tm-mbta-performance/Events/monthly-data/70061/Year=2026/Month=8/events.csv.gz - | gunzip | head
   ```
-  Check that `event_time` values fall within normal service hours (roughly 5am–1am). A block of events at 1–4am means a timezone problem (see below).
+  Check that `event_time` values fall within normal service hours (roughly 5am–1am). A block of events at 1–4am means a timezone problem (see below). This catches a shift of several hours, but not one of a single hour.
+- For bus, compare one day against gobble's live recordings. This is the check that catches a 1-hour timezone error, like #121 (see [Bus timezones](#bus-timezones)). Pick a weekday under daylight time if the new month has one, since that's when the readings can be an hour apart:
+  ```sh
+  aws s3 cp s3://tm-mbta-performance/Events/monthly-bus-data/1-1-67/Year=2026/Month=6/events.csv.gz - | gunzip | grep '^2026-06-10' | grep ',DEP,' | cut -d, -f10 | sort | head
+  aws s3 cp s3://tm-mbta-performance/Events-live/daily-bus-data/1-1-67/Year=2026/Month=6/Day=10/events.csv.gz - | gunzip | grep ',DEP,' | cut -d, -f10 | head
+  ```
+  Gobble's times carry a UTC offset and the monthly file's don't, but both are Eastern, so most departures should match to within a minute. Gobble misses the odd trip. If the monthly times are consistently an hour off, fix the timezone handling and reprocess the month before the step 5 follow-up.
 - After the dashboard follow-up (step 5) is deployed, open a new month on the dashboard. For example, look at Red Line travel times from Alewife.
 
 ### 5. Follow-ups in t-performance-dash
@@ -126,7 +132,7 @@ The bus source files always carry a `Z` suffix, but it never means UTC. As curre
 
 The shifted months look like UTC, but under daylight time reading them as UTC puts every bus an hour late. Taking 5 hours off matches gobble's recordings to within a minute (route 1, stop 67, on days in June, August, October and November 2024). This table used to list 2025 and January 2026 as UTC too; as the MBTA republished them in October 2026, they're Eastern.
 
-`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. If the MBTA switches again, detection should handle it. Still, check the spot-check in step 4 after each update.
+`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. Detection only tells these two cases apart, Eastern and Eastern + 5 hours, so it handles the MBTA switching between them again but not a new format. True UTC under daylight time, for example, is Eastern + 4 hours: its lull lands at 6–8, so it would count as shifted and come out an hour early. A 1-hour error still looks like normal service hours, so the service-hours spot check in step 4 can't catch it. After each bus update, run the gobble comparison in step 4 as well.
 
 ## Full rebuilds
 
