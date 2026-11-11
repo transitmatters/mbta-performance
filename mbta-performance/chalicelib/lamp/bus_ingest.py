@@ -91,8 +91,9 @@ def _recalculate_bus_fields_from_gtfs(
     """Enrich bus LAMP data with GTFS scheduled travel times.
 
     Replaces LAMP's plan_travel_time_seconds with a scheduled_tt computed from
-    GTFS (arrival_time - trip start time), matching each LAMP trip to its
-    nearest scheduled GTFS trip by route/direction/stop.
+    GTFS (arrival_time - trip start time). Each LAMP trip uses its own GTFS trip;
+    one that isn't in GTFS uses the scheduled trip departing nearest in time from
+    the same stop.
 
     Args:
         allow_build: Whether this caller may build a missing GTFS feed itself. False in
@@ -127,22 +128,14 @@ def _recalculate_bus_fields_from_gtfs(
     gtfs_stops["scheduled_tt"] = gtfs_stops["arrival_time"] - trip_start_times
     gtfs_stops["arrival_time"] = gtfs_stops["arrival_time"].astype(float)
 
-    route_starts = pq_df.loc[pq_df.groupby("trip_id").event_time.idxmin()]
-    route_starts["arrival_time"] = (
-        route_starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
-    ).dt.total_seconds()
+    # A LAMP trip_id is its GTFS trip_id for nearly every trip (12,621 of 12,641 on 2026-04-07).
+    # Matching by time instead gave 23% of those trips another trip's schedule, and 4% none (#135).
+    pq_df["scheduled_trip_id"] = pq_df["trip_id"].where(pq_df["trip_id"].isin(gtfs_stops["trip_id"]))
+    unscheduled = pq_df["scheduled_trip_id"].isna()
+    if unscheduled.any():
+        trip_id_map = _match_trips_by_departure_time(pq_df[unscheduled], gtfs_stops, service_date)
+        pq_df.loc[unscheduled, "scheduled_trip_id"] = pq_df.loc[unscheduled, "trip_id"].map(trip_id_map)
 
-    trip_id_map = pd.merge_asof(
-        route_starts.sort_values(by="arrival_time", kind="stable"),
-        gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]].drop_duplicates(),
-        on="arrival_time",
-        direction="nearest",
-        by=RTE_DIR_STOP,
-        suffixes=["", "_scheduled"],
-    )
-    trip_id_map = trip_id_map.drop_duplicates("trip_id").set_index("trip_id").trip_id_scheduled
-
-    pq_df["scheduled_trip_id"] = pq_df.trip_id.map(trip_id_map)
     pq_df = pd.merge(
         pq_df,
         gtfs_stops[["trip_id", "stop_id", "visit_rank", "scheduled_tt"]].drop_duplicates(
@@ -180,6 +173,31 @@ def _recalculate_bus_fields_from_gtfs(
     # Filter only after trip matching: matching keys on each trip's first stop, which need not be a checkpoint.
     pq_df = _filter_to_checkpoints(pq_df, gtfs_stops)
     return pq_df[BUS_S3_COLUMNS]
+
+
+def _match_trips_by_departure_time(pq_df: pd.DataFrame, gtfs_stops: pd.DataFrame, service_date: date) -> pd.Series:
+    """Map each trip_id to the scheduled trip leaving nearest in time from the same route/direction/stop.
+
+    For trips whose own trip_id isn't in GTFS: ADDED trips, and interlined trips that GTFS splits
+    into <trip_id>_1 and _2. Keys on each trip's first departure, falling back to its first event
+    if it has none. The first event is the arrival at the origin, and a bus that arrives early
+    for its layover can be nearer the previous scheduled trip. GTFS's arrival_time stands in for
+    departure: the two are equal at nearly every bus stop.
+    """
+    events = pq_df.sort_values("event_time", kind="stable")
+    starts = pd.concat([events[events["event_type"] == "DEP"], events]).drop_duplicates("trip_id")
+    starts = starts.assign(
+        arrival_time=(starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)).dt.total_seconds()
+    )
+    matched = pd.merge_asof(
+        starts.sort_values(by="arrival_time", kind="stable"),
+        gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]].drop_duplicates(),
+        on="arrival_time",
+        direction="nearest",
+        by=RTE_DIR_STOP,
+        suffixes=["", "_scheduled"],
+    )
+    return matched.set_index("trip_id")["trip_id_scheduled"]
 
 
 def _filter_to_checkpoints(pq_df: pd.DataFrame, gtfs_stops: pd.DataFrame) -> pd.DataFrame:
@@ -325,7 +343,7 @@ def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
     num_groups = len(group_event_groups)
     logger.info(f"Uploading events for {num_groups} route-direction-stop groups to S3")
     try:
-        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~10,500 files don't
+        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~2,300 files don't
         # exist yet and checking each one would only add requests.
         _parallel_upload(group_event_groups, service_date, remote_etags={})
     except Exception as e:

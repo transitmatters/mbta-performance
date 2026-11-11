@@ -10,6 +10,7 @@ Both differ from the daily pipeline's Year=/Month=/Day= keys in constants.py onl
 day-of-month isn't part of the key: a period spans many days, so it doesn't have one.
 """
 
+from collections.abc import Callable
 from datetime import date, timedelta
 
 from .constants import EARLIEST_LAMP_BUS_DATA
@@ -54,3 +55,13 @@ def dates_in_range(start: date, end: date, not_after: date | None = None) -> lis
     if clipped_end < clipped_start:
         return []
     return [clipped_start + timedelta(days=offset) for offset in range((clipped_end - clipped_start).days + 1)]
+
+
+def recent_period_keys(key_for: Callable[[date], tuple[int, int]], newest: date, days: int) -> list[tuple[int, int]]:
+    """The key (from `week_key_for` or `month_key_for`) of every period holding one of the
+    `days` service dates ending at `newest`, newest first and without repeats.
+
+    With `days` of 3 and `newest` a Tuesday, that's this week and last week, since last
+    Sunday is one of the three. By Thursday it's this week alone.
+    """
+    return list(dict.fromkeys(key_for(newest - timedelta(days=offset)) for offset in range(days)))
