@@ -19,7 +19,20 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 TRIP_KEY = ["trip_id", "tm_pullout_id"]
+# Patterns that share a key can take different paths between its stops, which would mix lengths in
+# one speed. Rare enough to ignore: on 2026-11-10, one key of 10,762 had pattern lengths more than
+# 25m apart (route 39 from Ave Louis Pasteur, 730m and 1,101m, 5 traversals), and on 2026-11-08 none.
 SEGMENT_KEY = ["route_id", "direction_id", "from_stop_id", "to_stop_id"]
+
+
+def _by_trip(events: pd.DataFrame):
+    """Group events by TRIP_KEY, keeping a trip whose tm_pullout_id is null.
+
+    groupby's default dropna=True would drop such a trip from every traversal. A null trip_id
+    groups too, but it isn't a trip: interpolate_missing_times skips it, and build_traversals'
+    same-trip check drops it, since NaN never equals NaN.
+    """
+    return events.groupby(TRIP_KEY, sort=False, dropna=False)
 
 
 def attach_shape_distance(events: pd.DataFrame, stop_positions: pd.DataFrame) -> pd.DataFrame:
@@ -77,7 +90,9 @@ def interpolate_missing_times(events: pd.DataFrame) -> pd.DataFrame:
     depart_array = depart_anchor.to_numpy(dtype="float64")
     arrive_array = arrive_anchor.to_numpy(dtype="float64")
 
-    for _, index in events.groupby(TRIP_KEY, sort=False).indices.items():
+    for (trip_id, _), index in _by_trip(events).indices.items():
+        if pd.isna(trip_id):
+            continue
         index = np.sort(index)
         trip_observed = observed_array[index]
         if trip_observed.sum() < 2:
@@ -131,7 +146,10 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
     two speeds differ by more than a factor of two. `speed_mph` is the rider-experienced one.
     """
     events = events.sort_values(TRIP_KEY + ["stop_sequence"])
-    grouped = events.groupby(TRIP_KEY, sort=False)
+    grouped = _by_trip(events)
+    no_pullout = int(events.tm_pullout_id.isna().sum())
+    if no_pullout:
+        logger.info(f"{no_pullout} of {len(events)} bus events have no tm_pullout_id; kept, grouped by trip_id alone")
 
     traversal = pd.DataFrame(
         {
@@ -166,6 +184,10 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
     # rail benchmarks in chalicelib.benchmarks treat the dwell at an origin stop.
     traversal.loc[traversal.is_trip_start, "dwell_seconds"] = 0.0
     traversal["total_time_seconds"] = traversal.moving_time_seconds + traversal.dwell_seconds
+    # A departure with no arrival, anywhere but a trip's first stop, leaves dwell and so total
+    # time unknown. If kept, that one NaN would make its segment's percentiles NaN.
+    no_arrival = traversal.total_time_seconds.isna()
+    traversal = traversal[~no_arrival]
 
     segment_lengths = segments[["route_pattern_id", "from_stop_id", "to_stop_id", "segment_length_m"]].drop_duplicates(
         ["route_pattern_id", "from_stop_id", "to_stop_id"]
@@ -187,8 +209,22 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
         & (traversal.moving_speed_mph >= MIN_PLAUSIBLE_SPEED_MPH)
         & (traversal.moving_speed_mph <= MAX_PLAUSIBLE_SPEED_MPH)
     ]
-    logger.info(f"Built {len(traversal)} traversals ({before - len(traversal)} dropped as implausible)")
+    logger.info(
+        f"Built {len(traversal)} traversals ({before - len(traversal)} dropped as implausible, "
+        f"{int(no_arrival.sum())} for a departure with no arrival)"
+    )
     return traversal
+
+
+def observed_dwell_seconds(traversals: pd.DataFrame) -> pd.Series:
+    """Each traversal's dwell at its first stop, or NaN where build_traversals forced it to zero.
+
+    That's two kinds: a trip's first stop, where the wait is layover, and an interpolated stop,
+    where LAMP didn't record the bus stopping. Counting those zeros would drag a median or
+    an average of dwell down.
+    """
+    observed = ~traversals.is_trip_start.eq(True) & ~traversals.from_interpolated.eq(True)
+    return traversals.dwell_seconds.where(observed)
 
 
 def assign_time_band(departure_seconds: pd.Series) -> pd.Series:
@@ -236,14 +272,21 @@ def aggregate_segments(
 
 
 def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
-    """Percentile times and speeds for each group of traversals."""
-    grouped = traversals.groupby(group_key, sort=False)
+    """Percentile times and speeds for each group of traversals.
+
+    median_dwell_seconds is over the dwells that were observed (observed_dwell_seconds), as
+    daily_metrics' average is, and NaN where there are none, as on a segment every trip starts on.
+    """
+    # Copy-on-write makes this add one column, not copy the frame.
+    grouped = traversals.assign(observed_dwell_seconds=observed_dwell_seconds(traversals)).groupby(
+        group_key, sort=False
+    )
 
     aggregation = {
         "n_traversals": ("total_time_seconds", "size"),
         "n_interpolated": ("is_interpolated", "sum"),
         "segment_length_m": ("segment_length_m", "median"),
-        "median_dwell_seconds": ("dwell_seconds", "median"),
+        "median_dwell_seconds": ("observed_dwell_seconds", "median"),
         "trip_start_share": ("is_trip_start", "mean"),
         "trip_end_share": ("is_trip_end", "mean"),
     }

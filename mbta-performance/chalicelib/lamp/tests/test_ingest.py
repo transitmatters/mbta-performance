@@ -54,6 +54,23 @@ class TestIngest(unittest.TestCase):
         bad_late_arrivals = collated_events[collated_events["event_time_ARR"] > collated_events["event_time_DEP"]]
         self.assertEqual(len(bad_late_arrivals), 8)
 
+    def test__process_arrival_departure_times_previous_stop_without_arrival(self):
+        """A departure goes to the stop before it even when LAMP has no arrival there (#141)."""
+        pq_df = self._make_minimal_lamp_df(
+            service_date_int=20240213,
+            trip_stop_pairs=[("trip1", "70001", "O-001"), ("trip1", "70003", "O-001"), ("trip1", "70005", "O-001")],
+        )
+        pq_df.loc[1, "stop_timestamp"] = pd.NA
+        pq_df = ingest._normalize_occupancy(pq_df.rename(columns=ingest.COLUMN_RENAME_MAP))
+
+        result = ingest._process_arrival_departure_times(pq_df)
+
+        departures = result[result.event_type == "DEP"].sort_values("stop_sequence")
+        # the first row's departure has no stop before it, so it's dropped later in ingest_pq_file
+        self.assertListEqual(departures["stop_id"].tolist(), [pd.NA, "70001", "70003"])
+        arrivals = result[result.event_type == "ARR"].sort_values("stop_sequence")
+        self.assertListEqual(arrivals["stop_id"].tolist(), ["70001", "70005"])
+
     def test_fetch_pq_file_from_remote(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
         with mock.patch("requests.get", return_value=mock_response):
@@ -97,7 +114,7 @@ class TestIngest(unittest.TestCase):
         null_id_events = pq_df_after[pq_df_after["stop_id"].isna()]
         self.assertEqual(added.shape, (3763, 20))
         self.assertTrue(null_id_events.empty)
-        self.assertEqual(pq_df_after.shape, (17074, 20))
+        self.assertEqual(pq_df_after.shape, (17078, 20))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
 
     def test__average_scheduled_headways(self):
@@ -118,7 +135,7 @@ class TestIngest(unittest.TestCase):
         # that we do not erase any headway info
         null_headway_events_before = pq_df_before[pq_df_before["scheduled_headway"].isna()]
         null_headway_events_after = pq_df_after[pq_df_after["scheduled_headway"].isna()]
-        self.assertEqual(null_headway_events_after.shape, (227, 20))
+        self.assertEqual(null_headway_events_after.shape, (229, 20))
         self.assertTrue(len(null_headway_events_after) <= len(null_headway_events_before))
 
         # pick a route/dir and directly compare, in time order as ingest_pq_file outputs them

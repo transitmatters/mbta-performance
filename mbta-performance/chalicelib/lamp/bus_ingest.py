@@ -46,12 +46,17 @@ def fetch_bus_pq_file_from_remote(service_date: date) -> pd.DataFrame:
 def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
     """Split bus events into separate ARR and DEP rows.
 
-    Bus LAMP data already provides stop_arrival_dt and stop_departure_dt
-    as UTC-aware timestamps, along with previous_stop_id. We just need to:
+    Each bus LAMP row is one stop visit: stop_arrival_dt is the bus reaching the row's stop_id
+    and stop_departure_dt is the bus leaving that same stop. (LAMP's stopped_duration_seconds is
+    departure - arrival on the same row, and travel_time_seconds is this row's arrival minus the
+    previous row's departure.) That is unlike rail LAMP, where move_timestamp is the departure
+    from the *previous* stop, so DEP rows here must not be relabelled with previous_stop_id the
+    way rail's ingest.py does it -- that shifts every departure one stop upstream (#129).
+
+    Steps:
     1. Convert to Eastern Time
-    2. Create separate ARR/DEP event rows
-    3. For DEP events, use previous_stop_id as the stop_id
-    4. Tag each row with visit_rank: which occurrence of this stop_id within this trip it is,
+    2. Create separate ARR/DEP event rows, both keyed by the row's own stop_id
+    3. Tag each row with visit_rank: which occurrence of this stop_id within this trip it is,
        so a loop/circulator route that revisits a stop can later be matched (in
        _recalculate_bus_fields_from_gtfs) to the correct scheduled visit instead of collapsing
        every visit onto the same GTFS stop_time.
@@ -61,34 +66,14 @@ def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["trip_id", "stop_sequence"], kind="stable")
     df["visit_rank"] = df.groupby(["trip_id", "stop_id"]).cumcount()
 
-    # Arrivals: use stop_arrival_dt and the current stop_id. This row's own visit_rank applies
-    # directly, since it was computed against this same stop_id.
     arr_df = df[df["stop_arrival_dt"].notna()].copy()
     arr_df["event_type"] = "ARR"
     arr_df["event_time"] = arr_df["stop_arrival_dt"].dt.tz_convert(EASTERN_TIME)
     arr_df = arr_df[BUS_S3_COLUMNS + ["visit_rank"]]
 
-    # Departures: use stop_departure_dt and previous_stop_id. The visit_rank we want belongs to
-    # previous_stop_id's own last visit, not this row's -- found via a backward merge_asof
-    # rather than assuming it's the immediately preceding row, since stop_sequence steps aren't
-    # guaranteed contiguous (same reasoning as rail's ingest.py backward merge_asof).
-    dep_df = df[df["stop_departure_dt"].notna() & df["previous_stop_id"].notna()].copy()
+    dep_df = df[df["stop_departure_dt"].notna()].copy()
     dep_df["event_type"] = "DEP"
     dep_df["event_time"] = dep_df["stop_departure_dt"].dt.tz_convert(EASTERN_TIME)
-
-    visited_stops = df[["trip_id", "stop_id", "stop_sequence", "visit_rank"]].rename(
-        columns={"stop_id": "previous_stop_id", "visit_rank": "_prev_visit_rank"}
-    )
-    dep_df = pd.merge_asof(
-        dep_df.sort_values("stop_sequence", kind="stable"),
-        visited_stops.sort_values("stop_sequence", kind="stable"),
-        on="stop_sequence",
-        by=["trip_id", "previous_stop_id"],
-        direction="backward",
-        allow_exact_matches=False,
-    )
-    dep_df["visit_rank"] = dep_df["_prev_visit_rank"]
-    dep_df["stop_id"] = dep_df["previous_stop_id"]
     dep_df = dep_df[BUS_S3_COLUMNS + ["visit_rank"]]
 
     result = pd.concat([arr_df, dep_df]).reset_index(drop=True)
