@@ -10,7 +10,6 @@ BUS_LAMP_COLUMNS = [
     "direction_id",
     "stop_sequence",
     "vehicle_label",
-    "previous_stop_id",
     "is_full_trip",
     # Actual timestamps (UTC-aware)
     "stop_arrival_dt",
