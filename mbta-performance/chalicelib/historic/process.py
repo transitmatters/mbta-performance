@@ -1,6 +1,7 @@
+import calendar
 import pathlib
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -17,6 +18,20 @@ from .constants import (
 )
 from .constants import HISTORIC_COLUMNS_PRE_LAMP as HISTORIC_COLUMNS
 from .gtfs_archive import add_gtfs_headways
+
+
+def whole_months(start_date: date | None, end_date: date | None) -> tuple[date | None, date | None]:
+    """
+    Widen [start_date, end_date] to whole calendar months: start on the 1st, end on the month's last day.
+
+    Outputs are one file per (stop, month), and uploading one replaces that whole month in S3. A range that starts or
+    ends mid-month would write a file holding only the days in range, and uploading it would drop the rest of the month.
+    """
+    if start_date is not None:
+        start_date = start_date.replace(day=1)
+    if end_date is not None:
+        end_date = end_date.replace(day=calendar.monthrange(end_date.year, end_date.month)[1])
+    return start_date, end_date
 
 
 def process_events(
@@ -41,6 +56,7 @@ def process_events(
         },
     )
 
+    start_date, end_date = whole_months(start_date, end_date)
     if start_date is not None:
         df = df[df["service_date"].dt.date >= start_date]
     if end_date is not None:
@@ -54,11 +70,9 @@ def process_events(
     if "sync_stop_sequence" in df.columns:
         df.rename(columns={"sync_stop_sequence": "stop_sequence"}, inplace=True)
 
-    try:
-        df = add_gtfs_headways(df)
-    except IndexError:
-        # failure to add gtfs benchmarks
-        pass
+    # Days GTFS can't cover are kept without benchmarks. Anything else it raises is a bug, and
+    # writing the whole file without benchmarks would overwrite good ones in S3 on upload.
+    df = add_gtfs_headways(df)
 
     # Write to disk
     to_disk(df, outdir, nozip)
@@ -91,7 +105,7 @@ def to_disk(df: pd.DataFrame, outdir, nozip=False):
 def to_disk_ferry(df: pd.DataFrame, outdir: str, nozip: bool = False):
     """
     For each service_date/stop_id/direction/route group, we write the events to disk.
-    Uses monthly ferry data structure: monthly-ferry-data/{route_id}-{direction_id}-{stop_id}/Year={year}/Month={month}/events.csv.gz
+    Uses monthly ferry data structure: monthly-ferry-data/{route_id}|{direction_id}|{stop_id}/Year={year}/Month={month}/events.csv.gz
     """
     monthly_service_date = pd.Grouper(key="service_date", freq="1ME")
     grouped = df.groupby([monthly_service_date, "stop_id", "direction_id", "route_id"])
@@ -111,6 +125,30 @@ def to_disk_ferry(df: pd.DataFrame, outdir: str, nozip: bool = False):
         fname.parent.mkdir(parents=True, exist_ok=True)
         # set mtime to 0 in gzip header for determinism (so we can re-gen old routes, and rsync to s3 will ignore)
         events.to_csv(fname, index=False, compression={"method": "gzip", "mtime": 0} if not nozip else None)
+
+
+# Columns that identify a ferry trip in the source, for trips it has no trip_id for
+FERRY_TRIP_KEY = ["service_date", "route_id", "departure_terminal", "arrival_terminal", "mbta_sched_departure"]
+
+
+def fill_missing_ferry_trip_ids(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Give trips without a trip_id (most F2H and F4 trips since 2022) one derived from the trip, so a rerun writes
+    the same files and the upload skips months that didn't change. uuid5 is a hash, so the same trip gets the
+    same id every time. Rows that share a FERRY_TRIP_KEY (mostly midnight placeholders) are numbered after
+    sorting by everything else that's written out, so the numbering doesn't depend on their order in the file.
+    """
+    other_output_columns = ["actual_departure", "actual_arrival", "vessel_time_slot", "travel_direction"]
+    missing = df[df["trip_id"].isna()].sort_values(FERRY_TRIP_KEY + other_output_columns)
+    occurrence = missing.groupby(FERRY_TRIP_KEY, dropna=False).cumcount()
+    parts = [missing[col].astype(str) for col in FERRY_TRIP_KEY] + [occurrence.astype(str)]
+    names = parts[0].str.cat(parts[1:], sep="|", na_rep="")
+
+    df = df.copy()
+    # An all-NaN trip_id column reads as float64, which pandas 3 won't silently upcast for strings
+    df["trip_id"] = df["trip_id"].astype(object)
+    df.loc[missing.index, "trip_id"] = [str(uuid.uuid5(uuid.NAMESPACE_OID, name)) for name in names]
+    return df
 
 
 def process_ferry(
@@ -138,27 +176,21 @@ def process_ferry(
         ]
     )
 
-    missing_trip_ids_mask = df["trip_id"].isna()
-    # An all-NaN trip_id column reads as float64, which pandas 3 won't silently upcast for strings
-    df["trip_id"] = df["trip_id"].astype(object)
-    df.loc[missing_trip_ids_mask, "trip_id"] = [str(uuid.uuid4()) for _ in range(missing_trip_ids_mask.sum())]
-
-    # Convert to datetime first, then apply timezone localization
+    # Scheduled times and service dates are UTC; convert them to Eastern
     df["mbta_sched_arrival"] = pd.to_datetime(df["mbta_sched_arrival"], errors="coerce").dt.tz_convert(tz="US/Eastern")
     df["mbta_sched_departure"] = pd.to_datetime(df["mbta_sched_departure"], errors="coerce").dt.tz_convert(
         tz="US/Eastern"
     )
-    df["actual_departure"] = pd.to_datetime(df["actual_departure"], format="mixed", errors="coerce").dt.tz_localize(
-        tz="US/Eastern"
-    )
-    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], format="mixed", errors="coerce").dt.tz_localize(
-        tz="US/Eastern"
-    )
+    # Actual times are already Eastern wall-clock time, and are written out that way. Leave them naive: localizing
+    # them gains nothing, and fails on times in the hour the clocks change.
+    df["actual_departure"] = pd.to_datetime(df["actual_departure"], format="mixed", errors="coerce")
+    df["actual_arrival"] = pd.to_datetime(df["actual_arrival"], format="mixed", errors="coerce")
     df["service_date"] = pd.to_datetime(df["service_date"], errors="coerce").dt.tz_convert(tz="US/Eastern")
 
     # Apply date range filtering if specified
+    start_date, end_date = whole_months(start_date, end_date)
     if start_date or end_date:
-        print("Filtering data by date range...")
+        print("Filtering data by date range (whole months)...")
         original_count = len(df)
 
         if start_date:
@@ -174,6 +206,8 @@ def process_ferry(
         if len(df) == 0:
             print("No data remaining after date filtering. Exiting.")
             return
+
+    df = fill_missing_ferry_trip_ids(df)
 
     # Convert To Boston/From Boston to Inbound/Outbound Values
     df["travel_direction"] = df["travel_direction"].replace(inbound_outbound)
@@ -211,17 +245,12 @@ def process_ferry(
     # Convert service_date to proper datetime format for grouping in to_disk()
     # Keep as datetime but normalize to service date (date portion only) in Eastern timezone
     df["service_date"] = df["service_date"].dt.tz_localize(None)
-    df["event_time"] = df["event_time"].dt.tz_localize(None)
     df.loc[:, "service_date"] = df["service_date"].dt.strftime("%Y-%m-%d")
     df.loc[:, "event_time"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # Calculate GTFS headways once for all events
-    # This adds scheduled_tt and scheduled_headway
-    try:
-        df = add_gtfs_headways(df)
-    except IndexError:
-        # failure to add gtfs benchmarks
-        pass
+    # This adds scheduled_tt and scheduled_headway (see process_events on why errors aren't caught)
+    df = add_gtfs_headways(df)
 
     # Load route constants and add stop sequence information
     # route_dicts = load_constants()
@@ -271,7 +300,9 @@ def load_bus_data(input_csv: str, routes: list = None):
     2020-01-15,     "01",       "Inbound",    46374001,       187,        "masta",                6,            "Midpoint",     "Schedule",       1900-01-01 05:20:00,    1900-01-01 05:21:04,      -33,                    NA,NA
     2020-01-15,     "01",       "Inbound",    46374045,       110,        "hhgat",                1,            "Startpoint",   "Headway",        1900-01-01 05:20:00,    1900-01-01 05:20:45,      NA,                   900,971
     """
-    df = pd.read_csv(input_csv, dtype={"service_date": str, "route_id": str, "direction": str, "stop_id": str})
+    # The old headers go in the dtypes too, so 2020 Q4 (the only PascalCase file) reads its IDs the same way
+    string_columns = ["service_date", "route_id", "direction", "stop_id", "ServiceDate", "Route", "Direction", "Stop"]
+    df = pd.read_csv(input_csv, dtype={col: str for col in string_columns})
     df.rename(
         columns={
             # This set of transformations covers prior-year bus data.
@@ -327,7 +358,19 @@ def load_bus_data(input_csv: str, routes: list = None):
         df.scheduled -= BUS_SHIFT
         df.actual -= BUS_SHIFT
 
-    df.direction_id = df.direction_id.map({"Outbound": 0, "Inbound": 1})
+    direction_id = df.direction_id.map({"Outbound": 0, "Inbound": 1})
+    unknown = direction_id.isna()
+    if unknown.all() and not df.empty:
+        raise ValueError(f"No recognized direction in {input_csv}: {sorted(df.direction_id.astype(str).unique())[:10]}")
+    if unknown.any():
+        # A NaN makes direction_id float64, which merge_asof won't match against GTFS's int64.
+        # These rows couldn't be written anyway: to_disk_bus groups by direction.
+        print(
+            f"Warning: dropping {unknown.sum()} rows of {input_csv} with an unrecognized direction: "
+            f"{sorted(df.direction_id[unknown].astype(str).unique())[:10]}"
+        )
+        df = df[~unknown]
+    df.direction_id = direction_id[~unknown].astype(int)
 
     return df
 

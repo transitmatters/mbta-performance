@@ -28,7 +28,7 @@ import pandas as pd
 
 from ... import dynamo
 from .constants import DYNAMO_TABLE_NAME, HEADWAY_POINT_TYPES, HEADWAY_RATIO_BUCKETS, METERS_PER_MILE
-from .segments import assign_time_band, has_observed_dwell
+from .segments import assign_time_band, observed_dwell_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,11 @@ SUMMABLE_AGGREGATION = {
     "n_interpolated": ("is_interpolated", "sum"),
     "miles_covered": ("segment_length_m", lambda s: s.sum() / METERS_PER_MILE),
     "total_time": ("total_time_seconds", "sum"),
-    # Dwell at the stops that have one: see _with_observed_dwell. Average dwell is
+    # Dwell at the stops that have one: see segments.observed_dwell_seconds, which is NaN at the
+    # rest, so they add nothing to the sum and aren't counted. Average dwell is
     # total_dwell / n_dwell_stops, not / n_traversals.
     "total_dwell": ("observed_dwell_seconds", "sum"),
-    "n_dwell_stops": ("has_observed_dwell", "sum"),
+    "n_dwell_stops": ("observed_dwell_seconds", "count"),
 }
 
 ROUTE_DAY_KEY = ["route_id", "service_date", "day_type"]
@@ -72,7 +73,7 @@ def build_daily_route_metrics(traversals: pd.DataFrame, events: pd.DataFrame | N
     column, and adds the EVENT_FIELDS from `build_event_route_metrics`. A route that appears
     only there -- every trip unobserved -- still gets a row, with no speed fields.
     """
-    traversals = _with_observed_dwell(traversals)
+    traversals = traversals.assign(observed_dwell_seconds=observed_dwell_seconds(traversals))
     daily = (
         traversals.groupby(ROUTE_DAY_KEY, sort=False)
         .agg(
@@ -87,16 +88,6 @@ def build_daily_route_metrics(traversals: pd.DataFrame, events: pd.DataFrame | N
     if events is not None:
         daily = daily.merge(build_event_route_metrics(events), on=ROUTE_DAY_KEY, how="outer")
     return daily.rename(columns={"route_id": "route", "service_date": "date"})
-
-
-def _with_observed_dwell(traversals: pd.DataFrame) -> pd.DataFrame:
-    """Mark the traversals whose dwell at their first stop was actually observed
-    (segments.has_observed_dwell), which alone count toward the dwell total and the stop count."""
-    has_dwell = has_observed_dwell(traversals)
-    return traversals.assign(
-        has_observed_dwell=has_dwell,
-        observed_dwell_seconds=traversals.dwell_seconds.where(has_dwell, 0.0),
-    )
 
 
 def _time_band_totals(traversals: pd.DataFrame) -> dict[tuple, dict[str, dict]]:

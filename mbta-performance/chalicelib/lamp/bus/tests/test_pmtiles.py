@@ -162,6 +162,20 @@ class TestBuildPmtilesBytes(unittest.TestCase):
             self.assertIsNone(properties.get(column))
         self.assertEqual(properties["segment_length_m"], 500)
 
+    def test_a_nan_is_left_null_rather_than_failing_the_upload(self):
+        # p50_running_time_seconds is NaN on a row where no traversal had a usable running time.
+        frame = _segments().assign(p50_running_time_seconds=nan, p50_running_speed_mph=nan)
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(frame)
+
+        properties = self.written_properties[0]
+        self.assertIsNone(properties.get("p50_running_time_seconds"))
+        self.assertEqual(properties["segment_length_m"], 500)
+        self.assertEqual(properties["running_length_m"], 410)
+
     def test_only_running_time_reaches_the_segment_tiles(self):
         # The segments show street running time only; time at the stop is on the dwell layer.
         self.assertFalse([column for column in pmtiles.TILE_PROPERTIES if "dwell" in column or "total" in column])
@@ -320,6 +334,7 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             ],
             ignore_index=True,
         )
+        frame.loc[0, "p50_running_time_seconds"] = nan
         with tempfile.TemporaryDirectory() as tmp_dir:
             tileset_path = Path(tmp_dir) / "segments.pmtiles"
             tileset_path.write_bytes(pmtiles.build_pmtiles_bytes(frame))
@@ -333,11 +348,18 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             for layer in tile["features"]
             for feature in layer["features"]
         }
-        for column in ("shared_routes", "terminal_section", "p10_running_speed_mph", "p90_running_speed_mph"):
+        for column in (
+            "shared_routes",
+            "terminal_section",
+            "p10_running_speed_mph",
+            "p90_running_speed_mph",
+            "p50_running_time_seconds",
+        ):
             self.assertNotIn(column, by_band["am_peak"])
         self.assertEqual(by_band["midday"]["shared_routes"], "1,2")
         self.assertEqual(by_band["midday"]["terminal_section"], "last")
         self.assertEqual(by_band["midday"]["p10_running_speed_mph"], 14)
+        self.assertEqual(by_band["midday"]["p50_running_time_seconds"], 80)
 
     def test_produces_a_dwells_layer_of_points(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

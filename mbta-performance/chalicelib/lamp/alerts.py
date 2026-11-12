@@ -50,6 +50,7 @@ import requests
 
 from .. import parallel, s3
 from ..date import EASTERN_TIME, service_date, service_day_start
+from .constants import LAMP_REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def fetch_alerts_parquet(dest: str = LOCAL_PARQUET_PATH) -> str:
     130MB copy in RAM alongside the eventual pandas frames.
     """
     logger.info(f"Downloading LAMP alerts parquet from {LAMP_ALERTS_URL}")
-    with requests.get(LAMP_ALERTS_URL, stream=True) as response:
+    with requests.get(LAMP_ALERTS_URL, stream=True, timeout=LAMP_REQUEST_TIMEOUT) as response:
         response.raise_for_status()
         with open(dest, "wb") as f:
             for chunk in response.iter_content(chunk_size=1024 * 1024):

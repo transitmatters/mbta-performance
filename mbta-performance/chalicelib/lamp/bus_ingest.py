@@ -7,8 +7,10 @@ import pandas as pd
 import requests
 
 from .. import parallel, s3
-from ..date import EASTERN_TIME, get_current_service_date
+from ..date import EASTERN_TIME
 from ..gtfs import fetch_stop_times_from_gtfs
+from . import catch_up
+from .constants import LAMP_REQUEST_TIMEOUT
 from .bus_constants import (
     BUS_COLUMN_RENAME_MAP,
     BUS_DAILY_URL_TEMPLATE,
@@ -22,12 +24,16 @@ logger = logging.getLogger(__name__)
 
 RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
 
+# The bus job's slowest run over 30 days to 2026-11-11 was 61s (avg 44s) against a 300s timeout.
+# It starts another day only with twice that left, so one run handles up to 3 days.
+SECONDS_PER_DAY = 120
+
 
 def fetch_bus_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     """Fetch a bus parquet file from LAMP for a given service date."""
     url = BUS_DAILY_URL_TEMPLATE.format(YYYYMMDD=service_date.strftime("%Y%m%d"))
     logger.info(f"Fetching bus LAMP parquet file from {url}")
-    result = requests.get(url)
+    result = requests.get(url, timeout=LAMP_REQUEST_TIMEOUT)
 
     if result.status_code != 200:
         logger.error(f"Failed to fetch bus LAMP parquet file from {url}. Status code: {result.status_code}")
@@ -47,12 +53,17 @@ def fetch_bus_pq_file_from_remote(service_date: date) -> pd.DataFrame:
 def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
     """Split bus events into separate ARR and DEP rows.
 
-    Bus LAMP data already provides stop_arrival_dt and stop_departure_dt
-    as UTC-aware timestamps, along with previous_stop_id. We just need to:
+    Each bus LAMP row is one stop visit: stop_arrival_dt is the bus reaching the row's stop_id
+    and stop_departure_dt is the bus leaving that same stop. (LAMP's stopped_duration_seconds is
+    departure - arrival on the same row, and travel_time_seconds is this row's arrival minus the
+    previous row's departure.) That is unlike rail LAMP, where move_timestamp is the departure
+    from the *previous* stop, so DEP rows here must not be relabelled with previous_stop_id the
+    way rail's ingest.py does it -- that shifts every departure one stop upstream (#129).
+
+    Steps:
     1. Convert to Eastern Time
-    2. Create separate ARR/DEP event rows
-    3. For DEP events, use previous_stop_id as the stop_id
-    4. Tag each row with visit_rank: which occurrence of this stop_id within this trip it is,
+    2. Create separate ARR/DEP event rows, both keyed by the row's own stop_id
+    3. Tag each row with visit_rank: which occurrence of this stop_id within this trip it is,
        so a loop/circulator route that revisits a stop can later be matched (in
        _recalculate_bus_fields_from_gtfs) to the correct scheduled visit instead of collapsing
        every visit onto the same GTFS stop_time.
@@ -62,34 +73,14 @@ def _process_bus_arrival_departure_times(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["trip_id", "stop_sequence"], kind="stable")
     df["visit_rank"] = df.groupby(["trip_id", "stop_id"]).cumcount()
 
-    # Arrivals: use stop_arrival_dt and the current stop_id. This row's own visit_rank applies
-    # directly, since it was computed against this same stop_id.
     arr_df = df[df["stop_arrival_dt"].notna()].copy()
     arr_df["event_type"] = "ARR"
     arr_df["event_time"] = arr_df["stop_arrival_dt"].dt.tz_convert(EASTERN_TIME)
     arr_df = arr_df[BUS_S3_COLUMNS + ["visit_rank"]]
 
-    # Departures: use stop_departure_dt and previous_stop_id. The visit_rank we want belongs to
-    # previous_stop_id's own last visit, not this row's -- found via a backward merge_asof
-    # rather than assuming it's the immediately preceding row, since stop_sequence steps aren't
-    # guaranteed contiguous (same reasoning as rail's ingest.py backward merge_asof).
-    dep_df = df[df["stop_departure_dt"].notna() & df["previous_stop_id"].notna()].copy()
+    dep_df = df[df["stop_departure_dt"].notna()].copy()
     dep_df["event_type"] = "DEP"
     dep_df["event_time"] = dep_df["stop_departure_dt"].dt.tz_convert(EASTERN_TIME)
-
-    visited_stops = df[["trip_id", "stop_id", "stop_sequence", "visit_rank"]].rename(
-        columns={"stop_id": "previous_stop_id", "visit_rank": "_prev_visit_rank"}
-    )
-    dep_df = pd.merge_asof(
-        dep_df.sort_values("stop_sequence", kind="stable"),
-        visited_stops.sort_values("stop_sequence", kind="stable"),
-        on="stop_sequence",
-        by=["trip_id", "previous_stop_id"],
-        direction="backward",
-        allow_exact_matches=False,
-    )
-    dep_df["visit_rank"] = dep_df["_prev_visit_rank"]
-    dep_df["stop_id"] = dep_df["previous_stop_id"]
     dep_df = dep_df[BUS_S3_COLUMNS + ["visit_rank"]]
 
     result = pd.concat([arr_df, dep_df]).reset_index(drop=True)
@@ -106,8 +97,9 @@ def _recalculate_bus_fields_from_gtfs(
     """Enrich bus LAMP data with GTFS scheduled travel times.
 
     Replaces LAMP's plan_travel_time_seconds with a scheduled_tt computed from
-    GTFS (arrival_time - trip start time), matching each LAMP trip to its
-    nearest scheduled GTFS trip by route/direction/stop.
+    GTFS (arrival_time - trip start time). Each LAMP trip uses its own GTFS trip;
+    one that isn't in GTFS uses the scheduled trip departing nearest in time from
+    the same stop.
 
     Args:
         allow_build: Whether this caller may build a missing GTFS feed itself. False in
@@ -142,22 +134,14 @@ def _recalculate_bus_fields_from_gtfs(
     gtfs_stops["scheduled_tt"] = gtfs_stops["arrival_time"] - trip_start_times
     gtfs_stops["arrival_time"] = gtfs_stops["arrival_time"].astype(float)
 
-    route_starts = pq_df.loc[pq_df.groupby("trip_id").event_time.idxmin()]
-    route_starts["arrival_time"] = (
-        route_starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
-    ).dt.total_seconds()
+    # A LAMP trip_id is its GTFS trip_id for nearly every trip (12,621 of 12,641 on 2026-04-07).
+    # Matching by time instead gave 23% of those trips another trip's schedule, and 4% none (#135).
+    pq_df["scheduled_trip_id"] = pq_df["trip_id"].where(pq_df["trip_id"].isin(gtfs_stops["trip_id"]))
+    unscheduled = pq_df["scheduled_trip_id"].isna()
+    if unscheduled.any():
+        trip_id_map = _match_trips_by_departure_time(pq_df[unscheduled], gtfs_stops, service_date)
+        pq_df.loc[unscheduled, "scheduled_trip_id"] = pq_df.loc[unscheduled, "trip_id"].map(trip_id_map)
 
-    trip_id_map = pd.merge_asof(
-        route_starts.sort_values(by="arrival_time", kind="stable"),
-        gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]].drop_duplicates(),
-        on="arrival_time",
-        direction="nearest",
-        by=RTE_DIR_STOP,
-        suffixes=["", "_scheduled"],
-    )
-    trip_id_map = trip_id_map.drop_duplicates("trip_id").set_index("trip_id").trip_id_scheduled
-
-    pq_df["scheduled_trip_id"] = pq_df.trip_id.map(trip_id_map)
     pq_df = pd.merge(
         pq_df,
         gtfs_stops[["trip_id", "stop_id", "visit_rank", "scheduled_tt"]].drop_duplicates(
@@ -173,7 +157,8 @@ def _recalculate_bus_fields_from_gtfs(
     if missing_tt_mask.any():
         logger.debug(f"Attempting fallback scheduled_tt matching for {missing_tt_mask.sum()} events")
         gtfs_stops["time_bucket"] = (gtfs_stops["arrival_time"] // 1800).astype(int)
-        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median()
+        # Rounded to the second, as in rail's ingest.py: a half-second median won't fit Int64.
+        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median().round()
 
         event_seconds = (
             pq_df.loc[missing_tt_mask, "event_time"] - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)
@@ -195,6 +180,31 @@ def _recalculate_bus_fields_from_gtfs(
     # Filter only after trip matching: matching keys on each trip's first stop, which need not be a checkpoint.
     pq_df = _filter_to_checkpoints(pq_df, gtfs_stops)
     return pq_df[BUS_S3_COLUMNS]
+
+
+def _match_trips_by_departure_time(pq_df: pd.DataFrame, gtfs_stops: pd.DataFrame, service_date: date) -> pd.Series:
+    """Map each trip_id to the scheduled trip leaving nearest in time from the same route/direction/stop.
+
+    For trips whose own trip_id isn't in GTFS: ADDED trips, and interlined trips that GTFS splits
+    into <trip_id>_1 and _2. Keys on each trip's first departure, falling back to its first event
+    if it has none. The first event is the arrival at the origin, and a bus that arrives early
+    for its layover can be nearer the previous scheduled trip. GTFS's arrival_time stands in for
+    departure: the two are equal at nearly every bus stop.
+    """
+    events = pq_df.sort_values("event_time", kind="stable")
+    starts = pd.concat([events[events["event_type"] == "DEP"], events]).drop_duplicates("trip_id")
+    starts = starts.assign(
+        arrival_time=(starts.event_time - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)).dt.total_seconds()
+    )
+    matched = pd.merge_asof(
+        starts.sort_values(by="arrival_time", kind="stable"),
+        gtfs_stops[RTE_DIR_STOP + ["arrival_time", "trip_id"]].drop_duplicates(),
+        on="arrival_time",
+        direction="nearest",
+        by=RTE_DIR_STOP,
+        suffixes=["", "_scheduled"],
+    )
+    return matched.set_index("trip_id")["trip_id_scheduled"]
 
 
 def _filter_to_checkpoints(pq_df: pd.DataFrame, gtfs_stops: pd.DataFrame) -> pd.DataFrame:
@@ -317,16 +327,17 @@ def upload_bus_to_s3(
 _parallel_upload = parallel.make_parallel(upload_bus_to_s3)
 
 
-def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
-    """Ingest and upload bus LAMP data for a given service date."""
+def ingest_bus_data(service_date: date, local_archive_path: str | None = None) -> int:
+    """Ingest and upload bus LAMP data for a given service date.
+
+    Returns the number of route-direction-stop files written. Raises if anything fails, including
+    the fetch: there's no same-day bus job, so a missing file is never expected.
+    """
     logger.info(f"Starting bus LAMP data ingestion for service date {service_date}")
     try:
         df = fetch_bus_pq_file_from_remote(service_date)
-    except ValueError as e:
-        logger.error(f"Failed to fetch bus data for {service_date}: {e}")
-        return
     except Exception as e:
-        logger.exception(f"Unexpected error fetching bus data for {service_date}: {e}")
+        logger.exception(f"Error fetching bus data for {service_date}: {e}")
         raise
 
     try:
@@ -340,20 +351,22 @@ def ingest_bus_data(service_date: date, local_archive_path: str | None = None):
     num_groups = len(group_event_groups)
     logger.info(f"Uploading events for {num_groups} route-direction-stop groups to S3")
     try:
-        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~10,500 files don't
+        # remote_etags={}: no HEADs. There's no same-day bus job, so yesterday's ~2,300 files don't
         # exist yet and checking each one would only add requests.
         _parallel_upload(group_event_groups, service_date, remote_etags={})
     except Exception as e:
         logger.exception(f"Error uploading bus data for {service_date}: {e}")
         raise
     logger.info(f"Bus LAMP data ingestion complete for service date {service_date}")
+    return num_groups
 
 
-def ingest_yesterday_bus_data():
-    """Ingest and upload yesterday's bus LAMP data."""
-    service_date = get_current_service_date() - pd.Timedelta(days=1)
-    logger.info(f"Ingesting yesterday's bus data (service date: {service_date})")
-    ingest_bus_data(service_date)
+def ingest_yesterday_bus_data(context=None):
+    """Ingest yesterday's bus LAMP data, and retry any recent day whose run never finished.
+
+    context is the Lambda context, used to stop before the timeout; see catch_up.ingest_recent_days.
+    """
+    catch_up.ingest_recent_days("bus-daily-data", ingest_bus_data, SECONDS_PER_DAY, context)
 
 
 if __name__ == "__main__":

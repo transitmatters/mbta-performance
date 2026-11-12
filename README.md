@@ -57,7 +57,7 @@ If you want more verbose logging and debug info, export `DEBUG` as log level. Ho
 export LOG_LEVEL="DEBUG"
 ```
 
-GTFS feeds are cached locally (`data/gtfs_archives/` for historic, `./feeds` for LAMP backfills). To share one cache with other TransitMatters repos, point `GTFS_DATA_DIR` at a common directory; archives go in `$GTFS_DATA_DIR/gtfs_archives` and sqlite feeds in `$GTFS_DATA_DIR/sqlite_feeds`.
+GTFS feeds are cached locally (`data/gtfs_archives/` for historic, `./feeds` for LAMP backfills, and just the current feed in `gtfs_feeds/` under the system temp directory, usually `/tmp`, for the daily ingests, as in Lambda). To share one cache with other TransitMatters repos, point `GTFS_DATA_DIR` at a common directory; archives go in `$GTFS_DATA_DIR/gtfs_archives` and sqlite feeds in `$GTFS_DATA_DIR/sqlite_feeds`.
 
 ```shell
 export GTFS_DATA_DIR="$HOME/transitmatters-gtfs"
@@ -73,6 +73,15 @@ uv run python -m mbta-performance.chalicelib.lamp.ingest
 
 ```shell
 uv run python -m mbta-performance.chalicelib.lamp.backfill.main
+```
+
+### Missed days
+
+The daily rail and bus "yesterday" jobs write a marker for each service date they finish, at `s3://tm-mbta-performance/Events-lamp/ingest-markers/{daily-data,bus-daily-data}/YYYY-MM-DD.json`. Each run also retries any day in the last 7 that has no marker, and fails the Lambda if a day fails, so Datadog shows it. A day older than that needs the backfill script. To stop a day from being retried (for example, one LAMP will never publish), write its marker by hand:
+
+```shell
+echo '{"service_date": "2026-11-10", "files": 0, "note": "skipped by hand"}' | \
+  aws s3 cp - s3://tm-mbta-performance/Events-lamp/ingest-markers/bus-daily-data/2026-11-10.json
 ```
 
 ### Monthly (historic) data

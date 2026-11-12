@@ -42,6 +42,11 @@ echo "Difference: $diffsize bytes"
 check_package_size
 check_unzipped_size
 
+# Import the shrunk layer in the Lambda runtime. layer.yml runs this too, but on its own build;
+# this is the zip that ships. Needs Docker. smoke_layer returns rather than exits, and this script
+# doesn't set -e, so stop explicitly.
+smoke_layer || { echo "Layer smoke test failed, not deploying" 1>&2; exit 1; }
+
 aws cloudformation package --template-file cfn/sam.json --s3-bucket $BUCKET --output-template-file cfn/packaged.yaml
 aws cloudformation deploy --template-file cfn/packaged.yaml --stack-name $STACK_NAME \
     --tags service=mbta-performance env=prod team=tm-labs \

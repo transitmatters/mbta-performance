@@ -13,12 +13,20 @@
     {
       "Action": ["s3:GetObject", "s3:PutObject"],
       "Effect": "Allow",
-      "Resource": ["arn:aws:s3:::tm-mbta-performance/Events-lamp/bus-daily-data/*"]
+      "Resource": [
+        "arn:aws:s3:::tm-mbta-performance/Events-lamp/bus-daily-data/*",
+        "arn:aws:s3:::tm-mbta-performance/Events-lamp/ingest-markers/bus-daily-data/*"
+      ]
     },
     {
       "Effect": "Allow",
-      "Action": "s3:*",
-      "Resource": ["arn:aws:s3:::tm-gtfs", "arn:aws:s3:::tm-gtfs/*"]
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::tm-gtfs"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::tm-gtfs/*"]
     },
     {
       "Effect": "Allow",

@@ -105,6 +105,15 @@ class TestGTFSArchive(unittest.TestCase):
         mock_unpack.assert_called_once()
         self.assertTrue((result / "trips.txt").exists())
 
+    def test_date_without_an_archive_is_skipped(self):
+        """A date no archive covers skips GTFS for that day, rather than raising IndexError and
+        costing every other day in the file its benchmarks."""
+        with mock.patch.object(gtfs_archive, "ARCHIVES", self.mock_archives):
+            with mock.patch("urllib.request.urlretrieve") as mock_retrieve:
+                self.assertIsNone(gtfs_archive.get_gtfs_archive(20300101))
+                self.assertEqual(gtfs_archive.read_gtfs(datetime.date(2030, 1, 1)), (None, None))
+        mock_retrieve.assert_not_called()
+
     def test_get_gtfs_archive_concurrent_download(self):
         """Test get_gtfs_archive when another process extracts the same archive first."""
         dateint = 20240207
@@ -341,10 +350,10 @@ class TestGTFSArchive(unittest.TestCase):
             self.assertIn("scheduled_headway", result.columns)
             self.assertIn("scheduled_tt", result.columns)
 
-    def _shared_stop_gtfs(self, route_ids):
+    def _shared_stop_gtfs(self, route_ids, offsets=(0, 4, 10, 14)):
         """Four scheduled trips alternating between two routes, each starting at its own stop and
-        reaching the shared stop 5 minutes later, at 8:00, 8:04, 8:10 and 8:14."""
-        offsets = [0, 4, 10, 14]
+        reaching the shared stop 5 minutes later, at the given minutes past 8:00. One event per trip
+        at the shared stop, 30 seconds after its scheduled arrival."""
         trips = pd.DataFrame(
             {
                 "trip_id": [f"sched{i}" for i in range(4)],
@@ -385,6 +394,17 @@ class TestGTFSArchive(unittest.TestCase):
         self.assertListEqual(list(result.scheduled_tt), [300] * 4)
         self.assertNotIn("trunk_route_id", result.columns)
 
+    def test_add_gtfs_headways_counts_tied_branch_arrivals_once(self):
+        """Branches scheduled at a shared stop at the same second are one scheduled arrival, not a 0s headway."""
+        # Green-C (sched1) and Green-B (sched2) both reach the shared stop at 8:06
+        trips, stops, events = self._shared_stop_gtfs(["Green-B", "Green-C"], offsets=(0, 6, 6, 14))
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events).sort_values("event_time")
+
+        self.assertListEqual(list(result.scheduled_headway[1:]), [360, 360, 480])
+        self.assertListEqual(list(result.scheduled_tt), [300] * 4)
+
     def test_add_gtfs_headways_keeps_bus_routes_separate(self):
         """Routes without a trunk (bus) still get per-route scheduled headways at a shared stop."""
         trips, stops, events = self._shared_stop_gtfs(["1", "47"])
@@ -394,6 +414,91 @@ class TestGTFSArchive(unittest.TestCase):
 
         self.assertListEqual(list(result.scheduled_headway[2:]), [600, 600])
         self.assertTrue(result.scheduled_headway[:2].isna().all())
+
+    def test_add_gtfs_headways_loop_trip_matches_visits_in_order(self):
+        """A scheduled trip that stops somewhere twice gives each actual visit its own travel time, without
+        duplicating events."""
+        trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["120"], "direction_id": [1]})
+        # orhgt, then Maverick, a loop through Jeffries Point, and Maverick again (as in the 2024 GTFS)
+        stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"] * 4,
+                "stop_id": ["5880", "57400", "5862", "57400"],
+                "arrival_time": [pd.Timedelta(hours=8, minutes=m) for m in (0, 11, 15, 16)],
+            }
+        )
+        # 4 minutes late by the first Maverick visit, so it's nearer the second visit's scheduled time
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-09-04")] * 4,
+                "route_id": ["120"] * 4,
+                "direction_id": [1] * 4,
+                "stop_id": ["5880", "57400", "5862", "57400"],
+                "trip_id": ["actual1"] * 4,
+                "event_time": [pd.Timestamp("2024-09-04 08:00") + pd.Timedelta(minutes=m) for m in (0, 15, 18, 19)],
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.stop_id), ["5880", "57400", "5862", "57400"])
+        self.assertListEqual(list(result.scheduled_tt), [0, 660, 900, 960])
+
+    def test_add_gtfs_headways_loop_stop_keeps_arrival_and_departure(self):
+        """At a stop visited twice, the ARR and DEP of one visit both get that visit's travel time."""
+        trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["Loop"], "direction_id": [0]})
+        stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"] * 3,
+                "stop_id": ["A", "B", "A"],
+                "arrival_time": [pd.Timedelta(hours=8, minutes=m) for m in (0, 5, 10)],
+            }
+        )
+        times = [pd.Timestamp("2024-09-04 08:00") + pd.Timedelta(minutes=m) for m in (0, 1, 5, 10)]
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-09-04")] * 4,
+                "route_id": ["Loop"] * 4,
+                "direction_id": [0] * 4,
+                "stop_id": ["A", "A", "B", "A"],
+                "trip_id": ["actual1"] * 4,
+                "event_type": ["ARR", "DEP", "ARR", "ARR"],
+                "event_time": times,
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.event_type), ["ARR", "DEP", "ARR", "ARR"])
+        self.assertListEqual(list(result.scheduled_tt), [0, 0, 300, 600])
+
+    def test_add_gtfs_headways_repeated_event_keeps_scheduled_tt(self):
+        """A duplicated event at a stop the schedule visits once keeps that stop's travel time."""
+        trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["Red"], "direction_id": [0]})
+        stops = pd.DataFrame(
+            {
+                "trip_id": ["sched1"] * 2,
+                "stop_id": ["A", "B"],
+                "arrival_time": [pd.Timedelta(hours=8), pd.Timedelta(hours=8, minutes=3)],
+            }
+        )
+        events = pd.DataFrame(
+            {
+                "service_date": [pd.Timestamp("2024-09-04")] * 3,
+                "route_id": ["Red"] * 3,
+                "direction_id": [0] * 3,
+                "stop_id": ["A", "B", "B"],
+                "trip_id": ["actual1"] * 3,
+                "event_time": [pd.Timestamp(t) for t in ("2024-09-04 08:00", "2024-09-04 08:03", "2024-09-04 08:03")],
+            }
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(events)
+
+        self.assertListEqual(list(result.scheduled_tt), [0, 180, 180])
 
     def test_add_gtfs_headways_with_incomplete_gtfs(self):
         """add_gtfs_headways keeps events for dates with incomplete GTFS, without scheduled values."""
@@ -414,9 +519,12 @@ class TestGTFSArchive(unittest.TestCase):
 
         self.assertEqual(len(result), 2)
         self.assertEqual(list(result.trip_id), ["trip1", "trip2"])
+        # Callers select these, so they must exist even when no day had GTFS (bus raised KeyError)
+        self.assertTrue(result.scheduled_headway.isna().all())
+        self.assertTrue(result.scheduled_tt.isna().all())
 
     def test_add_gtfs_headways_empty_events(self):
-        """Test add_gtfs_headways with empty events dataframe."""
+        """No events gives no events back, with the scheduled columns, rather than a concat error."""
         events_df = pd.DataFrame(
             {
                 "service_date": [],
@@ -428,12 +536,31 @@ class TestGTFSArchive(unittest.TestCase):
             }
         )
 
-        # Should raise ValueError for empty concat
-        with self.assertRaises(ValueError):
-            gtfs_archive.add_gtfs_headways(events_df)
+        result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertTrue(result.empty)
+        self.assertIn("scheduled_headway", result.columns)
+        self.assertIn("scheduled_tt", result.columns)
+
+    def test_add_gtfs_headways_keeps_days_without_matching_trips(self):
+        """A day with no matching GTFS trips keeps its events, and other days still get benchmarks."""
+        trips, stops, events = self._shared_stop_gtfs(["1", "47"])
+        unmatched = events.iloc[[0]].assign(
+            service_date=pd.Timestamp("2024-02-08"), event_time=pd.Timestamp("2024-02-08 08:00:30"), route_id="99"
+        )
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(trips, stops)):
+            result = gtfs_archive.add_gtfs_headways(pd.concat([events, unmatched]))
+
+        self.assertEqual(len(result), 5)
+        matched_day = result[result.service_date == pd.Timestamp("2024-02-07")]
+        unmatched_day = result[result.service_date == pd.Timestamp("2024-02-08")]
+        self.assertListEqual(list(matched_day.scheduled_tt), [300] * 4)
+        self.assertEqual(list(unmatched_day.trip_id), ["actual0"])
+        self.assertTrue(unmatched_day.scheduled_tt.isna().all())
 
     def test_add_gtfs_headways_no_matching_routes(self):
-        """add_gtfs_headways skips a date when no GTFS trips match the events' route."""
+        """add_gtfs_headways keeps a date's events when no GTFS trips match the events' route."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07")],
@@ -461,12 +588,14 @@ class TestGTFSArchive(unittest.TestCase):
         )
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
-            # All dates are skipped (empty gtfs_stops_clean) → results list is empty → ValueError on concat
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertEqual(list(result.trip_id), ["trip1"])
+        self.assertTrue(result.scheduled_headway.isna().all())
+        self.assertTrue(result.scheduled_tt.isna().all())
 
     def test_add_gtfs_headways_null_event_times(self):
-        """add_gtfs_headways skips a date when all event_times are null (arrival_time becomes NaT)."""
+        """add_gtfs_headways keeps a date's events when all event_times are null (arrival_time becomes NaT)."""
         events_df = pd.DataFrame(
             {
                 "service_date": [pd.Timestamp("2024-02-07")],
@@ -484,9 +613,10 @@ class TestGTFSArchive(unittest.TestCase):
         )
 
         with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(mock_trips, mock_stops)):
-            # days_events_clean becomes empty after dropna on arrival_time → results list empty → ValueError
-            with self.assertRaises(ValueError):
-                gtfs_archive.add_gtfs_headways(events_df)
+            result = gtfs_archive.add_gtfs_headways(events_df)
+
+        self.assertEqual(list(result.trip_id), ["trip1"])
+        self.assertTrue(result.scheduled_tt.isna().all())
 
     def test_to_dateint_integration(self):
         """Test that to_dateint function is available and works correctly."""

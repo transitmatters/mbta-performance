@@ -32,7 +32,7 @@ ferry  2025-10       none          MBTA Ferry Daily Ridership by Trip, Route, an
 
 ### 2. Download and process
 
-Each command re-downloads that year's source zip, so you always get the latest version of the file.
+Each command re-downloads that year's source zip and replaces the files extracted last time, so you always get the latest version of the file.
 
 ```sh
 # Rapid transit, current year (~270 MB download)
@@ -48,9 +48,12 @@ uv run python -m mbta-performance.chalicelib.historic.backfill.ferry --start-dat
 
 Things to expect:
 
+- Ferry first checks that the ArcGIS Hub's copy of the CSV is newer than the MBTA's last change to the data. If it isn't, the command has the Hub regenerate it and waits, for up to 30 minutes. The CSV is saved to `data/input/ferry.csv`.
 - GTFS archives for scheduled headways are downloaded into `data/gtfs_archives/` and cached there. There is one archive per feed version, at roughly 100 MB unzipped each. If you process the whole ferry history without `--start-date`, it downloads hundreds of them (50+ GB) and takes hours.
+- A day that GTFS can't cover (no archive for the date, or no trips matching the events) is still written, just without scheduled headways or travel times, and the day is printed. If a bus file fails to process, the other files still run, then the command lists the failures and stops before `--upload`.
 - A year of processed rapid transit and bus data is several GB. `data/` is gitignored.
-- `backfill.main` also accepts `--start-date/--end-date` to process only part of a year.
+- `backfill.main` also accepts `--start-date/--end-date` to process only some months of a year.
+- `--start-date/--end-date` always cover whole months. A mid-month date is widened to the 1st or to the month's last day, because each output file holds a whole month, and uploading it replaces that month in S3.
 - Every backfill command accepts `--upload` to go straight to step 3. For a normal update it's safer to process first, then dry-run the upload.
 
 ### 3. Upload to S3
@@ -76,7 +79,13 @@ The upload works like a sync. Processing is deterministic (gzip `mtime=0`), so a
   aws s3 ls s3://tm-mbta-performance/Events/monthly-data/70061/Year=2026/
   aws s3 cp s3://tm-mbta-performance/Events/monthly-data/70061/Year=2026/Month=8/events.csv.gz - | gunzip | head
   ```
-  Check that `event_time` values fall within normal service hours (roughly 5am–1am). A block of events at 1–4am means a timezone problem (see below).
+  Check that `event_time` values fall within normal service hours (roughly 5am–1am). A block of events at 1–4am means a timezone problem (see below). This catches a shift of several hours, but not one of a single hour.
+- For bus, compare one day against gobble's live recordings. This is the check that catches a 1-hour timezone error, like #121 (see [Bus timezones](#bus-timezones)). Pick a weekday under daylight time if the new month has one, since that's when the readings can be an hour apart:
+  ```sh
+  aws s3 cp s3://tm-mbta-performance/Events/monthly-bus-data/1-1-67/Year=2026/Month=6/events.csv.gz - | gunzip | grep '^2026-06-10' | grep ',DEP,' | cut -d, -f10 | sort | head
+  aws s3 cp s3://tm-mbta-performance/Events-live/daily-bus-data/1-1-67/Year=2026/Month=6/Day=10/events.csv.gz - | gunzip | grep ',DEP,' | cut -d, -f10 | head
+  ```
+  Gobble's times carry a UTC offset and the monthly file's don't, but both are Eastern, so most departures should match to within a minute. Gobble misses the odd trip. If the monthly times are consistently an hour off, fix the timezone handling and reprocess the month before the step 5 follow-up.
 - After the dashboard follow-up (step 5) is deployed, open a new month on the dashboard. For example, look at Red Line travel times from Alewife.
 
 ### 5. Follow-ups in t-performance-dash
@@ -95,7 +104,7 @@ The MBTA publishes each calendar year as a new ArcGIS item, usually once January
 1. Find the new items on the hub by searching for "MBTA Rapid Transit Events YYYY" and "MBTA Bus Arrival Departure Times YYYY". The item ID is the 32-character hex string in the item URL.
 2. Add them to `ARCGIS_IDS` and `BUS_ARCGIS_IDS` in `constants.py`. Example: [#84](https://github.com/transitmatters/mbta-performance/pull/84).
 3. Run the new year once and check the output before uploading. Things that have changed between years before:
-   - Column names. Rapid transit switched to LAMP-style columns (`sync_stop_sequence`) in 2024. See `HISTORIC_COLUMNS_LAMP`.
+   - Column names. Rapid transit switched to LAMP-style columns (`sync_stop_sequence`) in 2024. See `HISTORIC_COLUMNS_LAMP`. Of the bus files, only Oct–Dec 2020 uses PascalCase headers (`ServiceDate`, `Stop`, ...); `load_bus_data` maps them.
    - Bus zip layout and file names. See `process_bus_file_names` in `download.py`.
    - Timezones (see below).
 4. Re-run the **previous** year one last time. The MBTA often re-publishes it with December filled in weeks later (the 2025 files were updated 2026-02-10). The upload sync skips the months that didn't change.
@@ -125,7 +134,7 @@ The bus source files always carry a `Z` suffix, but it never means UTC. As curre
 
 The shifted months look like UTC, but under daylight time reading them as UTC puts every bus an hour late. Taking 5 hours off matches gobble's recordings to within a minute (route 1, stop 67, on days in June, August, October and November 2024). This table used to list 2025 and January 2026 as UTC too; as the MBTA republished them in October 2026, they're Eastern.
 
-`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. If the MBTA switches again, detection should handle it. Still, check the spot-check in step 4 after each update.
+`load_bus_data` works out which case applies from each file's data: service is quietest around 2–4am local, which lands at 7–9 when shifted. It falls back to the table above only for very small inputs. Detection only tells these two cases apart, Eastern and Eastern + 5 hours, so it handles the MBTA switching between them again but not a new format. True UTC under daylight time, for example, is Eastern + 4 hours: its lull lands at 6–8, so it would count as shifted and come out an hour early. A 1-hour error still looks like normal service hours, so the service-hours spot check in step 4 can't catch it. After each bus update, run the gobble comparison in step 4 as well.
 
 ## Full rebuilds
 

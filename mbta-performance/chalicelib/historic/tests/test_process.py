@@ -79,16 +79,73 @@ class TestProcess(unittest.TestCase):
                 self.assertNotIn("sync_stop_sequence", df.columns)
 
     def test_process_events_gtfs_failure(self):
-        """Test process_events handles GTFS failures gracefully."""
+        """An unexpected GTFS error stops the file, rather than writing it all without benchmarks
+        (which the upload would then push over good files in S3)."""
         self.sample_events.to_csv(self.test_csv, index=False)
 
         with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=IndexError("GTFS error")):
             with mock.patch("chalicelib.historic.process.to_disk") as mock_to_disk:
-                # Should not raise exception
+                with self.assertRaises(IndexError):
+                    process.process_events(str(self.test_csv), self.temp_dir, nozip=True)
+
+        mock_to_disk.assert_not_called()
+
+    def test_process_events_keeps_days_without_gtfs(self):
+        """A day no GTFS archive covers is still written, just without benchmarks."""
+        self.sample_events.to_csv(self.test_csv, index=False)
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(None, None)):
+            with mock.patch("chalicelib.historic.process.to_disk") as mock_to_disk:
                 process.process_events(str(self.test_csv), self.temp_dir, nozip=True)
 
-                # Verify to_disk was still called
-                mock_to_disk.assert_called_once()
+        df = mock_to_disk.call_args[0][0]
+        self.assertEqual(len(df), 3)
+        self.assertTrue(df.scheduled_headway.isna().all())
+
+    def test_whole_months(self):
+        """Date ranges widen to whole calendar months, since each output file holds one month."""
+        d = datetime.date
+        self.assertEqual(process.whole_months(d(2026, 8, 15), d(2026, 8, 20)), (d(2026, 8, 1), d(2026, 8, 31)))
+        self.assertEqual(process.whole_months(d(2024, 1, 31), d(2024, 2, 10)), (d(2024, 1, 1), d(2024, 2, 29)))
+        self.assertEqual(process.whole_months(d(2025, 11, 1), d(2025, 12, 31)), (d(2025, 11, 1), d(2025, 12, 31)))
+        self.assertEqual(process.whole_months(d(2023, 2, 3), None), (d(2023, 2, 1), None))
+        self.assertEqual(process.whole_months(None, d(2023, 2, 3)), (None, d(2023, 2, 28)))
+        self.assertEqual(process.whole_months(None, None), (None, None))
+
+    def test_process_events_mid_month_range_writes_whole_month(self):
+        """A mid-month range still writes the whole month, so uploading it can't replace S3's month with part of one."""
+        service_dates = ["2026-07-31", "2026-08-03", "2026-08-10", "2026-08-17", "2026-08-24", "2026-09-01"]
+        events = pd.DataFrame(
+            {
+                "service_date": service_dates,
+                "route_id": "Red",
+                "trip_id": [f"trip{i}" for i in range(len(service_dates))],
+                "direction_id": 0,
+                "stop_id": "70061",
+                "stop_sequence": 1,
+                "vehicle_id": "R-001",
+                "vehicle_label": "1801",
+                "event_type": "DEP",
+                "event_time_sec": 28800,
+            }
+        )
+        events.to_csv(self.test_csv, index=False)
+
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=lambda x: x):
+            process.process_events(
+                str(self.test_csv),
+                self.temp_dir,
+                nozip=True,
+                start_date=datetime.date(2026, 8, 15),
+                end_date=datetime.date(2026, 8, 20),
+            )
+
+        stop_dir = pathlib.Path(self.temp_dir, "Events", "monthly-data", "70061", "Year=2026")
+        self.assertEqual(sorted(p.name for p in stop_dir.iterdir()), ["Month=8"])
+        written = pd.read_csv(stop_dir / "Month=8" / "events.csv.gz", compression=None)
+        self.assertEqual(
+            sorted(written["service_date"].str[:10]), ["2026-08-03", "2026-08-10", "2026-08-17", "2026-08-24"]
+        )
 
     def test_to_disk(self):
         """Test to_disk creates proper directory structure and files."""
@@ -269,32 +326,21 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(deps["route_id"].tolist(), ["Boat-F1", "Boat-F2H"])
 
     def test_process_ferry_with_date_filtering(self):
-        """Test process_ferry with date range filtering."""
+        """process_ferry keeps the whole months covering the date range, and drops other months."""
+        days = ["2024-01-20", "2024-02-05", "2024-02-07", "2024-02-10", "2024-03-10"]
         ferry_data = pd.DataFrame(
             {
-                "service_date": [
-                    "2024-02-05 00:00:00+00:00",
-                    "2024-02-07 00:00:00+00:00",
-                    "2024-02-10 00:00:00+00:00",
-                ],
-                "route_id": ["F1", "F1", "F1"],
-                "trip_id": ["trip1", "trip2", "trip3"],
-                "travel_direction": ["To Boston", "To Boston", "To Boston"],
-                "departure_terminal": ["Hingham", "Hingham", "Hingham"],
-                "arrival_terminal": ["Boston", "Boston", "Boston"],
-                "mbta_sched_arrival": [
-                    "2024-02-05 08:00:00+00:00",
-                    "2024-02-07 08:00:00+00:00",
-                    "2024-02-10 08:00:00+00:00",
-                ],
-                "mbta_sched_departure": [
-                    "2024-02-05 07:45:00+00:00",
-                    "2024-02-07 07:45:00+00:00",
-                    "2024-02-10 07:45:00+00:00",
-                ],
-                "actual_arrival": ["2024-02-05 08:02:00", "2024-02-07 08:02:00", "2024-02-10 08:02:00"],
-                "actual_departure": ["2024-02-05 07:46:00", "2024-02-07 07:46:00", "2024-02-10 07:46:00"],
-                "vessel_time_slot": ["slot1", "slot1", "slot1"],
+                "service_date": [f"{day} 12:00:00+00:00" for day in days],
+                "route_id": "F1",
+                "trip_id": [f"trip{i}" for i in range(len(days))],
+                "travel_direction": "To Boston",
+                "departure_terminal": "Hingham",
+                "arrival_terminal": "Boston",
+                "mbta_sched_arrival": [f"{day} 13:00:00+00:00" for day in days],
+                "mbta_sched_departure": [f"{day} 12:45:00+00:00" for day in days],
+                "actual_arrival": [f"{day} 08:02:00" for day in days],
+                "actual_departure": [f"{day} 07:46:00" for day in days],
+                "vessel_time_slot": "slot1",
             }
         )
 
@@ -313,9 +359,9 @@ class TestProcess(unittest.TestCase):
                 # Get the dataframe
                 df = mock_to_disk.call_args[0][0]
 
-                # Should only have data from 2024-02-07 (within range)
-                # Multiply by 2 because each trip generates ARR and DEP events
-                self.assertEqual(len(df), 2)
+                # All of February, not just Feb 6-8: each trip generates an ARR and a DEP event
+                self.assertEqual(sorted(df["trip_id"].unique()), ["trip1", "trip2", "trip3"])
+                self.assertEqual(len(df), 6)
 
     def test_process_ferry_missing_trip_ids(self):
         """Test process_ferry generates UUIDs for missing trip_ids."""
@@ -347,6 +393,64 @@ class TestProcess(unittest.TestCase):
 
                 # Verify trip_ids were generated (should not be null)
                 self.assertFalse(df["trip_id"].isna().any())
+
+    def _ferry_rows_missing_trip_ids(self):
+        return pd.DataFrame(
+            {
+                "service_date": ["2024-02-07 05:00:00+00"] * 5,
+                "route_id": ["F4"] * 5,
+                "trip_id": [None] * 5,
+                "travel_direction": ["To Boston"] + ["From Boston"] * 4,
+                "departure_terminal": ["Navy Yard"] + ["Long Wharf N"] * 4,
+                "arrival_terminal": ["Long Wharf N", "Navy Yard", "Navy Yard", "Navy Yard", None],
+                "mbta_sched_departure": ["2024-02-07 12:00:00+00", "2024-02-07 12:15:00+00"]
+                + ["2024-02-07 05:00:00+00"] * 3,
+                "mbta_sched_arrival": ["2024-02-07 12:10:00+00", "2024-02-07 12:25:00+00"]
+                + ["2024-02-07 05:00:00+00"] * 3,
+                # The last three are midnight placeholders like the source has: identical but for the vessel,
+                # and some without an arrival terminal
+                "actual_departure": ["2024-02-07 07:01:00", "2024-02-07 07:16:00"] + ["2024-02-07 00:00"] * 3,
+                "actual_arrival": ["2024-02-07 07:11:00", "2024-02-07 07:26:00"] + ["2024-02-07 00:00"] * 3,
+                "vessel_time_slot": ["Vessel A", "Vessel A", "Vessel B", "Vessel C", "Vessel D"],
+            }
+        )
+
+    def _ferry_trip_ids_by_departure(self, ferry_data):
+        ferry_csv = pathlib.Path(self.temp_dir) / "ferry.csv"
+        ferry_data.to_csv(ferry_csv, index=False)
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=lambda x: x):
+            with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
+                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+        df = mock_to_disk.call_args[0][0]
+        deps = df[df["event_type"] == "DEP"]
+        return dict(zip(zip(deps["event_time"], deps["vehicle_id"]), deps["trip_id"]))
+
+    def test_process_ferry_missing_trip_ids_are_stable(self):
+        """Trips without a trip_id get the same unique id on every run, whatever order the file lists them in."""
+        ferry_data = self._ferry_rows_missing_trip_ids()
+
+        first = self._ferry_trip_ids_by_departure(ferry_data)
+        rerun = self._ferry_trip_ids_by_departure(ferry_data)
+        reordered = self._ferry_trip_ids_by_departure(ferry_data.iloc[::-1])
+
+        self.assertEqual(len(set(first.values())), 5)
+        self.assertEqual(first, rerun)
+        self.assertEqual(first, reordered)
+
+    def test_process_ferry_actual_time_in_dst_changeover(self):
+        """An actual time in the repeated hour when clocks fall back is kept as written, instead of crashing."""
+        deps = self._process_ferry_rows(
+            {
+                "route_id": ["F1"],
+                "travel_direction": ["From Boston"],
+                "departure_terminal": ["Rowes"],
+                "arrival_terminal": ["Hingham"],
+                "service_date": ["2024-11-03 04:00:00+00:00"],
+                "actual_departure": ["2024-11-03 01:30:00"],
+            }
+        )
+
+        self.assertEqual(deps["event_time"].tolist(), [pd.Timestamp("2024-11-03 01:30:00")])
 
     def test_load_bus_data(self):
         """Test load_bus_data reads and transforms bus data correctly."""
@@ -384,6 +488,80 @@ class TestProcess(unittest.TestCase):
         # Verify dates were adjusted from 1900 base
         self.assertTrue(all(result["scheduled"].dt.year == 2020))
         self.assertTrue(all(result["actual"].dt.year == 2020))
+
+    def _bus_csv(self, directions):
+        """A bus CSV with one route 1, stop 67 Midpoint row per direction value."""
+        n = len(directions)
+        bus_csv = pathlib.Path(self.temp_dir) / "bus.csv"
+        pd.DataFrame(
+            {
+                "service_date": ["2020-01-15"] * n,
+                "route_id": ["01"] * n,
+                "direction": directions,
+                "half_trip_id": [str(46374001 + i) for i in range(n)],
+                "stop_id": ["67"] * n,
+                "time_point_id": ["maput"] * n,
+                "time_point_order": [2] * n,
+                "point_type": ["Midpoint"] * n,
+                "standard_type": ["Schedule"] * n,
+                "scheduled": ["1900-01-01 05:08:00"] * n,
+                "actual": [f"1900-01-01 05:{9 + i:02d}:07" for i in range(n)],
+                "scheduled_headway": [-5] * n,
+                "headway": [None] * n,
+            }
+        ).to_csv(bus_csv, index=False)
+        return str(bus_csv)
+
+    def test_bus_unrecognized_direction_is_dropped(self):
+        """A blank direction used to make direction_id float64, which merge_asof rejected against
+        GTFS's int64 with a MergeError, failing the whole month."""
+        gtfs_trips = pd.DataFrame({"trip_id": ["sched1"], "route_id": ["1"], "direction_id": [1]})
+        gtfs_stops = pd.DataFrame(
+            {"trip_id": ["sched1"], "stop_id": ["67"], "arrival_time": [pd.Timedelta(hours=5, minutes=8)]}
+        )
+        bus_csv = self._bus_csv(["Inbound", None, "Inbound"])
+
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(gtfs_trips, gtfs_stops)):
+            data = process.load_bus_data(bus_csv)
+            events = process.process_bus_events_data(data)
+
+        self.assertEqual(data.direction_id.dtype, "int64")
+        self.assertEqual(set(events.trip_id), {46374001, 46374003})
+        # Matched to the scheduled trip
+        self.assertListEqual(list(events.scheduled_tt), [0] * 4)
+
+    def test_bus_no_recognized_direction_raises(self):
+        """If no direction maps, the format changed: say so rather than write an empty month."""
+        with self.assertRaisesRegex(ValueError, "No recognized direction.*'I', 'O'"):
+            process.load_bus_data(self._bus_csv(["I", "O"]))
+
+    def test_bus_events_without_gtfs_for_any_day(self):
+        """With no GTFS for any day, bus events are written without benchmarks. This used to raise
+        KeyError, because the scheduled columns were missing."""
+        with mock.patch("chalicelib.historic.gtfs_archive.read_gtfs", return_value=(None, None)):
+            events = process.process_bus_events_data(process.load_bus_data(self._bus_csv(["Inbound"])))
+
+        self.assertEqual(len(events), 2)  # a Midpoint is an ARR and a DEP
+        self.assertTrue(events.scheduled_headway.isna().all())
+        self.assertTrue(events.scheduled_tt.isna().all())
+
+    def test_load_bus_data_pascal_case_headers(self):
+        """The 2020 Q4 file's PascalCase headers get the same string IDs as the others, not floats like 67.0."""
+        bus_csv = pathlib.Path(self.temp_dir) / "bus.csv"
+        bus_csv.write_text(
+            "ServiceDate,Route,Direction,HalfTripId,Stop,Timepoint,TimepointOrder,PointType,StandardType,"
+            "Scheduled,Actual,ScheduledHeadway,Headway\n"
+            "2020-10-01 00:00:00.000,01,Inbound,48885644.0,067,maput,2,Midpoint,Schedule,"
+            "1900-01-01 05:07:00.000,1900-01-01 05:07:42.000,NULL,NULL\n"
+            "2020-10-01 00:00:00.000,01,Inbound,48885644.0,,maput,3,Midpoint,Schedule,"
+            "1900-01-01 05:09:00.000,1900-01-01 05:09:42.000,NULL,NULL\n"
+        )
+
+        result = process.load_bus_data(str(bus_csv))
+
+        self.assertEqual(result["stop_id"].iloc[0], "067")
+        self.assertListEqual(list(result["route_id"]), ["1", "1"])
+        self.assertListEqual(list(result["direction_id"]), [1, 1])
 
     def test_load_bus_data_with_route_filter(self):
         """Test load_bus_data filters routes correctly."""
@@ -576,10 +754,9 @@ class TestProcess(unittest.TestCase):
     def test_load_bus_data_pre_june_2024_z_suffix_treated_as_eastern(self):
         """Pre-June 2024 bus data with a Z suffix is treated as Eastern Time, not UTC.
 
-        Before June 2024 the MBTA labelled Eastern times with a Z suffix.
-        The loader detects this (service_date < 2024-06-01) and does NOT apply
-        a UTC→Eastern conversion, so the output time equals the wall-clock value
-        from the raw data.
+        Before June 2024 the MBTA labelled Eastern times with a Z suffix. One row is too few
+        for detection, so the loader falls back to BUS_SHIFTED_WINDOW, which starts at
+        2024-06-01, and takes no hours off: the output equals the raw wall-clock value.
         """
         bus_data = pd.DataFrame(
             {
@@ -606,7 +783,7 @@ class TestProcess(unittest.TestCase):
         result = process.load_bus_data(str(bus_csv))
 
         # Pre-June 2024: the "Z" is ignored as a UTC indicator.
-        # 08:06 stays as 08:06 on the service date (no UTC→Eastern shift).
+        # 08:06 stays as 08:06 on the service date (no 5-hour shift).
         expected_actual = datetime.datetime(2024, 1, 15, 8, 6, 0)
         self.assertEqual(result.iloc[0]["actual"], expected_actual)
 
@@ -644,7 +821,7 @@ class TestProcess(unittest.TestCase):
             mock_to_disk.assert_not_called()
 
     def test_process_ferry_gtfs_failure(self):
-        """process_ferry continues to write output even when add_gtfs_headways raises IndexError."""
+        """An unexpected GTFS error stops process_ferry, rather than writing output without benchmarks."""
         ferry_data = pd.DataFrame(
             {
                 "service_date": ["2024-02-07 00:00:00+00:00"],
@@ -666,10 +843,10 @@ class TestProcess(unittest.TestCase):
 
         with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=IndexError("GTFS error")):
             with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
-                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+                with self.assertRaises(IndexError):
+                    process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
 
-                # to_disk_ferry should still be called despite the GTFS failure
-                mock_to_disk.assert_called_once()
+        mock_to_disk.assert_not_called()
 
     def test_load_bus_data_shifted_times(self):
         """June to December 2024 bus data is Eastern + 5 hours all year, so 5 hours come off even under DST.
@@ -737,8 +914,8 @@ class TestProcess(unittest.TestCase):
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2025, 1, 1)))
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2026, 1, 31)))
 
-    def test_load_bus_data_feb_2026_z_suffix_treated_as_eastern(self):
-        """Feb 2026+ bus data is Eastern wall-clock time again despite the Z suffix: no UTC shift."""
+    def test_load_bus_data_2026_z_suffix_treated_as_eastern(self):
+        """Bus data from 2025 on is Eastern wall-clock time again despite the Z suffix: no hours come off."""
         bus_data = pd.DataFrame(
             {
                 "service_date": ["2026-03-01"],

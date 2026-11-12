@@ -56,14 +56,15 @@ def _ranked_slice(rows: pd.DataFrame) -> list[dict]:
     Routed through `to_json`/`json.loads` rather than `to_dict` -- the aggregated columns are
     numpy dtypes (int64, float64), which the standard `json` module cannot serialise directly,
     and pandas' own JSON writer already handles that correctly. Length and time are rounded to
-    whole metres and seconds, finer than the dashboard displays them and fewer bytes per row.
+    whole metres and seconds, finer than the dashboard displays them and fewer bytes per row,
+    as nullable integers, so a NaN is written as null rather than failing the whole upload.
     """
     ranked = rows.sort_values("p50_running_speed_mph").head(LEADERBOARD_SIZE)
     ranked = ranked[LEADERBOARD_COLUMNS].assign(
         p50_running_speed_mph=lambda df: df.p50_running_speed_mph.round(1),
-        segment_length_m=lambda df: df.segment_length_m.round().astype(int),
-        running_length_m=lambda df: df.running_length_m.round().astype(int),
-        p50_running_time_seconds=lambda df: df.p50_running_time_seconds.round().astype(int),
+        segment_length_m=lambda df: df.segment_length_m.round().astype("Int64"),
+        running_length_m=lambda df: df.running_length_m.round().astype("Int64"),
+        p50_running_time_seconds=lambda df: df.p50_running_time_seconds.round().astype("Int64"),
     )
     return json.loads(ranked.to_json(orient="records", double_precision=1))
 

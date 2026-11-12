@@ -9,7 +9,6 @@ from .constants import (
     ALL_DAY_BAND,
     MAX_PLAUSIBLE_SPEED_MPH,
     METERS_PER_SECOND_TO_MPH,
-    MIN_PLAUSIBLE_SPEED_MPH,
     MIN_RUNNING_SPEED_SEGMENT_M,
     PERCENTILES,
     STOP_ZONE_M,
@@ -20,7 +19,20 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 TRIP_KEY = ["trip_id", "tm_pullout_id"]
+# Patterns that share a key can take different paths between its stops, which would mix lengths in
+# one speed. Rare enough to ignore: on 2026-11-10, one key of 10,762 had pattern lengths more than
+# 25m apart (route 39 from Ave Louis Pasteur, 730m and 1,101m, 5 traversals), and on 2026-11-08 none.
 SEGMENT_KEY = ["route_id", "direction_id", "from_stop_id", "to_stop_id"]
+
+
+def _by_trip(events: pd.DataFrame):
+    """Group events by TRIP_KEY, keeping a trip whose tm_pullout_id is null.
+
+    groupby's default dropna=True would drop such a trip from every traversal. A null trip_id
+    groups too, but it isn't a trip: interpolate_missing_times skips it, and build_traversals'
+    same-trip check drops it, since NaN never equals NaN.
+    """
+    return events.groupby(TRIP_KEY, sort=False, dropna=False)
 
 
 def attach_shape_distance(events: pd.DataFrame, stop_positions: pd.DataFrame) -> pd.DataFrame:
@@ -78,7 +90,9 @@ def interpolate_missing_times(events: pd.DataFrame) -> pd.DataFrame:
     depart_array = depart_anchor.to_numpy(dtype="float64")
     arrive_array = arrive_anchor.to_numpy(dtype="float64")
 
-    for _, index in events.groupby(TRIP_KEY, sort=False).indices.items():
+    for (trip_id, _), index in _by_trip(events).indices.items():
+        if pd.isna(trip_id):
+            continue
         index = np.sort(index)
         trip_observed = observed_array[index]
         if trip_observed.sum() < 2:
@@ -130,9 +144,16 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
       first stop. The time a rider on board experiences, as the rail benchmarks in
       chalicelib.benchmarks count it; `speed_mph` is over the full segment. Kept for the
       GeoParquet and the per-route daily metrics.
+
+    A traversal is kept or dropped on the arrival-to-arrival clock alone. Where the running clock
+    reads zero or less, or faster than any bus over `running_length_m`, the traversal is kept and
+    its running time and speed are null.
     """
     events = events.sort_values(TRIP_KEY + ["stop_sequence"])
-    grouped = events.groupby(TRIP_KEY, sort=False)
+    grouped = _by_trip(events)
+    no_pullout = int(events.tm_pullout_id.isna().sum())
+    if no_pullout:
+        logger.info(f"{no_pullout} of {len(events)} bus events have no tm_pullout_id; kept, grouped by trip_id alone")
 
     traversal = pd.DataFrame(
         {
@@ -167,6 +188,10 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
     # rail benchmarks in chalicelib.benchmarks treat the dwell at an origin stop.
     traversal.loc[traversal.is_trip_start, "dwell_seconds"] = 0.0
     traversal["total_time_seconds"] = traversal.running_time_seconds + traversal.dwell_seconds
+    # A departure with no arrival, anywhere but a trip's first stop, leaves dwell and so total
+    # time unknown. If kept, that one NaN would make its segment's percentiles NaN.
+    no_arrival = traversal.total_time_seconds.isna()
+    traversal = traversal[~no_arrival]
 
     segment_lengths = segments[["route_pattern_id", "from_stop_id", "to_stop_id", "segment_length_m"]].drop_duplicates(
         ["route_pattern_id", "from_stop_id", "to_stop_id"]
@@ -182,17 +207,35 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
     traversal["is_interpolated"] = traversal.from_interpolated.eq(True) | traversal.to_interpolated.eq(True)
 
     before = len(traversal)
-    # Plausibility is judged on running time over the full segment, which every traversal has:
-    # the dwell-inclusive figure is legitimately near zero at a long layover, and the running
-    # speed is null on short segments. Full length reads faster than running_speed_mph, so
-    # nothing kept is over the cap on either.
-    full_length_speed = traversal.segment_length_m / traversal.running_time_seconds * METERS_PER_SECOND_TO_MPH
-    traversal = traversal[
-        (traversal.running_time_seconds > 0)
-        & (full_length_speed >= MIN_PLAUSIBLE_SPEED_MPH)
-        & (full_length_speed <= MAX_PLAUSIBLE_SPEED_MPH)
-    ]
-    logger.info(f"Built {len(traversal)} traversals ({before - len(traversal)} dropped as implausible)")
+    # Plausibility is judged on the clock speed_mph is timed on. Judged on the running clock over
+    # the full segment instead, which that clock runs short of (see "Running speed" in the
+    # README), it dropped 22-32% of traversals under 200m on 2026-11-10, against 2-8% this way.
+    # Those were mostly the fastest, so about a quarter of the segments under 200m read more than
+    # 1 mph slow.
+    #
+    # There's no lower bound. The slowest traversals that day were buses holding mid-trip, for up
+    # to an hour, often on segments where most trips hold: route 109's 7417 -> 7412 runs at a
+    # median 0.64 mph. Riders on board sit through that, and a 0.5 mph floor dropped 20 of that
+    # segment's 85 trips judged on the running clock, or 37 on this one, the slowest of them.
+    traversal = traversal[(traversal.total_time_seconds > 0) & (traversal.speed_mph <= MAX_PLAUSIBLE_SPEED_MPH)]
+    # Kept on the clock above, but the running clock itself is no use on some of these: on
+    # 2026-11-10 it read zero or less on 12k of them, and faster than any bus over the full
+    # segment on 25k more. It's judged over running_length_m here, the part of the segment it
+    # covers, so fewer than that are over the cap; on a segment too short to have a running
+    # length, only zero or less counts. Nulled, they drop out of the running percentiles in
+    # _aggregate, rather than making them zero or infinite.
+    unusable_running_clock = (traversal.running_time_seconds <= 0) | (
+        traversal.running_speed_mph > MAX_PLAUSIBLE_SPEED_MPH
+    )
+    traversal = traversal.assign(
+        running_time_seconds=traversal.running_time_seconds.mask(unusable_running_clock),
+        running_speed_mph=traversal.running_speed_mph.mask(unusable_running_clock),
+    )
+    logger.info(
+        f"Built {len(traversal)} traversals ({before - len(traversal)} dropped as implausible, "
+        f"{int(no_arrival.sum())} for a departure with no arrival; "
+        f"{int(unusable_running_clock.sum())} kept without a usable running time)"
+    )
     return traversal
 
 
@@ -210,6 +253,11 @@ def has_observed_dwell(traversals: pd.DataFrame) -> pd.Series:
     Counting them would drag a median or an average down.
     """
     return ~traversals.is_trip_start.eq(True) & ~traversals.from_interpolated.eq(True)
+
+
+def observed_dwell_seconds(traversals: pd.DataFrame) -> pd.Series:
+    """Each traversal's dwell at its first stop, or NaN where it wasn't observed (has_observed_dwell)."""
+    return traversals.dwell_seconds.where(has_observed_dwell(traversals))
 
 
 def assign_time_band(departure_seconds: pd.Series) -> pd.Series:
@@ -257,14 +305,21 @@ def aggregate_segments(
 
 
 def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
-    """Percentile times and speeds for each group of traversals."""
-    grouped = traversals.groupby(group_key, sort=False)
+    """Percentile times and speeds for each group of traversals.
+
+    median_dwell_seconds is over the dwells that were observed (observed_dwell_seconds), as
+    daily_metrics' average is, and NaN where there are none, as on a segment every trip starts on.
+    """
+    # Copy-on-write makes this add one column, not copy the frame.
+    grouped = traversals.assign(observed_dwell_seconds=observed_dwell_seconds(traversals)).groupby(
+        group_key, sort=False
+    )
 
     aggregation = {
         "n_traversals": ("total_time_seconds", "size"),
         "n_interpolated": ("is_interpolated", "sum"),
         "segment_length_m": ("segment_length_m", "median"),
-        "median_dwell_seconds": ("dwell_seconds", "median"),
+        "median_dwell_seconds": ("observed_dwell_seconds", "median"),
         "trip_start_share": ("is_trip_start", "mean"),
         "trip_end_share": ("is_trip_end", "mean"),
     }
@@ -272,7 +327,7 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         for percentile in PERCENTILES:
             aggregation[f"p{percentile}_{measure}"] = (
                 measure,
-                lambda series, q=percentile: float(np.percentile(series, q)),
+                lambda series, q=percentile: _percentile(series, q),
             )
 
     aggregated = grouped.agg(**aggregation).reset_index()
@@ -289,6 +344,17 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         )
 
     return _with_terminal_sections(aggregated)
+
+
+def _percentile(series: pd.Series, percentile: int) -> float:
+    """np.percentile of the non-null values, or NaN if there are none.
+
+    Only running_time_seconds has nulls (see build_traversals). np.nanpercentile would do the same,
+    but it warns on a group with no running times at all.
+    """
+    values = series.to_numpy(dtype="float64")
+    values = values[~np.isnan(values)]
+    return float(np.percentile(values, percentile)) if values.size else np.nan
 
 
 def _with_terminal_sections(aggregated: pd.DataFrame) -> pd.DataFrame:

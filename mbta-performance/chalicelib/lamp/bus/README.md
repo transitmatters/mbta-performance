@@ -43,14 +43,36 @@ of each run, so merging here is all it takes to ship a change. Every morning, Bo
 | monthly | `trends --latest-month --upload --write-pmtiles --write-leaderboard` |
 | reference (Mondays) | `reference_tiles --upload` |
 
-`--latest-week` and `--latest-month` pick the period containing yesterday, which keeps the
-dashboard's in-progress week and month current and, on the day after one ends, finishes it.
+`--latest-week` and `--latest-month` build every period holding one of the last three service
+dates, newest first. That keeps the dashboard's in-progress week and month current, and it
+builds a period that just ended on the morning after its last day and on the two mornings after
+that.
+
+A late LAMP morning is why it keeps going back. These runs won't publish a period without its
+newest date: a date LAMP hasn't published yet counts as missing, the same thing that fails the
+daily job. They read that date first, so a missing one fails in seconds. They still try every
+other period, then exit non-zero, so all three jobs fail together and a rerun of each fixes it.
+Without a rerun, one of the next two mornings fills in a finished week's or month's last day
+by itself. An older date with no data is still skipped and logged, since that's a gap in
+LAMP's export rather than lateness. A file that can't be parsed (`ArrowInvalid`, which MBTA's
+rewrites can briefly cause) fails the period instead of being skipped as a date without data.
+If LAMP is out for longer than that window, rebuild the periods by hand with `--year` and
+`--week` or `--month` once it has caught up.
+
+Each extra build runs on basement-dweller and costs 6 PUTs with the dwell layer: about 70 more
+PUTs a month, a fraction of a cent. Measured without tiles on 2026-11-11, one week took ~1.5 minutes (1.7GB
+peak with the current week built first in the same process). A whole month took ~5 minutes,
+with a 5.5GB peak after building the new month's first two days, against the ~8GB a full month
+peaks at in production with tiles. Both fit the jobs' memory limits.
 
 ## Pipeline
 
 1. **Read one service date** from the LAMP bus export. Both exports are partitioned one
    parquet row group per `service_date`, so `remote_parquet.py` reads the footer over HTTP
-   and pulls just that row group — ~35MB, rather than downloading the 6.8GB all-time file.
+   and pulls just the row groups covering that date (one, in practice) — ~35MB, rather than
+   downloading the 6.8GB all-time file. The last seven days come from the small rolling export
+   and older dates from the all-time one; if the chosen export doesn't have the date,
+   `ingest.read_events_for_date` tries the other.
 2. **Locate every stop along its route pattern's shape** (`gtfs_geo.py`, `patterns.py`).
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
 4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a
@@ -197,12 +219,15 @@ band, `n_dwells`, `median_dwell_seconds` and `p90_dwell_seconds`). Each sits whe
 on the route's shape -- the start of the segment leaving it -- so it lands on the route's line, not
 across the street at the pole. `stop_id` matches the reference layer's bus stops.
 
-Only dwells LAMP observed count: a trip's first stop is layover, an interpolated stop has none, and
-a trip's last stop has no departure. A median above a few minutes looks like a bus holding
-mid-trip, like the midday trips that wait 20-odd minutes on Ave Louis Pasteur. Points run from
-zoom 11, where the reference layer's bus stops start, to 14, and every one is kept at every zoom
-(`--drop-rate 1`): tippecanoe's default point thinning left 2026-11-04's zoom 11 with 3.5k of its
-54k band points.
+Only dwells LAMP observed count (`segments.has_observed_dwell`): a trip's first stop is layover,
+an interpolated stop has none, and a trip's last stop has no departure. They're the same dwells
+`total_dwell` sums in "Daily route metrics", and the ones the GeoParquet's per-segment
+`median_dwell_seconds` is over, which is null on a segment with none, as one every trip starts
+on. On 2026-11-10, counting those zeros pulled down 24% of segment rows' medians, by 2.5s at the
+median. A median above a few minutes looks like a bus holding mid-trip, like the midday trips
+that wait 20-odd minutes on Ave Louis Pasteur. Points run from zoom 11, where the reference
+layer's bus stops start, to 14, and every one is kept at every zoom (`--drop-rate 1`):
+tippecanoe's default point thinning left 2026-11-04's zoom 11 with 3.5k of its 54k band points.
 
 Dwell is rounded to 5s because stop times don't look any finer: medians pile up around 5.5s
 and 11s, which looks like the spacing of the vehicle positions behind them.
@@ -409,9 +434,12 @@ Each entry carries only what a leaderboard row needs to display -- `route_id`, `
 (`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of explicit allowlist as
 `pmtiles.TILE_PROPERTIES`, so geometry and the p90, arrival-to-arrival and dwell columns never
 leak into a public file by accident. Segments are ranked by running speed, the same speed the
-map shows; one too short to have a running speed isn't ranked. Each slice is capped at `LEADERBOARD_SIZE` (100) entries: this is a
-display list, not an analytical export, so it's kept well below the ~10.8k distinct
-segments/day rather than dumping the whole aggregated table.
+map shows; one too short to have a running speed, or with no usable running time, isn't
+ranked. Each slice is capped at `LEADERBOARD_SIZE` (500) entries: this is a display list, not
+an analytical export, so it's kept well below the ~10.8k distinct segments/day rather than
+dumping the whole aggregated table. It's still deep because the dashboard's route and Frequent
+Bus filters narrow a slice client-side, and at 100 a filtered view came out with only a handful
+of rows.
 
 **Segments below `LEADERBOARD_MIN_TRAVERSALS` (20) traversals in a slice are dropped before
 ranking** -- higher than the map's `MIN_TRAVERSALS_HINT` (3), and deliberately a separate
@@ -569,12 +597,30 @@ median 7 mph after the correction, and under 100m it goes negative. On 2026-11-0
 traversals and 6.5% of all-day rows. Everything else about them -- counts, arrival-to-arrival
 times, dwell at their first stop -- is still published.
 
+**A traversal is kept or dropped on arrival to arrival**, the one clock that spans the whole
+segment. It's dropped if that time is zero or less, or works out faster than
+`MAX_PLAUSIBLE_SPEED_MPH` (65 mph): 1.4% of traversals on 2026-11-10. Judged on the running
+clock over the full length, as it was until #130, 22-32% of traversals under 200m were
+dropped, mostly the fastest, and about a quarter of those segments read more than 1 mph slow.
+There's no lower bound: the slowest traversals are buses holding mid-trip, for up to an hour,
+often on segments where most trips do (route 109 from stop 7417 runs at a median 0.64 mph),
+and a floor hid the slowest of them.
+
+Where the running clock reads zero or less, or faster than 65 mph over `running_length_m`, the
+traversal is kept with a null running time. On a segment too short to have a running length,
+only zero or less counts. The running percentiles come from the rest, so from fewer traversals
+than `n_traversals`, and are null on a row where none are left. Judged over the full segment
+on 2026-11-10, that nulled 10% of traversals and left 1.5% of rows, nearly all with 1-3
+traversals, with no running time; over the running length it's fewer.
+
 Dwell at a trip's *first* stop is excluded: the bus sits at the terminal awaiting its
 scheduled departure, often 10+ minutes. This matches how `chalicelib.benchmarks` treats the
 dwell at an origin stop for rail.
 
 Sanity check on 2026-11-04, all-day rows weighted by traversals: 15.8 mph running against 13.3
 mph arrival to arrival; median row 16.2 mph, 10th and 90th percentiles 7.9 and 25.0 mph.
+Measured before #130's change to how traversals are kept or dropped, which nudges both up
+slightly: arrival to arrival on 2026-09-03 went from 13.90 to 14.26 mph overall.
 
 ## Interpolation
 

@@ -1,7 +1,9 @@
 import json
 import logging
+import os
+import shutil
+import tempfile
 from datetime import date
-from tempfile import TemporaryDirectory
 from typing import Iterable
 
 import boto3
@@ -18,6 +20,30 @@ MAX_QUERY_DEPTH = 900  # actually 1000
 # data-ingestion owns building GTFS bundles. Its on-demand worker reads this
 # queue -- see transitmatters/data-ingestion ingestor/chalicelib/gtfs/enqueue.py.
 GTFS_BUILD_QUEUE = "gtfs-ingest-keys"
+
+# What read_sql returns when the query matches at least one trip. When it matches none, the
+# string and integer columns come back as object instead, which merge_asof won't match
+# against LAMP's StringDtype keys -- so an empty result is always built from this.
+STOP_TIMES_DTYPES = {
+    "trip_id": "string",
+    "stop_id": "string",
+    "arrival_time": "Int64",
+    "stop_sequence": "Int64",
+    "checkpoint_id": "string",
+    "route_id": "string",
+    "direction_id": "int16",
+}
+
+
+def _empty_stop_times() -> pd.DataFrame:
+    return pd.DataFrame({col: pd.array([], dtype=dtype) for col, dtype in STOP_TIMES_DTYPES.items()})
+
+
+# Where feeds go when the caller doesn't pass local_archive_path, as Lambda doesn't.
+# A warm Lambda keeps /tmp between invocations, so a fixed path lets it reuse the
+# 170-470 MB feed instead of downloading it again. It holds one feed at a time, so
+# it can't fill the 2,048 MB of EphemeralStorage.
+GTFS_CACHE_DIR = os.path.join(tempfile.gettempdir(), "gtfs_feeds")
 
 
 def _enqueue_gtfs_build(feed_key: str) -> None:
@@ -43,20 +69,43 @@ def fetch_stop_times_from_gtfs(
     """Fetch scheduled stop time information from GTFS.
 
     Args:
+        local_archive_path: Directory of feeds to read and add to, kept as is. Unset
+            in Lambda, which uses GTFS_CACHE_DIR and keeps only the current feed there,
+            so the yesterday jobs' catch-up can fetch several days' feeds in one run.
         allow_build: Whether this caller may build a missing feed itself. False in
             Lambda, where a build cannot fit; True for the backfill scripts, which
             run on a laptop with the disk and time to do it.
+
+    Returns an empty frame, with the same dtypes as a full one, if there are no trip_ids or
+    none of them are in the feed. Callers then go ahead without scheduled values.
     """
+    if len(trip_ids) == 0:
+        logger.info(f"No trips to look up in GTFS for {service_date}")
+        return _empty_stop_times()
+
     logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
-    if not local_archive_path:
-        local_archive_path = TemporaryDirectory().name
+    use_cache_dir = not local_archive_path
+    if use_cache_dir:
+        local_archive_path = GTFS_CACHE_DIR
     mbta_gtfs = MbtaGtfsArchive(
         local_archive_path=local_archive_path,
         s3_bucket=s3.Bucket("tm-gtfs"),
     )
     feed = mbta_gtfs.get_feed_for_date(service_date)
+    if feed is None:
+        # No feed key, so there's nothing to enqueue: data-ingestion can only build feeds the
+        # index lists. This clears once the MBTA adds a feed covering the date.
+        raise RuntimeError(
+            f"No GTFS feed covers {service_date} in the MBTA's archive index "
+            f"({mbta_gtfs.archive_url}), so there's no schedule to match against."
+        )
     logger.info(f"GTFS feed key: {feed.key}")
+
+    if use_cache_dir and not feed.exists_locally():
+        # Clear out the previous feed, and any download a timeout cut off, before
+        # fetching this one.
+        shutil.rmtree(local_archive_path, ignore_errors=True)
 
     if feed.exists_locally():
         logger.info(f"GTFS feed {feed.key} already present locally")
@@ -79,7 +128,8 @@ def fetch_stop_times_from_gtfs(
         # so download_or_build() could only ever time out -- and it did, every 30
         # minutes for 5 hours on 2026-09-15, when the MBTA published feed 20260907
         # (and later retracted it). Fail in ~2s and let data-ingestion's worker
-        # build it; a later scheduled run picks it up.
+        # build it. The same-day job's next run picks it up, and the yesterday jobs
+        # retry the day on later runs (see lamp/catch_up.py).
         _enqueue_gtfs_build(feed.key)
         raise RuntimeError(
             f"GTFS feed {feed.key} is not in s3://tm-gtfs; enqueued a build on "
@@ -93,26 +143,31 @@ def fetch_stop_times_from_gtfs(
     gtfs_stops = []
     num_batches = (len(trip_ids) + MAX_QUERY_DEPTH - 1) // MAX_QUERY_DEPTH
     logger.debug(f"Querying GTFS in {num_batches} batches")
-    for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
-        gtfs_stops.append(
-            pd.read_sql(
-                session.query(
-                    StopTime.trip_id,
-                    StopTime.stop_id,
-                    StopTime.arrival_time,
-                    StopTime.stop_sequence,
-                    StopTime.checkpoint_id,
-                    Trip.route_id,
-                    Trip.direction_id,
+    try:
+        for start in range(0, len(trip_ids), MAX_QUERY_DEPTH):
+            gtfs_stops.append(
+                pd.read_sql(
+                    session.query(
+                        StopTime.trip_id,
+                        StopTime.stop_id,
+                        StopTime.arrival_time,
+                        StopTime.stop_sequence,
+                        StopTime.checkpoint_id,
+                        Trip.route_id,
+                        Trip.direction_id,
+                    )
+                    .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
+                    .join(Trip, Trip.trip_id == StopTime.trip_id)
+                    .statement,
+                    session.bind,
+                    dtype_backend="numpy_nullable",
+                    dtype={"direction_id": "int16"},
                 )
-                .filter(or_(StopTime.trip_id == tid for tid in trip_ids[start : start + MAX_QUERY_DEPTH]))  # noqa: E203
-                .join(Trip, Trip.trip_id == StopTime.trip_id)
-                .statement,
-                session.bind,
-                dtype_backend="numpy_nullable",
-                dtype={"direction_id": "int16"},
             )
-        )
+    finally:
+        # Close the pooled connection too: an open handle keeps a deleted feed's disk space in use.
+        session.close()
+        session.bind.dispose()
 
     # A batch that matches no trips comes back with object columns, not the nullable
     # dtypes, and concatenating it downcasts every string column to object. pandas 3's
@@ -120,6 +175,14 @@ def fetch_stop_times_from_gtfs(
     # whenever the last batch is all ADDED- trips, which aren't in the schedule -- as on
     # 2026-10-19, which failed the same-day job for hours.
     non_empty = [df for df in gtfs_stops if not df.empty]
-    result = pd.concat(non_empty) if non_empty else gtfs_stops[0]
+    if not non_empty:
+        # Usually the wrong feed for these trips. Logged as an error so it's visible, but not
+        # raised: the events are still worth keeping without scheduled values.
+        logger.error(
+            f"None of the {len(trip_ids)} trip_ids for {service_date} are in GTFS feed {feed.key} "
+            f"(e.g. {', '.join(map(str, trip_ids[:5]))}). Continuing without scheduled values."
+        )
+        return _empty_stop_times()
+    result = pd.concat(non_empty)
     logger.info(f"Fetched {len(result)} GTFS stop times")
     return result

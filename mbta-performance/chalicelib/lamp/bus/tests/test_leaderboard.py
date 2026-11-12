@@ -128,6 +128,14 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
 
         self.assertEqual([entry["from_stop_name"] for entry in result["am_peak"]], ["A"])
 
+    def test_a_nan_is_null_rather_than_failing_the_upload(self):
+        aggregated = pd.DataFrame([{**_row("1", 0, "A", "B", 12.34, 25), "p50_running_time_seconds": float("nan")}])
+
+        entry = leaderboard.build_leaderboard(aggregated)["am_peak"][0]
+
+        self.assertIsNone(entry["p50_running_time_seconds"])
+        self.assertEqual(entry["segment_length_m"], 402)
+
     def test_geometry_and_percentile_columns_are_not_exposed(self):
         aggregated = pd.DataFrame(
             [
@@ -181,6 +189,7 @@ def _aggregated(day_types: list[str] | None = None) -> pd.DataFrame:
                 "running_time_seconds": total_time,
                 "dwell_seconds": 0.0,
                 "is_interpolated": False,
+                "from_interpolated": False,
                 "is_trip_start": False,
                 "is_trip_end": False,
                 "segment_length_m": 500.0,

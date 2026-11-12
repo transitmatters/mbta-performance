@@ -64,9 +64,9 @@ TIME_BANDS = (
 # separate archive (ALL_DAY_PMTILES_KEY_TEMPLATE below).
 ALL_DAY_BAND = "all_day"
 
-# A segment traversal is discarded outright if it implies a speed outside these bounds --
-# these come from GPS noise, layovers counted as travel, and mis-snapped stops.
-MIN_PLAUSIBLE_SPEED_MPH = 0.5
+# A segment traversal is discarded outright if its arrival-to-arrival speed is above this, from
+# GPS noise or mis-snapped stops. A running speed above it nulls only the running time. See
+# segments.build_traversals.
 MAX_PLAUSIBLE_SPEED_MPH = 65.0
 
 # Two-way split of service dates for the weekly/monthly trend rollups in trends.py --

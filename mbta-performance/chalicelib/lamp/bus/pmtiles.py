@@ -217,7 +217,7 @@ def _round_range_speed(speed, n_traversals):
 
 
 def _round_dwell(seconds):
-    return (seconds / DWELL_ROUNDING_SECONDS).round().astype(int) * DWELL_ROUNDING_SECONDS
+    return (seconds / DWELL_ROUNDING_SECONDS).round().astype("Int64") * DWELL_ROUNDING_SECONDS
 
 
 def _round_for_tiles(frame):
@@ -229,13 +229,15 @@ def _round_for_tiles(frame):
     they'd add 24% as floats and 10% as integers, while rounding speed saves 12%, so with both
     the archive comes out 5% smaller than before.
 
-    running_length_m stays a float, since it's null on a short segment, but a whole one.
+    The integers are nullable (Int64), so a NaN is left off its feature rather than failing the
+    whole upload: running_length_m is null on a short segment, and p50_running_time_seconds on a
+    row with no usable running time (see segments.build_traversals).
     """
     return frame.assign(
         p50_running_speed_mph=frame.p50_running_speed_mph.round(1),
-        segment_length_m=frame.segment_length_m.round().astype(int),
-        running_length_m=frame.running_length_m.round(),
-        p50_running_time_seconds=frame.p50_running_time_seconds.round().astype(int),
+        segment_length_m=frame.segment_length_m.round().astype("Int64"),
+        running_length_m=frame.running_length_m.round().astype("Int64"),
+        p50_running_time_seconds=frame.p50_running_time_seconds.round().astype("Int64"),
         p10_running_speed_mph=_round_range_speed(frame.p10_running_speed_mph, frame.n_traversals),
         p90_running_speed_mph=_round_range_speed(frame.p90_running_speed_mph, frame.n_traversals),
     )

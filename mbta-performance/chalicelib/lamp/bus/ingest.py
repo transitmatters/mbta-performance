@@ -30,7 +30,7 @@ from .dwells import aggregate_dwells
 from .geoparquet import write_geoparquet
 from .leaderboard import build_leaderboard
 from .patterns import build_pattern_geometry
-from .remote_parquet import read_service_date
+from .remote_parquet import ServiceDateNotFoundError, read_service_date
 from .s3_writer import upload_dwell_pmtiles, upload_leaderboard, upload_pmtiles, upload_speed_segments
 from .segments import (
     aggregate_segments,
@@ -62,8 +62,19 @@ def source_url_for(service_date: date) -> str:
 
 
 def read_events_for_date(service_date: date) -> pd.DataFrame:
-    """One service date of LAMP bus events, as published: every scheduled stop, observed or not."""
-    events = read_service_date(source_url_for(service_date), service_date, BUS_COLUMNS)
+    """One service date of LAMP bus events, as published: every scheduled stop, observed or not.
+
+    Reads from the other export when `source_url_for`'s choice doesn't have the date. MBTA
+    rewrites the two separately, so if one stops updating for a few days the other can still
+    have those dates. Costs one more footer read, and only when the first export is missing the date.
+    """
+    preferred = source_url_for(service_date)
+    try:
+        events = read_service_date(preferred, service_date, BUS_COLUMNS)
+    except ServiceDateNotFoundError:
+        other = BUS_ALL_URL if preferred == BUS_RECENT_URL else BUS_RECENT_URL
+        logger.warning(f"{preferred} has no row group for {service_date}; trying {other}")
+        events = read_service_date(other, service_date, BUS_COLUMNS)
     if events.empty:
         raise ValueError(f"No LAMP bus events for {service_date}")
     return events
@@ -186,7 +197,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Generate LAMP bus speed segments as GeoParquet.")
     parser.add_argument("--date", type=date.fromisoformat, help="Service date (YYYY-MM-DD), default yesterday")
-    parser.add_argument("--out", default="bus_speed_segments.parquet", help="Output GeoParquet path")
+    # No default: the image's working directory isn't writable, so one would fail the daily job
+    # after its DynamoDB write and before its upload.
+    parser.add_argument("--out", help="Also write the GeoParquet to this path")
     parser.add_argument("--upload", action="store_true", help=f"Also publish to s3://{S3_BUCKET}/{S3_KEY_TEMPLATE}")
     parser.add_argument(
         "--write-to-dynamo", action="store_true", help="Also write daily per-route metrics to DeliveredTripMetricsBus"
