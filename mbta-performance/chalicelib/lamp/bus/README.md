@@ -77,7 +77,8 @@ peaks at in production with tiles. Both fit the jobs' memory limits.
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
 4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a
    whole-day `all_day` band. Segments are timed on the street only (see "Running speed"), and
-   the time at each stop is aggregated separately as dwell (`dwells.py`).
+   the time at each stop is aggregated separately as dwell (`dwells.py`). Each segment also gets
+   a free-flow running time to measure delay against (see "Free flow and delay").
 5. **Write GeoParquet** with road-following `LineString` geometry (`geoparquet.py`).
 6. **Optionally build PMTiles** from the same result, for the live map (`pmtiles.py`),
    plus a pooled row for each stop pair several routes share (`shared_segments.py`), and
@@ -148,7 +149,8 @@ one `tippecanoe` invocation, writing every segment into a single vector layer na
 dashboard repo). Only the columns the map actually reads (`TILE_PROPERTIES`: route, direction,
 stop names, time band, `p50_running_speed_mph`, traversal counts, `segment_length_m`,
 `running_length_m`, `p50_running_time_seconds`, `p10_running_speed_mph`,
-`p90_running_speed_mph`, `terminal_section` and `shared_routes`) are handed to tippecanoe, so
+`p90_running_speed_mph`, `terminal_section`, `shared_routes` and
+`free_flow_running_time_seconds`) are handed to tippecanoe, so
 the arrival-to-arrival and dwell columns can never end up on a segment by accident -- see
 `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend type.
 They're rounded to what the dashboard displays first (speed to 0.1 mph, length and time to whole
@@ -274,6 +276,14 @@ and 29% and 25% for the month, with no zoom losing segments. The GeoParquet gain
 `p10_total_time_seconds`, `p10_speed_mph` and `terminal_section`, growing 13-14%. Together that's
 about 2.3GB more S3 a year, or $0.05/month more after a year, and 21-30% more tile transfer for
 whatever part of the map is viewed. p10 adds about 4s to aggregating a month.
+
+`free_flow_running_time_seconds` (see "Free flow and delay") grows the band and all_day archives
+1.0% and 1.5% on a day (2026-11-10), 2.1% and 3.2% on a week (2026-W45), and 2.0% and 3.4% on a
+month (October 2026). No zoom loses segments, but only because `MAXIMUM_TILE_BYTES` rises to
+900KB. The month's zoom 11, where the map opens, was already 814KB at its densest and went to
+831KB, which at 825KB thinned it from 124,843 features to 8,016 (see `pmtiles.py`). The
+GeoParquet gains three columns, growing 1-4%. Together that's about 0.2GB more S3 a year, or
+under $0.01/month more after a year, and 1-3% more tile transfer.
 
 **Requires `tippecanoe` on `PATH`.** It's a system binary, not a Python dependency -- there's
 nothing to add to `pyproject.toml` for it. Install it via `apt install tippecanoe` (the
@@ -633,6 +643,88 @@ Sanity check on 2026-11-04, all-day rows weighted by traversals: 15.8 mph runnin
 mph arrival to arrival; median row 16.2 mph, 10th and 90th percentiles 7.9 and 25.0 mph.
 Measured before #130's change to how traversals are kept or dropped, which nudges both up
 slightly: arrival to arrival on 2026-09-03 went from 13.90 to 14.26 mph overall.
+
+## Free flow and delay
+
+Every row also carries its segment's **free-flow running time**, how long buses take when
+traffic is light, and how much longer than that its median trip took. The dashboard uses this to
+show where and when buses lose time to traffic
+([t-performance-dash#1042](https://github.com/transitmatters/t-performance-dash/issues/1042)):
+
+| Column | Meaning |
+| --- | --- |
+| `free_flow_running_time_seconds` | Median running time of the segment's traversals that departed in `FREE_FLOW_WINDOWS`: before 6:00, or from 22:00. The same on every row of a segment within a file. Null with fewer than `MIN_FREE_FLOW_TRAVERSALS` (10) of them. **In the tiles.** |
+| `free_flow_traversals` | How many traversals that median comes from. |
+| `p50_delay_seconds` | `p50_running_time_seconds` minus free flow. Signed: a band can run a little faster than free flow, and a route's summed delay is only fair if that counts. A display should clamp it at zero. The map works it out from the two times, so it isn't in the tiles. |
+
+This is the baseline the MBTA's Transit Priority team uses for bus delay ("early morning/late
+night service when there is relatively little traffic"). The
+[2018 CTPS bus-lane study](https://ctps.org/data/html/studies/transit/Prioritization_of_Dedicated_Bus_Lanes/Prioritization_of_Dedicated_Bus_Lanes.html)
+used 2-4 AM INRIX speeds. Third-party traffic data was ruled out for cost and terms of use; see
+the issue above.
+
+**Why those hours.** Below is each segment's median running time per hour, against its median
+over the quiet hours, weighted by traversals, for 2026-11-02 to 11-08. Weekdays are back to the
+quiet-hour pace by 22:00 and stay at it until 6:00, when they climb steeply:
+
+| Departs | Weekday | Weekend |
+| --- | --- | --- |
+| 5:00-6:00 | 1.01 | 1.03 |
+| 6:00-7:00 | 1.12 | 1.04 |
+| 8:00-9:00 | 1.32 | 1.10 |
+| 17:00-18:00 | 1.50 | 1.28 |
+| 21:00-22:00 | 1.09 | 1.14 |
+| 22:00-23:00 | 1.06 | 1.11 |
+| 0:00-1:00 | 1.00 | 1.04 |
+
+Weekend evenings take a little longer to settle. Starting the window at 23:00 instead would cost
+about 4 points of coverage for that (see below).
+
+**One free flow per file, from every date and day type.** Free flow doesn't follow `day_type` or
+`time_band`: `aggregate_segments` takes it over every quiet-hour traversal the file was built
+from. Quiet hours run at the same pace on any day. In October 2026, a segment's weekend median
+over a weekday's came to 1.00 (interquartile 0.96-1.07, 5,515 segments). And one day type's
+nights are often too few trips to go on. A pooled row (`shared_segments.py`) takes its free flow
+from every quiet-hour trip of the routes it pools.
+
+**Coverage.** These figures are the share of weekday peak trips on a segment with a free flow.
+The other segments are mostly on routes with little or no service before 6:00 or after 22:00.
+Nothing else stands in for them, so they have no delay.
+
+| File | At least 5 | At least 10 | At least 20 |
+| --- | --- | --- | --- |
+| One weekday (2026-10-07) | 61% | 39% | 11% |
+| A week (2026-W45) | 83% | 77% | 69% |
+| A month (October 2026) | 86% | 85% | 83% |
+
+10 is where it settles. Over October, free flow taken from Mondays, Wednesdays and Fridays came
+within a median 4.4% of free flow from the other days at 10 (4.7% at 5, 4.1% at 20). Over a week
+it was 8.0% at 10 against 8.7% at 5.
+
+**Results, 2026-W45 weekdays.** Median running time over free flow, weighted by traversals, on
+rows of 10 or more traversals:
+
+| Band | Running time vs free flow |
+| --- | --- |
+| `early_am` | 1.04 |
+| `am_peak` | 1.31 |
+| `midday` | 1.27 |
+| `pm_peak` | 1.46 |
+| `evening` | 1.16 |
+| `late_night` | 1.01 |
+
+Summed along a route, the most PM-peak delay was on the 435 (20 minutes a trip, 48 against 28 at
+free flow), the 450 both ways, the 109 toward Linden Square, the 34E and the 70. A single day reads
+the same way: the AM and PM peaks came to 1.37 and 1.51 on Tuesday 2026-11-10, and 1.14 and 1.30
+on Veterans Day.
+
+**What it measures** is delay as a rider experiences it, not car traffic. It includes signal
+timing that changes by time of day, and a bus held between stops. A bus lane lowers it even where
+cars are stuck. Station busways such as Nubian read as slow, and the slowest of them may be
+buses waiting for a berth rather than traffic.
+
+Free flow adds under a second to a week's aggregation and 3s to a month's. For what it costs the
+tiles, see "PMTiles".
 
 ## Interpolation
 
