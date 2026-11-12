@@ -28,6 +28,12 @@ class TestIngest(unittest.TestCase):
         )
         self.mock_gtfs_data["direction_id"] = self.mock_gtfs_data["direction_id"].astype("int16")
 
+    def _empty_parquet(self) -> bytes:
+        """The sample file with every row removed, keeping its schema."""
+        buffer = io.BytesIO()
+        pd.read_parquet(io.BytesIO(self.data), engine="pyarrow").iloc[0:0].to_parquet(buffer, engine="pyarrow")
+        return buffer.getvalue()
+
     def test__process_arrival_departure_times(self):
         pq_df_before = pd.read_parquet(
             io.BytesIO(self.data),
@@ -409,6 +415,30 @@ class TestIngest(unittest.TestCase):
                 with self.assertLogs("chalicelib.lamp.ingest", level="WARNING"):
                     ingest.ingest_today_lamp_data()
 
+    def test_ingest_today_lamp_data_tolerates_empty_file(self):
+        """On 2026-11-12 LAMP served today's file with no rows from about 6:30 to 8 AM."""
+        mock_response = mock.Mock(status_code=200, content=self._empty_parquet())
+        with mock.patch("requests.get", return_value=mock_response):
+            with mock.patch("chalicelib.lamp.ingest.get_current_service_date", return_value=date(2024, 2, 7)):
+                with mock.patch("chalicelib.lamp.ingest._parallel_upload") as mock_upload:
+                    with self.assertLogs("chalicelib.lamp.ingest", level="WARNING") as logs:
+                        ingest.ingest_today_lamp_data()
+        self.assertIn("has no rows", "\n".join(logs.output))
+        mock_upload.assert_not_called()
+
+    def test_ingest_yesterday_lamp_data_does_not_mark_an_empty_day_done(self):
+        """An empty file for a finished day is a LAMP problem; leave the day for a later run to retry."""
+        mock_response = mock.Mock(status_code=200, content=self._empty_parquet())
+        with (
+            mock.patch("requests.get", return_value=mock_response),
+            mock.patch("chalicelib.lamp.catch_up.get_current_service_date", return_value=date(2024, 2, 8)),
+            mock.patch("chalicelib.lamp.catch_up.is_ingested", side_effect=lambda _, day: day != date(2024, 2, 7)),
+            mock.patch("chalicelib.lamp.catch_up.mark_ingested") as mock_mark,
+        ):
+            with self.assertRaises(RuntimeError):
+                ingest.ingest_yesterday_lamp_data()
+        mock_mark.assert_not_called()
+
     def test_ingest_today_lamp_data_raises_on_other_failures(self):
         with mock.patch("requests.get", return_value=mock.Mock(status_code=500)):
             with mock.patch("chalicelib.lamp.ingest.get_current_service_date", return_value=date(2024, 2, 7)):
@@ -456,6 +486,11 @@ class TestIngest(unittest.TestCase):
                 with mock.patch("requests.get", return_value=mock.Mock(status_code=status)):
                     with self.assertRaises(ingest.LampFileNotFound):
                         ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
+
+    def test_fetch_pq_file_from_remote_empty_file_is_not_published(self):
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=200, content=self._empty_parquet())):
+            with self.assertRaises(ingest.LampFileNotFound):
+                ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
 
     def test_fetch_pq_file_from_remote_server_error_is_not_not_found(self):
         with mock.patch("requests.get", return_value=mock.Mock(status_code=502)):
