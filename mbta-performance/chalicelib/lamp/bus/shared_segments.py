@@ -31,7 +31,7 @@ import logging
 import pandas as pd
 
 from .constants import ALL_DAY_BAND, MIN_TRAVERSALS_HINT
-from .segments import SEGMENT_KEY, _aggregate, with_time_bands
+from .segments import SEGMENT_KEY, _aggregate, free_flow_running_times, with_free_flow, with_time_bands
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,14 @@ def add_shared_segments(
         [_aggregate(by_band, group_key + ["shared_routes"]), _aggregate(all_day, group_key + ["shared_routes"])],
         ignore_index=True,
     )
+
+    # Free flow from every quiet-hour traversal of the pooled routes on the pair, across slices as
+    # aggregate_segments takes it. A pair can pool different routes in different slices, so it's
+    # keyed by shared_routes too.
+    pooled_routes = members[["route_id"] + STOP_PAIR_KEY + ["shared_routes"]].drop_duplicates()
+    pair_key = STOP_PAIR_KEY + ["shared_routes"]
+    pooled_free_flow = free_flow_running_times(traversals.merge(pooled_routes, on=SEGMENT_KEY), pair_key)
+    pooled = with_free_flow(pooled, pooled_free_flow, pair_key)
 
     # Geometry and stop names from the route that ran the pair most.
     busiest = (
