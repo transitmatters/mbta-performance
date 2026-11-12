@@ -16,9 +16,12 @@ def service_date(ts: datetime) -> date:
     """
     Return the service date for a given timestamp in Eastern time.
     """
-    # In practice a None TZ is UTC, but we want to be explicit
-    # In many places we have an implied eastern
-    ts = ts.replace(tzinfo=EASTERN_TIME)
+    # Naive times are read as Eastern wall-clock time. Aware ones are converted, so a UTC
+    # timestamp lands on the right day instead of being relabeled as Eastern.
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=EASTERN_TIME)
+    else:
+        ts = ts.astimezone(EASTERN_TIME)
 
     if ts.hour >= SERVICE_DAY_START_HOUR and ts.hour <= 23:
         return date(ts.year, ts.month, ts.day)
