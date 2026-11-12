@@ -2,16 +2,120 @@ import os
 import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pandas as pd
 from mbta_gtfs_sqlite.models import StopTime, Trip
 from mbta_gtfs_sqlite.session import create_sqlalchemy_session
+from mbta_gtfs_sqlite.feed import ALL_DB_FILES, GtfsFeed
 
 from .. import gtfs
 
 
+class _FakeBucket:
+    """Just enough of the tm-gtfs bucket for a real GtfsFeed: a listing and downloads."""
+
+    def __init__(self, feed_key: str):
+        self.keys = [f"{feed_key}/{name}" for name in ALL_DB_FILES]
+        self.downloads = []
+        self.objects = mock.Mock()
+        self.objects.filter.side_effect = lambda Prefix: [
+            SimpleNamespace(key=k) for k in self.keys if k.startswith(Prefix)
+        ]
+
+    def download_file(self, key, filename):
+        self.downloads.append(key)
+        Path(filename).touch()  # an empty file is a valid empty SQLite database
+
+
+class TestGTFSCache(unittest.TestCase):
+    """#134: the default archive path was TemporaryDirectory().name, a new random
+    directory each call that nothing deleted. Warm Lambdas re-downloaded the feed
+    every run and left the old copy in /tmp until it filled up."""
+
+    FEED_KEY = "20260907"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.cache_dir = self.tmp / "gtfs_feeds"
+        self.bucket = _FakeBucket(self.FEED_KEY)
+        self.archive_paths = []
+
+        def make_archive(local_archive_path, s3_bucket):
+            self.archive_paths.append(local_archive_path)
+            archive = SimpleNamespace(local_archive_path=local_archive_path, s3_bucket=self.bucket)
+            feed = GtfsFeed(
+                archive=archive,
+                key=self.FEED_KEY,
+                url="",
+                version="",
+                start_date=date(2026, 9, 7),
+                end_date=date(2026, 12, 31),
+            )
+            archive.get_feed_for_date = lambda _: feed
+            return archive
+
+        for patcher in (
+            mock.patch.object(gtfs, "GTFS_CACHE_DIR", str(self.cache_dir)),
+            mock.patch("chalicelib.gtfs.boto3.resource"),
+            mock.patch("chalicelib.gtfs.MbtaGtfsArchive", side_effect=make_archive),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _fetch(self, local_archive_path=None):
+        return gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2026, 11, 11), local_archive_path=local_archive_path)
+
+    def test_warm_run_reuses_the_cached_feed(self):
+        self._fetch()
+        self._fetch()
+
+        self.assertEqual(self.archive_paths, [str(self.cache_dir)] * 2)
+        # One download of each file, by the first run only.
+        self.assertCountEqual(self.bucket.downloads, self.bucket.keys)
+
+    def test_new_feed_replaces_the_cached_one(self):
+        old_feed = self.cache_dir / "20260830"
+        old_feed.mkdir(parents=True)
+        (old_feed / "gtfs.sqlite3").touch()
+        # What s3transfer leaves behind when a timeout kills a download mid-file
+        partial = self.cache_dir / self.FEED_KEY / "gtfs.sqlite3.a1B2c3D4"
+        partial.parent.mkdir()
+        partial.touch()
+
+        self._fetch()
+
+        self.assertEqual(sorted(os.listdir(self.cache_dir)), [self.FEED_KEY])
+        self.assertEqual(sorted(os.listdir(self.cache_dir / self.FEED_KEY)), sorted(ALL_DB_FILES))
+
+    def test_caller_archive_is_left_alone(self):
+        """Backfills keep every feed they've used in LOCAL_ARCHIVE_PATH."""
+        archive = self.tmp / "feeds"
+        old_feed = archive / "20260830"
+        old_feed.mkdir(parents=True)
+        (old_feed / "gtfs.sqlite3").touch()
+
+        self._fetch(local_archive_path=str(archive))
+
+        self.assertTrue((old_feed / "gtfs.sqlite3").exists())
+        self.assertTrue((archive / self.FEED_KEY / "gtfs.sqlite3").exists())
+        self.assertFalse(self.cache_dir.exists())
+
+
 class TestGTFS(unittest.TestCase):
+    def setUp(self):
+        # Tests that leave local_archive_path unset clear GTFS_CACHE_DIR, so keep them
+        # off the real one in /tmp.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(gtfs, "GTFS_CACHE_DIR", os.path.join(tmp.name, "gtfs_feeds"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_max_query_depth_constant(self):
         """Test that MAX_QUERY_DEPTH is set to expected value."""
         self.assertEqual(gtfs.MAX_QUERY_DEPTH, 900)

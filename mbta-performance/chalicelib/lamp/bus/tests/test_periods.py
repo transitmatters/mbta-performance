@@ -86,3 +86,27 @@ class TestDatesInRange(unittest.TestCase):
         result = periods.dates_in_range(date(2026, 1, 5), date(2026, 1, 10), not_after=date(2026, 1, 1))
 
         self.assertEqual(result, [])
+
+
+class TestRecentPeriodKeys(unittest.TestCase):
+    def test_the_morning_after_a_week_ends_is_that_week_alone(self):
+        # Newest date Sunday 2026-11-08: the three days are all ISO 2026-W45.
+        self.assertEqual(periods.recent_period_keys(periods.week_key_for, date(2026, 11, 8), 3), [(2026, 45)])
+
+    def test_the_next_two_mornings_also_include_the_week_that_ended(self):
+        self.assertEqual(
+            periods.recent_period_keys(periods.week_key_for, date(2026, 11, 9), 3), [(2026, 46), (2026, 45)]
+        )
+        self.assertEqual(
+            periods.recent_period_keys(periods.week_key_for, date(2026, 11, 10), 3), [(2026, 46), (2026, 45)]
+        )
+
+    def test_after_that_only_the_current_week(self):
+        self.assertEqual(periods.recent_period_keys(periods.week_key_for, date(2026, 11, 11), 3), [(2026, 46)])
+
+    def test_months_the_same_way_across_a_year_boundary(self):
+        self.assertEqual(periods.recent_period_keys(periods.month_key_for, date(2026, 12, 31), 3), [(2026, 12)])
+        self.assertEqual(
+            periods.recent_period_keys(periods.month_key_for, date(2027, 1, 2), 3), [(2027, 1), (2026, 12)]
+        )
+        self.assertEqual(periods.recent_period_keys(periods.month_key_for, date(2027, 1, 3), 3), [(2027, 1)])

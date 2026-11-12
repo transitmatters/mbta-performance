@@ -9,7 +9,6 @@ from .constants import (
     ALL_DAY_BAND,
     MAX_PLAUSIBLE_SPEED_MPH,
     METERS_PER_SECOND_TO_MPH,
-    MIN_PLAUSIBLE_SPEED_MPH,
     MOVING_PERCENTILES,
     PERCENTILES,
     TERMINAL_SECTION_SHARE,
@@ -144,6 +143,9 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
 
     Dwell is roughly as large as running time on MBTA bus routes (both median ~21s), so the
     two speeds differ by more than a factor of two. `speed_mph` is the rider-experienced one.
+
+    A traversal is kept or dropped on the arrival-to-arrival clock alone. Where the moving clock
+    reads zero or faster than any bus, the traversal is kept and its moving time and speed are null.
     """
     events = events.sort_values(TRIP_KEY + ["stop_sequence"])
     grouped = _by_trip(events)
@@ -202,16 +204,30 @@ def build_traversals(events: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFra
     traversal["is_interpolated"] = traversal.from_interpolated.eq(True) | traversal.to_interpolated.eq(True)
 
     before = len(traversal)
-    # Plausibility is judged on the moving speed: the dwell-inclusive figure is legitimately
-    # near zero at a long layover, but no bus covers ground at 65mph between stops.
-    traversal = traversal[
-        (traversal.moving_time_seconds > 0)
-        & (traversal.moving_speed_mph >= MIN_PLAUSIBLE_SPEED_MPH)
-        & (traversal.moving_speed_mph <= MAX_PLAUSIBLE_SPEED_MPH)
-    ]
+    # Plausibility is judged on the clock speed_mph is timed on. Judged on the moving clock instead,
+    # which runs short of every segment (see "The two speeds" in the README), it dropped 22-32% of
+    # traversals under 200m on 2026-11-10, against 2-8% this way. Those were mostly the fastest,
+    # so about a quarter of the segments under 200m read more than 1 mph slow.
+    #
+    # There's no lower bound. The slowest traversals that day were buses holding mid-trip, for up
+    # to an hour, often on segments where most trips hold: route 109's 7417 -> 7412 runs at a
+    # median 0.64 mph. Riders on board sit through that, and a 0.5 mph floor dropped 20 of that
+    # segment's 85 trips judged on the moving clock, or 37 on this one, the slowest of them.
+    traversal = traversal[(traversal.total_time_seconds > 0) & (traversal.speed_mph <= MAX_PLAUSIBLE_SPEED_MPH)]
+    # Kept on the clock above, but the moving clock itself is no use on these: on 2026-11-10 it
+    # read zero or less on 12k of them and faster than any bus on 25k more. Nulled, they drop out
+    # of the moving percentiles in _aggregate, rather than making them zero or infinite.
+    unusable_moving_clock = (traversal.moving_time_seconds <= 0) | (
+        traversal.moving_speed_mph > MAX_PLAUSIBLE_SPEED_MPH
+    )
+    traversal = traversal.assign(
+        moving_time_seconds=traversal.moving_time_seconds.mask(unusable_moving_clock),
+        moving_speed_mph=traversal.moving_speed_mph.mask(unusable_moving_clock),
+    )
     logger.info(
         f"Built {len(traversal)} traversals ({before - len(traversal)} dropped as implausible, "
-        f"{int(no_arrival.sum())} for a departure with no arrival)"
+        f"{int(no_arrival.sum())} for a departure with no arrival; "
+        f"{int(unusable_moving_clock.sum())} kept without a usable moving time)"
     )
     return traversal
 
@@ -294,7 +310,7 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         for percentile in percentiles:
             aggregation[f"p{percentile}_{measure}"] = (
                 measure,
-                lambda series, q=percentile: float(np.percentile(series, q)),
+                lambda series, q=percentile: _percentile(series, q),
             )
 
     aggregated = grouped.agg(**aggregation).reset_index()
@@ -311,6 +327,17 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         )
 
     return _with_terminal_sections(aggregated)
+
+
+def _percentile(series: pd.Series, percentile: int) -> float:
+    """np.percentile of the non-null values, or NaN if there are none.
+
+    Only moving_time_seconds has nulls (see build_traversals). np.nanpercentile would do the same,
+    but it warns on a group with no moving times at all.
+    """
+    values = series.to_numpy(dtype="float64")
+    values = values[~np.isnan(values)]
+    return float(np.percentile(values, percentile)) if values.size else np.nan
 
 
 def _with_terminal_sections(aggregated: pd.DataFrame) -> pd.DataFrame:

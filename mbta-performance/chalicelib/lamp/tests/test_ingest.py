@@ -130,7 +130,7 @@ class TestIngest(unittest.TestCase):
         with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=gtfs._empty_stop_times()):
             result = ingest.ingest_pq_file(pq_df, date(2024, 2, 7))
 
-        self.assertEqual(result.shape, (17074, 20))  # same events as with GTFS (test_ingest_pq_file)
+        self.assertEqual(result.shape, (17078, 20))  # same events as with GTFS (test_ingest_pq_file)
         self.assertListEqual(list(result.columns), constants.S3_COLUMNS)
         self.assertTrue(result["scheduled_tt"].isna().all())
         self.assertEqual(result["scheduled_tt"].dtype, "Int64")

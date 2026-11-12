@@ -394,6 +394,64 @@ class TestProcess(unittest.TestCase):
                 # Verify trip_ids were generated (should not be null)
                 self.assertFalse(df["trip_id"].isna().any())
 
+    def _ferry_rows_missing_trip_ids(self):
+        return pd.DataFrame(
+            {
+                "service_date": ["2024-02-07 05:00:00+00"] * 5,
+                "route_id": ["F4"] * 5,
+                "trip_id": [None] * 5,
+                "travel_direction": ["To Boston"] + ["From Boston"] * 4,
+                "departure_terminal": ["Navy Yard"] + ["Long Wharf N"] * 4,
+                "arrival_terminal": ["Long Wharf N", "Navy Yard", "Navy Yard", "Navy Yard", None],
+                "mbta_sched_departure": ["2024-02-07 12:00:00+00", "2024-02-07 12:15:00+00"]
+                + ["2024-02-07 05:00:00+00"] * 3,
+                "mbta_sched_arrival": ["2024-02-07 12:10:00+00", "2024-02-07 12:25:00+00"]
+                + ["2024-02-07 05:00:00+00"] * 3,
+                # The last three are midnight placeholders like the source has: identical but for the vessel,
+                # and some without an arrival terminal
+                "actual_departure": ["2024-02-07 07:01:00", "2024-02-07 07:16:00"] + ["2024-02-07 00:00"] * 3,
+                "actual_arrival": ["2024-02-07 07:11:00", "2024-02-07 07:26:00"] + ["2024-02-07 00:00"] * 3,
+                "vessel_time_slot": ["Vessel A", "Vessel A", "Vessel B", "Vessel C", "Vessel D"],
+            }
+        )
+
+    def _ferry_trip_ids_by_departure(self, ferry_data):
+        ferry_csv = pathlib.Path(self.temp_dir) / "ferry.csv"
+        ferry_data.to_csv(ferry_csv, index=False)
+        with mock.patch("chalicelib.historic.process.add_gtfs_headways", side_effect=lambda x: x):
+            with mock.patch("chalicelib.historic.process.to_disk_ferry") as mock_to_disk:
+                process.process_ferry(str(ferry_csv), self.temp_dir, nozip=True)
+        df = mock_to_disk.call_args[0][0]
+        deps = df[df["event_type"] == "DEP"]
+        return dict(zip(zip(deps["event_time"], deps["vehicle_id"]), deps["trip_id"]))
+
+    def test_process_ferry_missing_trip_ids_are_stable(self):
+        """Trips without a trip_id get the same unique id on every run, whatever order the file lists them in."""
+        ferry_data = self._ferry_rows_missing_trip_ids()
+
+        first = self._ferry_trip_ids_by_departure(ferry_data)
+        rerun = self._ferry_trip_ids_by_departure(ferry_data)
+        reordered = self._ferry_trip_ids_by_departure(ferry_data.iloc[::-1])
+
+        self.assertEqual(len(set(first.values())), 5)
+        self.assertEqual(first, rerun)
+        self.assertEqual(first, reordered)
+
+    def test_process_ferry_actual_time_in_dst_changeover(self):
+        """An actual time in the repeated hour when clocks fall back is kept as written, instead of crashing."""
+        deps = self._process_ferry_rows(
+            {
+                "route_id": ["F1"],
+                "travel_direction": ["From Boston"],
+                "departure_terminal": ["Rowes"],
+                "arrival_terminal": ["Hingham"],
+                "service_date": ["2024-11-03 04:00:00+00:00"],
+                "actual_departure": ["2024-11-03 01:30:00"],
+            }
+        )
+
+        self.assertEqual(deps["event_time"].tolist(), [pd.Timestamp("2024-11-03 01:30:00")])
+
     def test_load_bus_data(self):
         """Test load_bus_data reads and transforms bus data correctly."""
         bus_data = pd.DataFrame(
@@ -486,6 +544,24 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(len(events), 2)  # a Midpoint is an ARR and a DEP
         self.assertTrue(events.scheduled_headway.isna().all())
         self.assertTrue(events.scheduled_tt.isna().all())
+
+    def test_load_bus_data_pascal_case_headers(self):
+        """The 2020 Q4 file's PascalCase headers get the same string IDs as the others, not floats like 67.0."""
+        bus_csv = pathlib.Path(self.temp_dir) / "bus.csv"
+        bus_csv.write_text(
+            "ServiceDate,Route,Direction,HalfTripId,Stop,Timepoint,TimepointOrder,PointType,StandardType,"
+            "Scheduled,Actual,ScheduledHeadway,Headway\n"
+            "2020-10-01 00:00:00.000,01,Inbound,48885644.0,067,maput,2,Midpoint,Schedule,"
+            "1900-01-01 05:07:00.000,1900-01-01 05:07:42.000,NULL,NULL\n"
+            "2020-10-01 00:00:00.000,01,Inbound,48885644.0,,maput,3,Midpoint,Schedule,"
+            "1900-01-01 05:09:00.000,1900-01-01 05:09:42.000,NULL,NULL\n"
+        )
+
+        result = process.load_bus_data(str(bus_csv))
+
+        self.assertEqual(result["stop_id"].iloc[0], "067")
+        self.assertListEqual(list(result["route_id"]), ["1", "1"])
+        self.assertListEqual(list(result["direction_id"]), [1, 1])
 
     def test_load_bus_data_with_route_filter(self):
         """Test load_bus_data filters routes correctly."""
@@ -678,10 +754,9 @@ class TestProcess(unittest.TestCase):
     def test_load_bus_data_pre_june_2024_z_suffix_treated_as_eastern(self):
         """Pre-June 2024 bus data with a Z suffix is treated as Eastern Time, not UTC.
 
-        Before June 2024 the MBTA labelled Eastern times with a Z suffix.
-        The loader detects this (service_date < 2024-06-01) and does NOT apply
-        a UTC→Eastern conversion, so the output time equals the wall-clock value
-        from the raw data.
+        Before June 2024 the MBTA labelled Eastern times with a Z suffix. One row is too few
+        for detection, so the loader falls back to BUS_SHIFTED_WINDOW, which starts at
+        2024-06-01, and takes no hours off: the output equals the raw wall-clock value.
         """
         bus_data = pd.DataFrame(
             {
@@ -708,7 +783,7 @@ class TestProcess(unittest.TestCase):
         result = process.load_bus_data(str(bus_csv))
 
         # Pre-June 2024: the "Z" is ignored as a UTC indicator.
-        # 08:06 stays as 08:06 on the service date (no UTC→Eastern shift).
+        # 08:06 stays as 08:06 on the service date (no 5-hour shift).
         expected_actual = datetime.datetime(2024, 1, 15, 8, 6, 0)
         self.assertEqual(result.iloc[0]["actual"], expected_actual)
 
@@ -839,8 +914,8 @@ class TestProcess(unittest.TestCase):
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2025, 1, 1)))
         self.assertFalse(process.bus_times_are_shifted(times, datetime.datetime(2026, 1, 31)))
 
-    def test_load_bus_data_feb_2026_z_suffix_treated_as_eastern(self):
-        """Feb 2026+ bus data is Eastern wall-clock time again despite the Z suffix: no UTC shift."""
+    def test_load_bus_data_2026_z_suffix_treated_as_eastern(self):
+        """Bus data from 2025 on is Eastern wall-clock time again despite the Z suffix: no hours come off."""
         bus_data = pd.DataFrame(
             {
                 "service_date": ["2026-03-01"],

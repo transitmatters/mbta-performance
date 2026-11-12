@@ -43,6 +43,48 @@ def _checkpoint_gtfs_mock(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _two_trip_gtfs_mock() -> pd.DataFrame:
+    """Scheduled trips A (leaves O at 09:00, 600 s to X) and B (leaves O at 09:15, 900 s to X)."""
+    return pd.DataFrame(
+        {
+            "trip_id": pd.array(["A", "A", "B", "B"], dtype="string"),
+            "stop_id": pd.array(["O", "X", "O", "X"], dtype="string"),
+            "arrival_time": pd.array([32400, 33000, 33300, 34200], dtype="Int64"),
+            "stop_sequence": pd.array([1, 2, 1, 2], dtype="Int64"),
+            "checkpoint_id": pd.array(["cpo", "cpx", "cpo", "cpx"], dtype="string"),
+            "route_id": pd.array(["1"] * 4, dtype="string"),
+            "direction_id": pd.array([0] * 4, dtype="int16"),
+        }
+    )
+
+
+def _trip_events(trip_id: str, events: list[tuple[str, str, str]]) -> pd.DataFrame:
+    """Processed ARR/DEP events for one trip, as _process_bus_arrival_departure_times outputs them.
+
+    events is a list of (event_type, stop_id, Eastern wall-clock time on 2026-04-07).
+    """
+    n = len(events)
+    return pd.DataFrame(
+        {
+            "service_date": ["2026-04-07"] * n,
+            "route_id": ["1"] * n,
+            "trip_id": [trip_id] * n,
+            "direction_id": [0] * n,
+            "stop_id": [stop for _, stop, _ in events],
+            "stop_sequence": [1 if stop == "O" else 2 for _, stop, _ in events],
+            "vehicle_label": ["y0001"] * n,
+            "event_type": [event_type for event_type, _, _ in events],
+            "event_time": pd.to_datetime([f"2026-04-07 {t}" for _, _, t in events]).tz_localize("US/Eastern"),
+            "travel_time_seconds": [0] * n,
+            "dwell_time_seconds": [0] * n,
+            "headway_seconds": [600] * n,
+            "scheduled_tt": [0] * n,
+            "scheduled_headway": [600] * n,
+            "visit_rank": [0] * n,
+        }
+    )
+
+
 def _lamp_trip(stop_ids: list, arrivals: list, departures: list) -> pd.DataFrame:
     """One trip's bus LAMP rows, columns already renamed, built the way LAMP builds them.
 
@@ -268,6 +310,26 @@ class TestBusIngest(unittest.TestCase):
         scheduled_tt = result.set_index(["stop_id", "event_type"])["scheduled_tt"]
         self.assertEqual(scheduled_tt[("stop-B", "ARR")], 300)
         self.assertEqual(scheduled_tt[("stop-C", "ARR")], 60)  # 60.5, rounded half to even
+
+    def test_recalculate_bus_fields_from_gtfs_uses_own_trip_id(self):
+        """A trip in GTFS gets its own schedule, even when it reaches the origin nearer another trip's start.
+
+        Trip B arrives at O at 09:05, during layover, which is closer to A's 09:00 departure than to
+        its own 09:15. Matching by time gave it A's 600 s to X instead of its own 900 s.
+        """
+        events = _trip_events("B", [("ARR", "O", "09:05"), ("DEP", "O", "09:15"), ("ARR", "X", "09:31")])
+        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=_two_trip_gtfs_mock()):
+            result = bus_ingest._recalculate_bus_fields_from_gtfs(events, date(2026, 4, 7))
+
+        self.assertEqual(result.loc[result["stop_id"] == "X", "scheduled_tt"].tolist(), [900])
+
+    def test_recalculate_bus_fields_from_gtfs_unscheduled_trip_matches_first_departure(self):
+        """A trip not in GTFS is matched to the scheduled trip nearest its first departure, not its first arrival."""
+        events = _trip_events("ADDED-1", [("ARR", "O", "09:05"), ("DEP", "O", "09:14"), ("ARR", "X", "09:30")])
+        with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=_two_trip_gtfs_mock()):
+            result = bus_ingest._recalculate_bus_fields_from_gtfs(events, date(2026, 4, 7))
+
+        self.assertEqual(result.loc[result["stop_id"] == "X", "scheduled_tt"].tolist(), [900])
 
     def test_ingest_bus_pq_file(self):
         with mock.patch("chalicelib.lamp.bus_ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):

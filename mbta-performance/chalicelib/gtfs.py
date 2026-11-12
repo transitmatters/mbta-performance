@@ -1,7 +1,9 @@
 import json
 import logging
+import os
+import shutil
+import tempfile
 from datetime import date
-from tempfile import TemporaryDirectory
 from typing import Iterable
 
 import boto3
@@ -37,6 +39,13 @@ def _empty_stop_times() -> pd.DataFrame:
     return pd.DataFrame({col: pd.array([], dtype=dtype) for col, dtype in STOP_TIMES_DTYPES.items()})
 
 
+# Where feeds go when the caller doesn't pass local_archive_path, as Lambda doesn't.
+# A warm Lambda keeps /tmp between invocations, so a fixed path lets it reuse the
+# 170-470 MB feed instead of downloading it again. It holds one feed at a time, so
+# it can't fill the 2,048 MB of EphemeralStorage.
+GTFS_CACHE_DIR = os.path.join(tempfile.gettempdir(), "gtfs_feeds")
+
+
 def _enqueue_gtfs_build(feed_key: str) -> None:
     """Ask data-ingestion to build a feed we need but do not have.
 
@@ -60,6 +69,8 @@ def fetch_stop_times_from_gtfs(
     """Fetch scheduled stop time information from GTFS.
 
     Args:
+        local_archive_path: Directory of feeds to read and add to, kept as is. Unset
+            in Lambda, which uses GTFS_CACHE_DIR and keeps only the current feed there.
         allow_build: Whether this caller may build a missing feed itself. False in
             Lambda, where a build cannot fit; True for the backfill scripts, which
             run on a laptop with the disk and time to do it.
@@ -73,8 +84,9 @@ def fetch_stop_times_from_gtfs(
 
     logger.info(f"Fetching GTFS stop times for {len(trip_ids)} trips on {service_date}")
     s3 = boto3.resource("s3")
-    if not local_archive_path:
-        local_archive_path = TemporaryDirectory().name
+    use_cache_dir = not local_archive_path
+    if use_cache_dir:
+        local_archive_path = GTFS_CACHE_DIR
     mbta_gtfs = MbtaGtfsArchive(
         local_archive_path=local_archive_path,
         s3_bucket=s3.Bucket("tm-gtfs"),
@@ -88,6 +100,11 @@ def fetch_stop_times_from_gtfs(
             f"({mbta_gtfs.archive_url}), so there's no schedule to match against."
         )
     logger.info(f"GTFS feed key: {feed.key}")
+
+    if use_cache_dir and not feed.exists_locally():
+        # Clear out the previous feed, and any download a timeout cut off, before
+        # fetching this one.
+        shutil.rmtree(local_archive_path, ignore_errors=True)
 
     if feed.exists_locally():
         logger.info(f"GTFS feed {feed.key} already present locally")

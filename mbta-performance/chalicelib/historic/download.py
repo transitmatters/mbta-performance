@@ -31,13 +31,18 @@ def download_historic_data(year: str):
 
 
 def unzip_historic_data(zip_file: str, output_dir: str):
-    pathlib.Path(output_dir).mkdir(exist_ok=True)
+    """Extract a downloaded zip (rapid transit or bus) into an empty output_dir."""
+    # Every file in output_dir gets processed, so clear out the last extraction: if the MBTA renames files when it
+    # republishes, the old copies would be processed too
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    pathlib.Path(output_dir).mkdir(parents=True)
 
     try:
         with ZipFile(zip_file, "r") as zip_ref:
-            # Extract all the contents of zip file in different directory
             zip_ref.extractall(output_dir)
     except NotImplementedError:
+        # Python can't extract Deflate64, which the 2020 bus files use
         print("Zip file extraction failed. Likely due to unsupported compression method.")
         print("Attempting to extract using unzip")
         subprocess.run(["unzip", "-o", "-d", output_dir, zip_file], check=True)
@@ -69,21 +74,6 @@ def download_bus_data(year: str):
     with open(f"data/input/bus/{year}.zip", "wb") as f:
         f.write(response.content)
     return os.path.abspath(f"data/input/bus/{year}.zip")
-
-
-def unzip_bus_data(zip_file: str, output_dir: str):
-    """Extract bus data for a specific year."""
-    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    try:
-        with ZipFile(zip_file, "r") as zip_ref:
-            zip_ref.extractall(output_dir)
-    except NotImplementedError:
-        print("Bus zip file extraction failed. Likely due to unsupported compression method.")
-        print("Attempting to extract using unzip")
-        subprocess.run(["unzip", "-o", "-d", output_dir, zip_file])
-
-    return output_dir
 
 
 def process_bus_file_names(year: str, year_dir: str):
@@ -184,7 +174,7 @@ def download_all_bus_data(years: list = None):
         print(f"Downloading bus data for {year}...")
         zip_file = download_bus_data(year)
         year_dir = f"data/input/bus/{year}"
-        unzip_bus_data(zip_file, year_dir)
+        unzip_historic_data(zip_file, year_dir)
         process_bus_file_names(year, year_dir)
 
         # Clean Unicode BOM from 2020-Q3.csv if it exists
