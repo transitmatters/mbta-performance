@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from ..date import EASTERN_TIME, format_dateint, get_current_service_date, service_date, service_day_start, to_dateint
 
 
@@ -27,6 +27,15 @@ def test_edt_vs_est_datetimes():
     assert service_date(datetime(2023, 11, 6, 2, 0, 0, tzinfo=EASTERN_TIME)) == date(2023, 11, 5)
     # 3am EST is 4am EDT
     assert service_date(datetime(2023, 11, 6, 3, 0, 0, tzinfo=EASTERN_TIME)) == date(2023, 11, 6)
+
+
+def test_utc_datetime_is_converted_to_eastern():
+    # 2:59:59 and 3:00 AM EST
+    assert service_date(datetime(2023, 12, 16, 7, 59, 59, tzinfo=timezone.utc)) == date(2023, 12, 15)
+    assert service_date(datetime(2023, 12, 16, 8, 0, 0, tzinfo=timezone.utc)) == date(2023, 12, 16)
+    # 2:59:59 and 3:00 AM EDT
+    assert service_date(datetime(2023, 7, 16, 6, 59, 59, tzinfo=timezone.utc)) == date(2023, 7, 15)
+    assert service_date(datetime(2023, 7, 16, 7, 0, 0, tzinfo=timezone.utc)) == date(2023, 7, 16)
 
 
 def test_to_dateint():
