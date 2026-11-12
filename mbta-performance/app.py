@@ -44,10 +44,12 @@ def process_daily_lamp(event):
 
 
 # Runs daily at 15:00 UTC (10-11 AM Boston depending on DST), for the previous service day.
+# Also retries any of the last 7 days that didn't finish (see chalicelib/lamp/catch_up.py), and
+# fails the invocation if a day fails.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
-    lamp.ingest_yesterday_lamp_data()
+    lamp.ingest_yesterday_lamp_data(event.context)
 
 
 # Runs on the 1st of every month at 10:00 UTC (5-6 AM Boston depending on DST).
@@ -60,14 +62,16 @@ def regenerate_tm_benchmarks(event):
 
 # Bus LAMP data processing. Once a day only: there is no same-day bus job, because bus uploads
 # ~2,300 route-direction-stop CSVs per weekday run, one per route checkpoint since #101 (rail
-# uploads ~473), which at rail's 30-minute cadence would be ~3M S3 PUTs/month (~$15). The 300s
-# timeout is a guess sized for one full day of uploads, not a measurement -- right-size it from
-# real runs, as #96 did for rail.
+# uploads ~473), which at rail's 30-minute cadence would be ~3M S3 PUTs/month (~$15). Runs take
+# 44s on average and 61s at most (30 days to 2026-11-11), so the 300s timeout leaves room for the
+# catch-up to do up to 3 days in one run.
 # Runs daily at 15:00 UTC (10-11 AM Boston depending on DST), for the previous service day.
+# Also retries any of the last 7 days that didn't finish (see chalicelib/lamp/catch_up.py), and
+# fails the invocation if a day fails.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_bus_lamp(event):
     """Process yesterday's bus LAMP data, to ensure we have everything we need."""
-    lamp.ingest_yesterday_bus_data()
+    lamp.ingest_yesterday_bus_data(event.context)
 
 
 # Runs daily at 11:00 UTC (6-7 AM Boston depending on DST), after the LAMP alerts

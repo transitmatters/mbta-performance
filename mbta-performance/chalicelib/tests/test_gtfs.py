@@ -436,6 +436,32 @@ class TestGTFS(unittest.TestCase):
 
         mock_feed.build_locally.assert_not_called()
 
+    def test_local_archive_path_is_kept(self):
+        """The backfills pass a cache directory so a feed is downloaded once across many days."""
+        with tempfile.TemporaryDirectory() as cache:
+            with mock.patch("chalicelib.gtfs.boto3.resource"):
+                with mock.patch(
+                    "chalicelib.gtfs.MbtaGtfsArchive", return_value=self._make_mock_archive(self._make_mock_feed())
+                ) as mock_archive_cls:
+                    with mock.patch("chalicelib.gtfs.pd.read_sql", return_value=pd.DataFrame({"trip_id": ["t"]})):
+                        gtfs.fetch_stop_times_from_gtfs(["t"], date(2024, 2, 7), local_archive_path=cache)
+            self.assertEqual(mock_archive_cls.call_args.kwargs["local_archive_path"], cache)
+            self.assertTrue(os.path.isdir(cache))
+
+    def test_sqlite_connection_is_closed(self):
+        """An open handle on a deleted feed keeps its disk space in use."""
+        mock_feed = self._make_mock_feed()
+        session = mock_feed.create_sqlite_session.return_value
+
+        with mock.patch("chalicelib.gtfs.boto3.resource"):
+            with mock.patch("chalicelib.gtfs.MbtaGtfsArchive", return_value=self._make_mock_archive(mock_feed)):
+                with mock.patch("chalicelib.gtfs.pd.read_sql", side_effect=RuntimeError("query failed")):
+                    with self.assertRaises(RuntimeError):
+                        gtfs.fetch_stop_times_from_gtfs(["trip1"], date(2024, 2, 7))
+
+        session.close.assert_called_once()
+        session.bind.dispose.assert_called_once()
+
     def test_backfill_may_build_and_upload(self):
         """allow_build=True is the backfill path -- it runs on a laptop, so it can
         build a missing feed and publish it for everyone else."""

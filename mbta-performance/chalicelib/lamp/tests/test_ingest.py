@@ -370,10 +370,29 @@ class TestIngest(unittest.TestCase):
         with mock.patch("requests.get", return_value=mock_response):
             with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
                 with mock.patch("chalicelib.lamp.ingest._parallel_upload") as mock_parallel_upload:
-                    ingest.ingest_lamp_data(date(2024, 2, 7))
+                    files = ingest.ingest_lamp_data(date(2024, 2, 7))
 
                     # Verify that parallel upload was called
                     mock_parallel_upload.assert_called_once()
+        # one file per stop, recorded in the day's marker
+        self.assertEqual(files, len(list(mock_parallel_upload.call_args[0][0])))
+        self.assertGreater(files, 0)
+
+    def test_ingest_lamp_data_raises_when_fetch_fails(self):
+        """#133: the yesterday job used to log a failed fetch and report success, losing the day."""
+        for status in (403, 404, 500, 503):
+            with self.subTest(status=status):
+                with mock.patch("requests.get", return_value=mock.Mock(status_code=status)):
+                    with mock.patch("chalicelib.lamp.ingest._parallel_upload") as mock_upload:
+                        with self.assertRaises(ValueError):
+                            ingest.ingest_lamp_data(date(2024, 2, 7))
+                mock_upload.assert_not_called()
+
+    def test_ingest_lamp_data_raises_on_unreadable_parquet(self):
+        """A schema change or corrupt file raises ArrowInvalid, a ValueError, which was swallowed too."""
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=200, content=b"not a parquet file")):
+            with self.assertRaises(ValueError):
+                ingest.ingest_lamp_data(date(2024, 2, 7))
 
     def test_ingest_today_lamp_data(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
@@ -383,13 +402,45 @@ class TestIngest(unittest.TestCase):
                     with mock.patch("chalicelib.lamp.ingest.get_current_service_date", return_value=date(2024, 2, 7)):
                         ingest.ingest_today_lamp_data()
 
+    def test_ingest_today_lamp_data_tolerates_unpublished_file(self):
+        """Early in the day LAMP may not have today's file yet; the next 30-minute run gets it."""
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=403)):
+            with mock.patch("chalicelib.lamp.ingest.get_current_service_date", return_value=date(2024, 2, 7)):
+                with self.assertLogs("chalicelib.lamp.ingest", level="WARNING"):
+                    ingest.ingest_today_lamp_data()
+
+    def test_ingest_today_lamp_data_raises_on_other_failures(self):
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=500)):
+            with mock.patch("chalicelib.lamp.ingest.get_current_service_date", return_value=date(2024, 2, 7)):
+                with self.assertRaises(ValueError) as context:
+                    ingest.ingest_today_lamp_data()
+        self.assertNotIsInstance(context.exception, ingest.LampFileNotFound)
+
     def test_ingest_yesterday_lamp_data(self):
         mock_response = mock.Mock(status_code=200, content=self.data)
-        with mock.patch("requests.get", return_value=mock_response):
-            with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data):
-                with mock.patch("chalicelib.lamp.ingest._parallel_upload"):
-                    with mock.patch("chalicelib.lamp.ingest.get_current_service_date", return_value=date(2024, 2, 8)):
-                        ingest.ingest_yesterday_lamp_data()
+        with (
+            mock.patch("requests.get", return_value=mock_response),
+            mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=self.mock_gtfs_data),
+            mock.patch("chalicelib.lamp.ingest._parallel_upload"),
+            mock.patch("chalicelib.lamp.catch_up.get_current_service_date", return_value=date(2024, 2, 8)),
+            # every day in the window is done except yesterday
+            mock.patch("chalicelib.lamp.catch_up.is_ingested", side_effect=lambda _, day: day != date(2024, 2, 7)),
+            mock.patch("chalicelib.lamp.catch_up.mark_ingested") as mock_mark,
+        ):
+            ingest.ingest_yesterday_lamp_data()
+        mock_mark.assert_called_once_with("daily-data", date(2024, 2, 7), mock.ANY)
+
+    def test_ingest_yesterday_lamp_data_fails_the_run_when_lamp_is_down(self):
+        with (
+            mock.patch("requests.get", return_value=mock.Mock(status_code=503)),
+            mock.patch("chalicelib.lamp.catch_up.get_current_service_date", return_value=date(2024, 2, 8)),
+            mock.patch("chalicelib.lamp.catch_up.is_ingested", side_effect=lambda _, day: day != date(2024, 2, 7)),
+            mock.patch("chalicelib.lamp.catch_up.mark_ingested") as mock_mark,
+        ):
+            with self.assertRaises(RuntimeError) as context:
+                ingest.ingest_yesterday_lamp_data()
+        self.assertIn("2024-02-07", str(context.exception))
+        mock_mark.assert_not_called()
 
     def test_fetch_pq_file_from_remote_failure(self):
         mock_response = mock.Mock(status_code=404)
@@ -397,6 +448,26 @@ class TestIngest(unittest.TestCase):
             with self.assertRaises(ValueError) as context:
                 ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
             self.assertIn("Failed to fetch LAMP parquet file", str(context.exception))
+
+    def test_fetch_pq_file_from_remote_not_published(self):
+        """performancedata.mbta.com answers 403 for a file it hasn't published, as of 2026-11-11."""
+        for status in (403, 404):
+            with self.subTest(status=status):
+                with mock.patch("requests.get", return_value=mock.Mock(status_code=status)):
+                    with self.assertRaises(ingest.LampFileNotFound):
+                        ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
+
+    def test_fetch_pq_file_from_remote_server_error_is_not_not_found(self):
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=502)):
+            with self.assertRaises(ValueError) as context:
+                ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
+        self.assertNotIsInstance(context.exception, ingest.LampFileNotFound)
+
+    def test_fetch_pq_file_from_remote_sets_a_timeout(self):
+        """Without one, a hung connection runs until the Lambda timeout."""
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=200, content=self.data)) as mock_get:
+            ingest.fetch_pq_file_from_remote(date(2024, 2, 7))
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], constants.LAMP_REQUEST_TIMEOUT)
 
     # --- Occupancy ---
 
@@ -828,10 +899,10 @@ class TestIngest(unittest.TestCase):
     # --- ingest_lamp_data error handling ---
 
     def test_ingest_lamp_data_fetch_value_error(self):
-        """ingest_lamp_data should return gracefully when fetch raises ValueError."""
-        with mock.patch("chalicelib.lamp.ingest.fetch_pq_file_from_remote", side_effect=ValueError("404")):
-            # Should not raise; just return early
-            ingest.ingest_lamp_data(date(2024, 2, 7))
+        """ingest_lamp_data re-raises a failed fetch (#133); only the same-day job tolerates a missing file."""
+        with mock.patch("chalicelib.lamp.ingest.fetch_pq_file_from_remote", side_effect=ValueError("503")):
+            with self.assertRaises(ValueError):
+                ingest.ingest_lamp_data(date(2024, 2, 7))
 
     def test_ingest_lamp_data_fetch_unexpected_error(self):
         """ingest_lamp_data should re-raise unexpected fetch exceptions."""
