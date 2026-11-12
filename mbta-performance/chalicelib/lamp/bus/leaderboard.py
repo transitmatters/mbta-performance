@@ -88,6 +88,14 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
     enough traversals to comfortably clear it. Segments too short to have a running speed
     (constants.MIN_RUNNING_SPEED_SEGMENT_M) are dropped too.
 
+    So are terminal sections, the first and last segments of most trips (see
+    segments._with_terminal_sections). Their running speed is the least sure of any: the stop
+    zone fits 70m on a trip's first segment and 41m on its last, against the 90m taken off every
+    segment (constants.STOP_ZONE_M), so they read slow. At 90m against 41m, a last segment
+    reads a median 12% slower, and a tenth of them 28% or more. On 2026-11-10's all_day rows
+    they were 6.6% of the rows that would otherwise be ranked, but 23 of the slowest 100 (15
+    last, 8 first). The map keeps them, dashed.
+
     Returns a dict keyed by time_band, e.g. {"am_peak": [...]}. When `aggregated` carries a
     `day_type` column (the weekly/monthly rollups from trends.py -- a single day is already
     wholly one type, so ingest.py's daily frames never have it), the dict is keyed by
@@ -95,9 +103,9 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
     matching the "only columns actually present" convention pmtiles.py's TILE_PROPERTIES
     already follows for the same column.
     """
-    filtered = aggregated[
-        (aggregated.n_traversals >= LEADERBOARD_MIN_TRAVERSALS) & aggregated.p50_running_speed_mph.notna()
-    ]
+    enough_traversals = aggregated.n_traversals >= LEADERBOARD_MIN_TRAVERSALS
+    terminal = aggregated.terminal_section.notna()
+    filtered = aggregated[enough_traversals & aggregated.p50_running_speed_mph.notna() & ~terminal]
 
     if "day_type" in filtered.columns:
         result = {
@@ -112,6 +120,7 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
 
     logger.info(
         f"Built leaderboard from {len(filtered)} of {len(aggregated)} rows "
-        f"(dropped below {LEADERBOARD_MIN_TRAVERSALS} traversals)"
+        f"(dropped below {LEADERBOARD_MIN_TRAVERSALS} traversals, with no running speed, "
+        f"or {int((enough_traversals & terminal).sum())} terminal sections that cleared that bar)"
     )
     return result

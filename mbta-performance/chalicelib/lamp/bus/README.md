@@ -263,7 +263,8 @@ the rest):
 
 The first segment is quicker because its layover isn't dwell (see below). The last ones are 3% of
 segments but 35-50% of those under 3 mph, so they're much of what looks oddly slow on the map.
-The flag costs 0.3% of an archive.
+The flag costs 0.3% of an archive. The leaderboard leaves terminal sections off (see
+"Slowest-segments leaderboard").
 
 These columns grow the densest tile at a zoom 13-14% for dwell and `from_stop_id`, then 11% on a
 day and 22% on a week for the speed range, so `MAXIMUM_TILE_BYTES` rises to 825KB; at 750KB, a
@@ -454,6 +455,16 @@ rollups pool traversals across many days and comfortably clear it (checked again
 in-progress 2026-W38 rollup: business-day AM peak alone had 24-42 segments still qualifying
 at thresholds of 20-30).
 
+**Terminal sections are left off** -- the first and last segments of most trips (see
+`terminal_section` under "PMTiles"). Their running speed is the least sure of any: the stop
+zone fits 70m on a trip's first segment and 41m on its last, against the 90m `STOP_ZONE_M`
+takes off every segment (see "Running speed"), so they read slow. At 90m against 41m, a last
+segment reads a median 12% slower, and a tenth of them 28% or more. On 2026-11-10's all_day
+rows, terminal sections were 6.6% of the rows that would otherwise be ranked but 23 of the
+slowest 100 (15 last, 8 first). Taking 41m off last segments alone would have left 10 of them;
+the arrival-to-arrival ranking this replaced had 11 last and none first. The map keeps them,
+dashed.
+
 Writing is opt-in (`--write-leaderboard`, or `write_leaderboard=True`) and independent of
 `--upload`/`--write-pmtiles`/`--write-to-dynamo`. `generate_yesterday_speed_segments()` writes
 it by default; the weekly/monthly generators and `trends_backfill.py` take the same flag but
@@ -589,8 +600,9 @@ full length, that read impossibly fast on short segments:
 
 Medians, per traversal. 90m is an average, not a measured fact: fits per kind of segment put it at
 76m mid-trip, 70m on a trip's first segment and 41m on its last, and we haven't confirmed how LAMP
-stamps the times. Dwell is the other side of the same zone, so it's best read as time around the
-stop -- slowing, standing and pulling out -- not time with the doors open.
+stamps the times. So first and last segments read slow, and the leaderboard leaves them off
+(see "Slowest-segments leaderboard"). Dwell is the other side of the same zone, so it's best read
+as time around the stop -- slowing, standing and pulling out -- not time with the doors open.
 
 Segments under `MIN_RUNNING_SPEED_SEGMENT_M` (125m) get no running speed: 100-125m still read a
 median 7 mph after the correction, and under 100m it goes negative. On 2026-11-04 that's 3.6% of

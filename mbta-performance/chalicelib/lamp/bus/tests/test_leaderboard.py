@@ -17,6 +17,7 @@ def _row(
     n_interpolated=0,
     time_band="am_peak",
     day_type=None,
+    terminal_section=None,
 ):
     row = {
         "route_id": route_id,
@@ -30,6 +31,7 @@ def _row(
         "segment_length_m": 402.3,
         "running_length_m": 312.3,
         "p50_running_time_seconds": 56.6,
+        "terminal_section": terminal_section,
     }
     if day_type is not None:
         row["day_type"] = day_type
@@ -127,6 +129,21 @@ class TestBuildLeaderboardDaily(unittest.TestCase):
         result = leaderboard.build_leaderboard(aggregated)
 
         self.assertEqual([entry["from_stop_name"] for entry in result["am_peak"]], ["A"])
+
+    def test_leaves_terminal_sections_off(self):
+        # The stop zone fits shorter on a trip's first and last segments than STOP_ZONE_M, so
+        # their running speed reads slow, and they'd crowd the top of the list.
+        aggregated = pd.DataFrame(
+            [
+                _row("1", 0, "A", "B", 3.0, 25, terminal_section="first"),
+                _row("1", 0, "B", "C", 12.0, 25),
+                _row("1", 0, "C", "D", 2.0, 25, terminal_section="last"),
+            ]
+        )
+
+        result = leaderboard.build_leaderboard(aggregated)
+
+        self.assertEqual([entry["from_stop_name"] for entry in result["am_peak"]], ["B"])
 
     def test_a_nan_is_null_rather_than_failing_the_upload(self):
         aggregated = pd.DataFrame([{**_row("1", 0, "A", "B", 12.34, 25), "p50_running_time_seconds": float("nan")}])

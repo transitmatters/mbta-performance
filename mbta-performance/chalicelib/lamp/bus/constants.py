@@ -85,7 +85,8 @@ PERCENTILES = (10, 50, 90)
 # on 100-150m ones. Over the length less this zone, those come to 16.7 and 7-12 mph, and every
 # length band from 125m up falls between 12 and 17 mph. Separate fits put the zone at 76m
 # mid-trip, 70m on a trip's first segment and 41m on its last, so this is an average, not a
-# measured fact. See "Running speed" in the README.
+# measured fact, and it reads those first and last segments slow, which is why the leaderboard
+# leaves them off (leaderboard.build_leaderboard). See "Running speed" in the README.
 STOP_ZONE_M = 90
 
 # Below this, a segment's running length is too little of it to give a speed: on 2026-11-04,
