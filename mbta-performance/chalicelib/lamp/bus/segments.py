@@ -245,19 +245,15 @@ def running_length(segment_length_m: pd.Series) -> pd.Series:
     return (segment_length_m - STOP_ZONE_M).where(segment_length_m >= MIN_RUNNING_SPEED_SEGMENT_M)
 
 
-def has_observed_dwell(traversals: pd.DataFrame) -> pd.Series:
-    """Whether each traversal's dwell at its first stop was actually observed.
-
-    Two kinds have it forced to zero in build_traversals: a trip's first stop, where the wait is
-    layover, and a stop LAMP didn't record, whose interpolated pass-through has no dwell.
-    Counting them would drag a median or an average down.
-    """
-    return ~traversals.is_trip_start.eq(True) & ~traversals.from_interpolated.eq(True)
-
-
 def observed_dwell_seconds(traversals: pd.DataFrame) -> pd.Series:
-    """Each traversal's dwell at its first stop, or NaN where it wasn't observed (has_observed_dwell)."""
-    return traversals.dwell_seconds.where(has_observed_dwell(traversals))
+    """Each traversal's dwell at its first stop, or NaN where build_traversals forced it to zero.
+
+    That's two kinds: a trip's first stop, where the wait is layover, and an interpolated stop,
+    where LAMP didn't record the bus stopping. Counting those zeros would drag a median or
+    an average of dwell down.
+    """
+    observed = ~traversals.is_trip_start.eq(True) & ~traversals.from_interpolated.eq(True)
+    return traversals.dwell_seconds.where(observed)
 
 
 def assign_time_band(departure_seconds: pd.Series) -> pd.Series:

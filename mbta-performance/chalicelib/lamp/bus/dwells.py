@@ -9,7 +9,7 @@ the same way.
 A dwell is the time from a bus's arrival at a stop to its departure, as LAMP records them. Those
 aren't taken at the stop itself (see constants.STOP_ZONE_M), so it's best read as time around
 the stop -- slowing, standing and pulling out -- rather than time with the doors open. Only
-dwells LAMP observed count (segments.has_observed_dwell): a trip's first stop is layover, and
+dwells LAMP observed count (segments.observed_dwell_seconds): a trip's first stop is layover, and
 an interpolated stop has none. A trip's last stop has no departure, so no dwell either.
 
 Each point sits where the stop falls on the route's shape -- the first point of the segment
@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .constants import ALL_DAY_BAND
-from .segments import has_observed_dwell, with_time_bands
+from .segments import observed_dwell_seconds, with_time_bands
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,9 @@ def aggregate_dwells(
     Carries `n_dwells`, `median_dwell_seconds` and `p90_dwell_seconds`, and `coordinates` as a
     single (lon, lat) point.
     """
-    dwells = with_time_bands(traversals[has_observed_dwell(traversals)]).rename(columns={"from_stop_id": "stop_id"})
+    dwells = with_time_bands(traversals[observed_dwell_seconds(traversals).notna()]).rename(
+        columns={"from_stop_id": "stop_id"}
+    )
 
     stop_key = STOP_KEY + list(extra_group_columns)
     by_band = _aggregate_dwells(dwells, stop_key + ["time_band"])
