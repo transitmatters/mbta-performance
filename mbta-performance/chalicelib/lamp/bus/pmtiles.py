@@ -52,8 +52,16 @@ MAXIMUM_ZOOM = 16
 # 7% or so of room again.
 #
 # Dwell and from_stop_id have since moved to the dwell layer, which hands back their 13-14%, while
-# running_length_m adds a little. Left at 825KB until it's been measured on real archives.
-MAXIMUM_TILE_BYTES = 825_000
+# running_length_m adds a little.
+#
+# Measured on real archives with free_flow_running_time_seconds added (2026-11-12): October 2026's
+# monthly band archive is the tightest. Without the cap, its densest zoom 11 tile was 814KB before
+# free flow and 831KB with it, so at 825KB zoom 11 went from all 124,843 band features to 8,016. Zoom
+# 11 is where the map opens. Rounding free flow to 5s only got it to 828KB. At 900KB that zoom
+# keeps every feature with 8% to spare. Zooms 4-10 thin exactly as before, since their densest
+# tiles are over 1MB either way. A day's lowest complete zoom, 8, went from 792KB to 801KB
+# (2026-11-10), and a week's zoom 11 from 766KB to 783KB (2026-W45).
+MAXIMUM_TILE_BYTES = 900_000
 
 # Dwell points (build_dwell_pmtiles_bytes) round to this. Median dwells pile up around 5.5s and
 # 11s, which looks like the spacing of the vehicle positions behind LAMP's stop times, so a dwell
@@ -98,6 +106,11 @@ SPEED_RANGE_MINIMUM_TRAVERSALS = 10
 #
 # terminal_section marks the first and last segments of most trips (see
 # segments._with_terminal_sections), which the map dashes.
+#
+# free_flow_running_time_seconds is the segment's running time when traffic is light (see
+# segments.free_flow_running_times), and null where there aren't enough quiet-hour trips to say.
+# The map works out delay against it from p50_running_time_seconds, so p50_delay_seconds itself
+# isn't in the tiles.
 TILE_PROPERTIES = [
     "route_id",
     "direction_id",
@@ -115,6 +128,7 @@ TILE_PROPERTIES = [
     "p90_running_speed_mph",
     "terminal_section",
     "shared_routes",
+    "free_flow_running_time_seconds",
 ]
 
 # The dwell points (dwells.py): one per (route, direction, stop, [day_type,] time band), in a
@@ -238,6 +252,7 @@ def _round_for_tiles(frame):
         segment_length_m=frame.segment_length_m.round().astype("Int64"),
         running_length_m=frame.running_length_m.round().astype("Int64"),
         p50_running_time_seconds=frame.p50_running_time_seconds.round().astype("Int64"),
+        free_flow_running_time_seconds=frame.free_flow_running_time_seconds.round().astype("Int64"),
         p10_running_speed_mph=_round_range_speed(frame.p10_running_speed_mph, frame.n_traversals),
         p90_running_speed_mph=_round_range_speed(frame.p90_running_speed_mph, frame.n_traversals),
     )

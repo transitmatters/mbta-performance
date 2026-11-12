@@ -7,8 +7,10 @@ import pandas as pd
 
 from .constants import (
     ALL_DAY_BAND,
+    FREE_FLOW_WINDOWS,
     MAX_PLAUSIBLE_SPEED_MPH,
     METERS_PER_SECOND_TO_MPH,
+    MIN_FREE_FLOW_TRAVERSALS,
     MIN_RUNNING_SPEED_SEGMENT_M,
     PERCENTILES,
     STOP_ZONE_M,
@@ -285,6 +287,11 @@ def aggregate_segments(
     never from the band rows: a percentile of percentiles is not the day's percentile.
     Traversals that departed outside every band are dropped before either aggregation, so
     all_day covers exactly the traversals the bands do.
+
+    Every row also carries its segment's free-flow running time and its delay against it (see
+    with_free_flow). Free flow is taken across every date and day type in `traversals`, not per
+    extra_group_columns: traffic is light at night on any day, and one day type's nights are
+    often too few trips to go on.
     """
     traversals = with_time_bands(traversals)
 
@@ -292,6 +299,7 @@ def aggregate_segments(
     by_band = _aggregate(traversals, segment_key + ["time_band"])
     all_day = _aggregate(traversals, segment_key).assign(time_band=ALL_DAY_BAND)
     aggregated = pd.concat([by_band, all_day[by_band.columns]], ignore_index=True)
+    aggregated = with_free_flow(aggregated, free_flow_running_times(traversals, SEGMENT_KEY), SEGMENT_KEY)
 
     logger.info(
         f"Aggregated to {len(by_band)} ({', '.join(segment_key + ['time_band'])}) rows "
@@ -340,6 +348,46 @@ def _aggregate(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
         )
 
     return _with_terminal_sections(aggregated)
+
+
+def free_flow_running_times(traversals: pd.DataFrame, group_key: list[str]) -> pd.DataFrame:
+    """Each group's free-flow running time: the median running time of its traversals that departed
+    in FREE_FLOW_WINDOWS, when traffic is light.
+
+    One row per group with free_flow_running_time_seconds and free_flow_traversals, how many
+    traversals it's the median of. A group with fewer than MIN_FREE_FLOW_TRAVERSALS has no row,
+    and so no free flow. Over October 2026 that left out 15% of weekday peak trips, mostly on
+    routes with little service in those hours (see "Free flow and delay" in the README).
+    Traversals without a running time (see build_traversals) don't count.
+    """
+    departs = traversals.depart_seconds
+    quiet = pd.Series(False, index=traversals.index)
+    for start, end in FREE_FLOW_WINDOWS:
+        quiet |= (departs >= start) & (departs < end)
+    quiet_traversals = traversals[quiet & traversals.running_time_seconds.notna()]
+
+    free_flow = (
+        quiet_traversals.groupby(group_key, sort=False)
+        .running_time_seconds.agg(free_flow_running_time_seconds="median", free_flow_traversals="size")
+        .reset_index()
+    )
+    return free_flow[free_flow.free_flow_traversals >= MIN_FREE_FLOW_TRAVERSALS]
+
+
+def with_free_flow(aggregated: pd.DataFrame, free_flow: pd.DataFrame, key: list[str]) -> pd.DataFrame:
+    """`aggregated` with its free_flow_running_times columns joined on `key`, and p50_delay_seconds:
+    how much longer than free flow the median trip took.
+
+    Delay is signed. A band can run a little faster than its segment's free flow, as the early
+    morning often does, and the sum of a route's delays is only fair if those count against it.
+    A display should clamp it at zero. Null with no free flow or no running time.
+    """
+    with_columns = aggregated.merge(free_flow, on=key, how="left")
+    with_columns["free_flow_traversals"] = with_columns.free_flow_traversals.astype("Int64")
+    with_columns["p50_delay_seconds"] = (
+        with_columns.p50_running_time_seconds - with_columns.free_flow_running_time_seconds
+    )
+    return with_columns
 
 
 def _percentile(series: pd.Series, percentile: int) -> float:

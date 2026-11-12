@@ -44,6 +44,10 @@ def _segment(
         "p50_running_speed_mph": 11.5123,
         "p10_running_speed_mph": 14.26,
         "p90_running_speed_mph": 8.04,
+        "free_flow_running_time_seconds": 61.6,
+        # In the GeoParquet, but not the tiles: the map works delay out from the two times.
+        "free_flow_traversals": 14,
+        "p50_delay_seconds": 18.14,
         # Arrival to arrival, and dwell: in the GeoParquet, but not the segment tiles.
         "p50_total_time_seconds": 97.26,
         "p50_speed_mph": 10.2,
@@ -132,6 +136,8 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         self.assertEqual(properties["running_length_m"], 410)
         self.assertIs(type(properties["p50_running_time_seconds"]), int)
         self.assertEqual(properties["p50_running_time_seconds"], 80)
+        self.assertIs(type(properties["free_flow_running_time_seconds"]), int)
+        self.assertEqual(properties["free_flow_running_time_seconds"], 62)
         # To two significant figures, either side of 10 mph.
         self.assertEqual(properties["p10_running_speed_mph"], 14.0)
         self.assertEqual(properties["p90_running_speed_mph"], 8.0)
@@ -175,6 +181,18 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         self.assertIsNone(properties.get("p50_running_time_seconds"))
         self.assertEqual(properties["segment_length_m"], 500)
         self.assertEqual(properties["running_length_m"], 410)
+
+    def test_a_segment_with_no_free_flow_gets_none(self):
+        frame = _segments().assign(free_flow_running_time_seconds=nan, free_flow_traversals=None, p50_delay_seconds=nan)
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(frame)
+
+        properties = self.written_properties[0]
+        self.assertIsNone(properties.get("free_flow_running_time_seconds"))
+        self.assertEqual(properties["p50_running_time_seconds"], 80)
 
     def test_only_running_time_reaches_the_segment_tiles(self):
         # The segments show street running time only; time at the stop is on the dwell layer.

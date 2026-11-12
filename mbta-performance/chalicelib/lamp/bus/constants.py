@@ -94,6 +94,15 @@ STOP_ZONE_M = 90
 # negative. 3.6% of that day's traversals. Their segments carry no running speed.
 MIN_RUNNING_SPEED_SEGMENT_M = 125
 
+# When a segment's free-flow running time is taken from (segments.free_flow_running_times), as
+# departure windows in seconds after midnight of the service date, like TIME_BANDS: the hours
+# traffic is light. See "Free flow and delay" in the README for how these were chosen.
+FREE_FLOW_WINDOWS = ((0, 6 * 3600), (22 * 3600, 32 * 3600))
+
+# The fewest quiet-hour traversals a free-flow running time is taken from. A segment with fewer
+# has none, and so no delay, rather than one taken some other way.
+MIN_FREE_FLOW_TRAVERSALS = 10
+
 # A segment is a terminal section if at least this share of its trips start or end on it. See
 # segments._with_terminal_sections.
 TERMINAL_SECTION_SHARE = 0.5

@@ -5,7 +5,7 @@ from unittest import mock
 import pandas as pd
 
 from .. import ingest, segments, shared_segments
-from ..constants import ALL_DAY_BAND
+from ..constants import ALL_DAY_BAND, MIN_FREE_FLOW_TRAVERSALS
 
 
 def _traversal(route_id: str, total_time: float, **overrides) -> dict:
@@ -74,6 +74,27 @@ class TestAddSharedSegments(unittest.TestCase):
         self.assertAlmostEqual(row.median_dwell_seconds, 40.0)
         self.assertEqual(row.from_stop_id, "s1")
         self.assertEqual((row.from_stop_name, row.to_stop_name), ("Stop s1", "Stop s2"))
+
+    def test_free_flow_pools_every_quiet_hour_trip_of_the_shared_routes(self):
+        # Neither route has enough quiet-hour trips on its own; together they do. SL5's run at 40s
+        # and SL4's at 60s, so the pooled free flow sits between the two.
+        half = MIN_FREE_FLOW_TRAVERSALS // 2
+        quiet = [
+            _traversal(route_id, 0.0, depart_seconds=23 * 3600, running_time_seconds=running_time)
+            for route_id, running_time in (("749", 40.0), ("751", 60.0))
+            for _ in range(half)
+        ]
+        traversals = _traversals(_sl4_and_sl5() + quiet)
+
+        mapped = shared_segments.add_shared_segments(_result(traversals), traversals)
+
+        pooled = _pooled(mapped[mapped.time_band == "am_peak"]).iloc[0]
+        self.assertAlmostEqual(pooled.free_flow_running_time_seconds, 50.0)
+        self.assertEqual(pooled.free_flow_traversals, 2 * half)
+        self.assertAlmostEqual(pooled.p50_delay_seconds, pooled.p50_running_time_seconds - 50.0)
+        # Each route's own row has too few quiet trips for a free flow of its own.
+        own = mapped[~mapped.route_id.str.contains(",")]
+        self.assertTrue(own.free_flow_running_time_seconds.isna().all())
 
     def test_a_pair_is_a_terminal_section_by_all_its_routes_trips_together(self):
         # SL5's three trips end here and SL4's four run through, so the street isn't a terminal
