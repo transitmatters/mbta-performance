@@ -45,7 +45,10 @@ SECONDS_PER_DAY = 40
 
 
 class LampFileNotFound(ValueError):
-    """LAMP has no parquet file for this date, usually because it hasn't published it yet.
+    """LAMP has no events for this date, usually because it hasn't published them yet.
+
+    Either there's no parquet file, or the file has no rows. On 2026-11-12 LAMP served an empty
+    file for today from about 6:30 to 8 AM before the first events showed up.
 
     A ValueError so the backfill scripts, which skip dates they can't fetch, still catch it.
     """
@@ -184,8 +187,9 @@ def _process_arrival_departure_times(pq_df: pd.DataFrame) -> pd.DataFrame:
 def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
     """Fetch a parquet file from LAMP for a given service date.
 
-    Raises LampFileNotFound if LAMP has no file for the date, and ValueError for any other failure,
-    including a parquet file this code can't read (pyarrow's ArrowInvalid is a ValueError).
+    Raises LampFileNotFound if LAMP has no file for the date or the file has no rows, and ValueError
+    for any other failure, including a parquet file this code can't read (pyarrow's ArrowInvalid is
+    a ValueError).
     """
     url = RAPID_DAILY_URL_TEMPLATE.format(YYYY_MM_DD=service_date.strftime("%Y-%m-%d"))
     logger.info(f"Fetching LAMP parquet file from {url}")
@@ -211,6 +215,10 @@ def fetch_pq_file_from_remote(service_date: date) -> pd.DataFrame:
         dtype_backend="numpy_nullable",
     )
     logger.info(f"Parsed parquet file: {len(df)} rows")
+    if df.empty:
+        # Nothing to ingest, and ingest_pq_file can't take an empty frame: its Int64 columns stay Int64
+        # through .apply, so comparing service_date to a date string raises.
+        raise LampFileNotFound(f"LAMP parquet file at {url} has no rows")
     return df
 
 
@@ -545,9 +553,9 @@ def ingest_today_lamp_data():
     try:
         ingest_lamp_data(service_date)
     except LampFileNotFound as e:
-        # LAMP may not have published today's file yet. This job runs every 30 minutes, so the next
-        # run picks it up. Any other failure raises.
-        logger.warning(f"No LAMP file for today yet ({service_date}): {e}")
+        # LAMP may not have published today's events yet. This job runs every 30 minutes, so the next
+        # run picks them up. Any other failure raises.
+        logger.warning(f"No LAMP data for today yet ({service_date}): {e}")
 
 
 def ingest_yesterday_lamp_data(context=None):
