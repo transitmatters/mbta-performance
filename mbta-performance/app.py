@@ -43,8 +43,9 @@ def process_daily_lamp(event):
     lamp.ingest_today_lamp_data()
 
 
-# Runs once the next day at 11am or 12pm depending on DST. Also retries any of the last 7 days
-# that didn't finish (see chalicelib/lamp/catch_up.py), and fails the invocation if a day fails.
+# Runs daily at 15:00 UTC (10-11 AM Boston depending on DST), for the previous service day.
+# Also retries any of the last 7 days that didn't finish (see chalicelib/lamp/catch_up.py), and
+# fails the invocation if a day fails.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_lamp(event):
     """Process yesterday's LAMP data, to ensure we have everything we need."""
@@ -60,11 +61,13 @@ def regenerate_tm_benchmarks(event):
 
 
 # Bus LAMP data processing. Once a day only: there is no same-day bus job, because bus uploads
-# ~10,500 route-direction-stop CSVs per run (rail uploads ~473), which at rail's 30-minute cadence
-# would be ~13.9M S3 PUTs/month. Runs take 44s on average and 61s at most (30 days to 2026-11-11),
-# so the 300s timeout leaves room for the catch-up to do up to 3 days in one run.
-# Runs once the next day at 11am or 12pm depending on DST. Also retries any of the last 7 days
-# that didn't finish (see chalicelib/lamp/catch_up.py), and fails the invocation if a day fails.
+# ~2,300 route-direction-stop CSVs per weekday run, one per route checkpoint since #101 (rail
+# uploads ~473), which at rail's 30-minute cadence would be ~3M S3 PUTs/month (~$15). Runs take
+# 44s on average and 61s at most (30 days to 2026-11-11), so the 300s timeout leaves room for the
+# catch-up to do up to 3 days in one run.
+# Runs daily at 15:00 UTC (10-11 AM Boston depending on DST), for the previous service day.
+# Also retries any of the last 7 days that didn't finish (see chalicelib/lamp/catch_up.py), and
+# fails the invocation if a day fails.
 @app.schedule(Cron("0", "15", "*", "*", "?", "*"))
 def process_yesterday_bus_lamp(event):
     """Process yesterday's bus LAMP data, to ensure we have everything we need."""

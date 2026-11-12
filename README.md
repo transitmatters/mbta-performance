@@ -57,7 +57,7 @@ If you want more verbose logging and debug info, export `DEBUG` as log level. Ho
 export LOG_LEVEL="DEBUG"
 ```
 
-GTFS feeds are cached locally (`data/gtfs_archives/` for historic, `./feeds` for LAMP backfills). To share one cache with other TransitMatters repos, point `GTFS_DATA_DIR` at a common directory; archives go in `$GTFS_DATA_DIR/gtfs_archives` and sqlite feeds in `$GTFS_DATA_DIR/sqlite_feeds`.
+GTFS feeds are cached locally (`data/gtfs_archives/` for historic, `./feeds` for LAMP backfills, and just the current feed in `gtfs_feeds/` under the system temp directory, usually `/tmp`, for the daily ingests, as in Lambda). To share one cache with other TransitMatters repos, point `GTFS_DATA_DIR` at a common directory; archives go in `$GTFS_DATA_DIR/gtfs_archives` and sqlite feeds in `$GTFS_DATA_DIR/sqlite_feeds`.
 
 ```shell
 export GTFS_DATA_DIR="$HOME/transitmatters-gtfs"
