@@ -7,7 +7,7 @@ import pandas as pd
 from shapely.geometry import LineString
 
 from .. import geoparquet, gtfs_geo, segments
-from ..constants import ALL_DAY_BAND, TIME_BANDS
+from ..constants import ALL_DAY_BAND, MIN_RUNNING_SPEED_SEGMENT_M, STOP_ZONE_M, TIME_BANDS
 
 
 class TestProjection(unittest.TestCase):
@@ -290,15 +290,34 @@ class TestTraversals(unittest.TestCase):
         self.assertEqual(second.dwell_seconds, 30.0)
         self.assertEqual(second.total_time_seconds, 90.0)
 
-    def test_moving_time_ignores_dwell_while_total_time_includes_it(self):
+    def test_running_time_leaves_out_dwell_while_total_time_includes_it(self):
         events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (660.0, 690.0), (750.0, 760.0)]))
 
         traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
         second = traversals.iloc[1]
 
-        self.assertEqual(second.moving_time_seconds, 60.0)
+        self.assertEqual(second.running_time_seconds, 60.0)
         self.assertEqual(second.total_time_seconds, 90.0)
-        self.assertGreater(second.moving_speed_mph, second.speed_mph)
+        self.assertGreater(second.running_speed_mph, second.speed_mph)
+
+    def test_running_speed_is_over_the_segment_less_the_stop_zone(self):
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 60.0), (120.0, 120.0)]))
+
+        traversal = segments.build_traversals(events, self._segments()).iloc[0]
+
+        self.assertEqual(traversal.running_length_m, 500.0 - STOP_ZONE_M)
+        self.assertAlmostEqual(traversal.running_speed_mph, (500.0 - STOP_ZONE_M) / 60.0 * 2.2369362920544)
+
+    def test_a_segment_too_short_has_no_running_speed_but_is_kept(self):
+        short = self._segments().assign(segment_length_m=MIN_RUNNING_SPEED_SEGMENT_M - 1.0)
+        events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (20.0, 20.0), (40.0, 40.0)]))
+
+        traversals = segments.build_traversals(events, short)
+
+        self.assertEqual(len(traversals), 2)
+        self.assertTrue(traversals.running_length_m.isna().all())
+        self.assertTrue(traversals.running_speed_mph.isna().all())
+        self.assertTrue(traversals.speed_mph.notna().all())
 
     def test_marks_the_first_and_last_segments_of_a_trip(self):
         events = pd.DataFrame(self._trip("t1", [(0.0, 10.0), (70.0, 80.0), (140.0, 150.0)]))
@@ -328,14 +347,14 @@ class TestTraversals(unittest.TestCase):
         self.assertEqual(len(traversals), 0)
 
     def test_a_traversal_with_no_time_arrival_to_arrival_is_dropped(self):
-        # A trip's first segment has no dwell, so arrival to arrival is the moving clock: zero here.
+        # A trip's first segment has no dwell, so arrival to arrival is the running clock: zero here.
         events = pd.DataFrame(self._trip("t1", [(0.0, 100.0), (100.0, 130.0), (190.0, 190.0)]))
 
         traversals = segments.build_traversals(events, self._segments())
 
         self.assertEqual(traversals.from_stop_id.tolist(), ["s2"])
 
-    def test_a_moving_clock_reading_zero_keeps_the_traversal_without_a_moving_time(self):
+    def test_a_running_clock_reading_zero_keeps_the_traversal_without_a_running_time(self):
         # Left s2 at 90s and reached s3 at 90s, but 30s arrival to arrival is 37mph over 500m.
         events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 90.0), (90.0, 100.0)]))
 
@@ -344,24 +363,24 @@ class TestTraversals(unittest.TestCase):
 
         self.assertEqual(len(traversals), 2)
         self.assertEqual(second.total_time_seconds, 30.0)
-        self.assertTrue(np.isnan(second.moving_time_seconds))
-        self.assertTrue(np.isnan(second.moving_speed_mph))
-        # The other segment's moving clock is fine and is left alone.
-        self.assertEqual(traversals.iloc[0].moving_time_seconds, 60.0)
+        self.assertTrue(np.isnan(second.running_time_seconds))
+        self.assertTrue(np.isnan(second.running_speed_mph))
+        # The other segment's running clock is fine and is left alone.
+        self.assertEqual(traversals.iloc[0].running_time_seconds, 60.0)
 
-    def test_a_moving_clock_faster_than_any_bus_keeps_the_traversal_without_a_moving_time(self):
-        # 5s from s2 to s3 is 224mph over 500m, but 30s arrival to arrival is 37mph.
+    def test_a_running_clock_faster_than_any_bus_keeps_the_traversal_without_a_running_time(self):
+        # 5s from s2 to s3 is 183mph over the 410m it covers, but 30s arrival to arrival is 37mph over 500m.
         events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 85.0), (90.0, 100.0)]))
 
         traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
         second = traversals.iloc[1]
 
         self.assertEqual(second.total_time_seconds, 30.0)
-        self.assertTrue(np.isnan(second.moving_time_seconds))
-        self.assertTrue(np.isnan(second.moving_speed_mph))
+        self.assertTrue(np.isnan(second.running_time_seconds))
+        self.assertTrue(np.isnan(second.running_speed_mph))
 
     def test_a_bus_held_mid_trip_is_kept_however_slow(self):
-        # Ten minutes at s2, then 50 minutes to s3: 0.37mph moving, 0.31mph arrival to arrival.
+        # Ten minutes at s2, then 50 minutes to s3: about 0.3mph on either clock.
         events = pd.DataFrame(self._trip("t1", [(0.0, 0.0), (60.0, 660.0), (3660.0, 3660.0)]))
 
         traversals = segments.build_traversals(events, self._segments()).sort_values("from_stop_id")
@@ -369,7 +388,7 @@ class TestTraversals(unittest.TestCase):
 
         self.assertEqual(len(traversals), 2)
         self.assertEqual(second.total_time_seconds, 3600.0)
-        self.assertEqual(second.moving_time_seconds, 3000.0)
+        self.assertEqual(second.running_time_seconds, 3000.0)
 
     def test_a_trip_with_no_pullout_still_has_traversals(self):
         rows = [{**row, "tm_pullout_id": None} for row in self._trip("t1", [(0.0, 10.0), (70.0, 80.0), (140.0, 150.0)])]
@@ -413,7 +432,7 @@ class TestMedianDwell(unittest.TestCase):
                     "service_date": date(2026, 11, 10),
                     "depart_seconds": 8 * 3600,
                     "total_time_seconds": 60.0 + dwell,
-                    "moving_time_seconds": 60.0,
+                    "running_time_seconds": 60.0,
                     "dwell_seconds": dwell,
                     "is_interpolated": from_interpolated,
                     "from_interpolated": from_interpolated,
@@ -457,7 +476,7 @@ class TestAggregateSegments(unittest.TestCase):
                         "service_date": service_date,
                         "depart_seconds": 8 * 3600,
                         "total_time_seconds": total_time,
-                        "moving_time_seconds": total_time,
+                        "running_time_seconds": total_time,
                         "dwell_seconds": 0.0,
                         "is_interpolated": False,
                         "from_interpolated": False,
@@ -488,23 +507,23 @@ class TestAggregateSegments(unittest.TestCase):
         self.assertEqual(row.n_traversals, 4)
         self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
 
-    def test_moving_percentiles_leave_out_traversals_without_a_moving_time(self):
-        # build_traversals nulls the moving time where the moving clock is unusable.
+    def test_running_percentiles_leave_out_traversals_without_a_running_time(self):
+        # build_traversals nulls the running time where the running clock is unusable.
         traversals = self._traversals()
-        traversals.loc[traversals.service_date == date(2026, 9, 2), "moving_time_seconds"] = np.nan
+        traversals.loc[traversals.service_date == date(2026, 9, 2), "running_time_seconds"] = np.nan
 
         pooled = segments.aggregate_segments(traversals, extra_group_columns=())
         row = pooled[pooled.time_band == "am_peak"].iloc[0]
         self.assertEqual(row.n_traversals, 4)
         self.assertAlmostEqual(row.p50_total_time_seconds, 150.0)
-        self.assertAlmostEqual(row.p50_moving_time_seconds, 100.0)
+        self.assertAlmostEqual(row.p50_running_time_seconds, 100.0)
 
-        # A row with no moving times at all has no moving speed, and keeps its other columns.
+        # A row with no running times at all has no running speed, and keeps its other columns.
         daily = segments.aggregate_segments(traversals)
         row = daily[(daily.time_band == "am_peak") & (daily.service_date == date(2026, 9, 2))].iloc[0]
         self.assertAlmostEqual(row.p50_total_time_seconds, 200.0)
-        self.assertTrue(np.isnan(row.p50_moving_time_seconds))
-        self.assertTrue(np.isnan(row.p90_moving_speed_mph))
+        self.assertTrue(np.isnan(row.p50_running_time_seconds))
+        self.assertTrue(np.isnan(row.p90_running_speed_mph))
 
 
 class TestTerminalSections(unittest.TestCase):
@@ -521,7 +540,7 @@ class TestTerminalSections(unittest.TestCase):
                     "service_date": date(2026, 9, 3),
                     "depart_seconds": 8 * 3600,
                     "total_time_seconds": 60.0,
-                    "moving_time_seconds": 60.0,
+                    "running_time_seconds": 60.0,
                     "dwell_seconds": 0.0,
                     "is_interpolated": False,
                     "from_interpolated": False,
@@ -561,7 +580,7 @@ class TestTerminalSections(unittest.TestCase):
                         "service_date": date(2026, 9, 3),
                         "depart_seconds": 8 * 3600,
                         "total_time_seconds": 60.0,
-                        "moving_time_seconds": 60.0,
+                        "running_time_seconds": 60.0,
                         "dwell_seconds": 0.0,
                         "is_interpolated": False,
                         "from_interpolated": False,
@@ -587,7 +606,7 @@ class TestAllDayBand(unittest.TestCase):
             "service_date": date(2026, 9, 3),
             "depart_seconds": depart_hour * 3600,
             "total_time_seconds": total_time,
-            "moving_time_seconds": total_time * 0.8,
+            "running_time_seconds": total_time * 0.8,
             "dwell_seconds": total_time * 0.2,
             "is_interpolated": is_interpolated,
             "from_interpolated": False,
@@ -619,17 +638,32 @@ class TestAllDayBand(unittest.TestCase):
 
         self.assertEqual(len(all_day), 1)
         row = all_day.iloc[0]
-        for percentile in (50, 90):
-            for measure in ("total_time_seconds", "moving_time_seconds"):
+        for percentile in (10, 50, 90):
+            for measure in ("total_time_seconds", "running_time_seconds"):
                 self.assertAlmostEqual(
                     row[f"p{percentile}_{measure}"], np.percentile(traversals[measure], percentile), msg=measure
                 )
         self.assertAlmostEqual(row.p50_total_time_seconds, 70.0)
         self.assertNotAlmostEqual(row.p50_total_time_seconds, bands.p50_total_time_seconds.median())
         self.assertAlmostEqual(row.p50_speed_mph, 500.0 / 70.0 * 2.2369362920544)
+        # Running speed: over the segment less the stop zone, from the running time percentile.
+        self.assertEqual(row.running_length_m, 500.0 - STOP_ZONE_M)
+        self.assertAlmostEqual(row.p50_running_time_seconds, 56.0)
+        self.assertAlmostEqual(row.p50_running_speed_mph, (500.0 - STOP_ZONE_M) / 56.0 * 2.2369362920544)
+        self.assertGreater(row.p10_running_speed_mph, row.p90_running_speed_mph)
         self.assertEqual(row.n_traversals, 5)
         self.assertEqual(row.n_interpolated, 2)
         self.assertAlmostEqual(row.median_dwell_seconds, np.median(traversals.dwell_seconds))
+
+    def test_a_segment_too_short_has_no_running_speed(self):
+        traversals = self._traversals().assign(segment_length_m=MIN_RUNNING_SPEED_SEGMENT_M - 1.0)
+
+        aggregated = segments.aggregate_segments(traversals)
+
+        for column in ("running_length_m", "p10_running_speed_mph", "p50_running_speed_mph", "p90_running_speed_mph"):
+            self.assertTrue(aggregated[column].isna().all(), msg=column)
+        self.assertTrue(aggregated.p50_running_time_seconds.notna().all())
+        self.assertTrue(aggregated.p50_speed_mph.notna().all())
 
     def test_all_day_rows_carry_the_same_columns_as_band_rows(self):
         aggregated = segments.aggregate_segments(self._traversals())

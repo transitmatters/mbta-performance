@@ -1,4 +1,5 @@
 import json
+from math import nan
 import shutil
 import subprocess
 import tempfile
@@ -38,12 +39,15 @@ def _segment(
         "n_traversals": n_traversals,
         "n_interpolated": 1,
         "segment_length_m": 500.4,
+        "running_length_m": 410.4,
+        "p50_running_time_seconds": 79.74,
+        "p50_running_speed_mph": 11.5123,
+        "p10_running_speed_mph": 14.26,
+        "p90_running_speed_mph": 8.04,
+        # Arrival to arrival, and dwell: in the GeoParquet, but not the segment tiles.
         "p50_total_time_seconds": 97.26,
+        "p50_speed_mph": 10.2,
         "median_dwell_seconds": 23.4,
-        "p50_speed_mph": 11.5123,
-        "p10_speed_mph": 14.26,
-        "p90_speed_mph": 8.04,
-        "moving_speed_mph": 20.0,
         "terminal_section": terminal_section,
         "coordinates": [(-71.05, 42.36), (-71.06, 42.37)],
         # Null off a shared stop pair (see shared_segments.py), as on most rows.
@@ -121,17 +125,16 @@ class TestBuildPmtilesBytes(unittest.TestCase):
             pmtiles.build_pmtiles_bytes(_segments())
 
         properties = self.written_properties[0]
-        self.assertEqual(properties["p50_speed_mph"], 11.5)
+        self.assertEqual(properties["p50_running_speed_mph"], 11.5)
         # Written as JSON integers, not 500.0, so tippecanoe stores them as integers too.
         self.assertIs(type(properties["segment_length_m"]), int)
         self.assertEqual(properties["segment_length_m"], 500)
-        self.assertIs(type(properties["p50_total_time_seconds"]), int)
-        self.assertEqual(properties["p50_total_time_seconds"], 97)
-        self.assertIs(type(properties["median_dwell_seconds"]), int)
-        self.assertEqual(properties["median_dwell_seconds"], 25)  # to the nearest DWELL_ROUNDING_SECONDS
+        self.assertEqual(properties["running_length_m"], 410)
+        self.assertIs(type(properties["p50_running_time_seconds"]), int)
+        self.assertEqual(properties["p50_running_time_seconds"], 80)
         # To two significant figures, either side of 10 mph.
-        self.assertEqual(properties["p10_speed_mph"], 14.0)
-        self.assertEqual(properties["p90_speed_mph"], 8.0)
+        self.assertEqual(properties["p10_running_speed_mph"], 14.0)
+        self.assertEqual(properties["p90_running_speed_mph"], 8.0)
 
     def test_a_row_with_too_few_trips_gets_no_speed_range(self):
         with (
@@ -141,12 +144,27 @@ class TestBuildPmtilesBytes(unittest.TestCase):
             pmtiles.build_pmtiles_bytes(_segments(n_traversals=pmtiles.SPEED_RANGE_MINIMUM_TRAVERSALS - 1))
 
         properties = self.written_properties[0]
-        self.assertIsNone(properties.get("p10_speed_mph"))
-        self.assertIsNone(properties.get("p90_speed_mph"))
+        self.assertIsNone(properties.get("p10_running_speed_mph"))
+        self.assertIsNone(properties.get("p90_running_speed_mph"))
+
+    def test_a_segment_too_short_for_a_running_speed_gets_none(self):
+        short = _segments().assign(
+            running_length_m=nan, p50_running_speed_mph=nan, p10_running_speed_mph=nan, p90_running_speed_mph=nan
+        )
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
+        ):
+            pmtiles.build_pmtiles_bytes(short)
+
+        properties = self.written_properties[0]
+        for column in ("running_length_m", "p50_running_speed_mph", "p10_running_speed_mph", "p90_running_speed_mph"):
+            self.assertIsNone(properties.get(column))
+        self.assertEqual(properties["segment_length_m"], 500)
 
     def test_a_nan_is_left_null_rather_than_failing_the_upload(self):
-        # median_dwell_seconds is NaN on a segment with no observed dwell, as where every trip starts.
-        frame = _segments().assign(median_dwell_seconds=float("nan"), p50_total_time_seconds=float("nan"))
+        # p50_running_time_seconds is NaN on a row where no traversal had a usable running time.
+        frame = _segments().assign(p50_running_time_seconds=nan, p50_running_speed_mph=nan)
         with (
             mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
             mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run),
@@ -154,13 +172,14 @@ class TestBuildPmtilesBytes(unittest.TestCase):
             pmtiles.build_pmtiles_bytes(frame)
 
         properties = self.written_properties[0]
-        self.assertIsNone(properties.get("median_dwell_seconds"))
-        self.assertIsNone(properties.get("p50_total_time_seconds"))
+        self.assertIsNone(properties.get("p50_running_time_seconds"))
         self.assertEqual(properties["segment_length_m"], 500)
+        self.assertEqual(properties["running_length_m"], 410)
 
-    def test_moving_speed_stays_off_the_map(self):
-        # See TILE_PROPERTIES: it reads as impossible speeds on short segments.
-        self.assertFalse([column for column in pmtiles.TILE_PROPERTIES if "moving" in column])
+    def test_only_running_time_reaches_the_segment_tiles(self):
+        # The segments show street running time only; time at the stop is on the dwell layer.
+        self.assertFalse([column for column in pmtiles.TILE_PROPERTIES if "dwell" in column or "total" in column])
+        self.assertNotIn("p50_speed_mph", pmtiles.TILE_PROPERTIES)
 
     def test_all_day_rows_reach_tippecanoe_with_the_same_properties_as_a_band(self):
         # The map filters on an exact time_band match, so all_day must arrive as a plain
@@ -203,6 +222,57 @@ class TestBuildPmtilesBytes(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 pmtiles.build_pmtiles_bytes(_segments())
+
+
+def _dwells(time_bands: tuple[str, ...] = ("am_peak",)) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "route_id": "1",
+                "direction_id": 0,
+                "stop_id": "s1",
+                "stop_name": "A",
+                "time_band": time_band,
+                "n_dwells": 12,
+                "median_dwell_seconds": 23.4,
+                "p90_dwell_seconds": 61.0,
+                "service_date": "2026-11-04",
+                "coordinates": (-71.05, 42.36),
+            }
+            for time_band in time_bands
+        ]
+    )
+
+
+class TestBuildDwellPmtilesBytes(TestBuildPmtilesBytes.__base__):
+    _fake_run = TestBuildPmtilesBytes._fake_run
+
+    def _build(self, frame):
+        with (
+            mock.patch.object(pmtiles.shutil, "which", return_value="/usr/bin/tippecanoe"),
+            mock.patch.object(pmtiles.subprocess, "run", side_effect=self._fake_run) as run,
+        ):
+            pmtiles.build_dwell_pmtiles_bytes(frame)
+        return run.call_args[0][0]
+
+    def test_only_dwell_tile_properties_reach_tippecanoe_rounded(self):
+        self._build(_dwells())
+
+        properties = self.written_properties[0]
+        self.assertEqual(set(properties), set(pmtiles.DWELL_TILE_PROPERTIES) - {"day_type"})
+        # To the nearest DWELL_ROUNDING_SECONDS, as integers.
+        self.assertIs(type(properties["median_dwell_seconds"]), int)
+        self.assertEqual(properties["median_dwell_seconds"], 25)
+        self.assertEqual(properties["p90_dwell_seconds"], 60)
+
+    def test_uses_the_dwells_layer_and_its_zoom_range(self):
+        command = self._build(_dwells())
+
+        self.assertEqual(command[command.index("--layer") + 1], pmtiles.DWELL_LAYER_NAME)
+        self.assertEqual(command[command.index("--minimum-zoom") + 1], str(pmtiles.DWELL_MINIMUM_ZOOM))
+        self.assertEqual(command[command.index("--maximum-zoom") + 1], str(pmtiles.DWELL_MAXIMUM_ZOOM))
+        # Every stop at every zoom it's shown at, rather than tippecanoe's default point thinning.
+        self.assertEqual(command[command.index("--drop-rate") + 1], "1")
 
 
 @unittest.skipUnless(shutil.which("tippecanoe"), "tippecanoe is not installed")
@@ -264,7 +334,7 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             ],
             ignore_index=True,
         )
-        frame.loc[0, "median_dwell_seconds"] = float("nan")
+        frame.loc[0, "p50_running_time_seconds"] = nan
         with tempfile.TemporaryDirectory() as tmp_dir:
             tileset_path = Path(tmp_dir) / "segments.pmtiles"
             tileset_path.write_bytes(pmtiles.build_pmtiles_bytes(frame))
@@ -278,12 +348,31 @@ class TestBuildPmtilesBytesWithRealTippecanoe(unittest.TestCase):
             for layer in tile["features"]
             for feature in layer["features"]
         }
-        for column in ("shared_routes", "terminal_section", "p10_speed_mph", "p90_speed_mph", "median_dwell_seconds"):
+        for column in (
+            "shared_routes",
+            "terminal_section",
+            "p10_running_speed_mph",
+            "p90_running_speed_mph",
+            "p50_running_time_seconds",
+        ):
             self.assertNotIn(column, by_band["am_peak"])
         self.assertEqual(by_band["midday"]["shared_routes"], "1,2")
         self.assertEqual(by_band["midday"]["terminal_section"], "last")
-        self.assertEqual(by_band["midday"]["p10_speed_mph"], 14)
-        self.assertEqual(by_band["midday"]["median_dwell_seconds"], 25)
+        self.assertEqual(by_band["midday"]["p10_running_speed_mph"], 14)
+        self.assertEqual(by_band["midday"]["p50_running_time_seconds"], 80)
+
+    def test_produces_a_dwells_layer_of_points(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tileset_path = Path(tmp_dir) / "dwells.pmtiles"
+            tileset_path.write_bytes(pmtiles.build_dwell_pmtiles_bytes(_dwells(time_bands=("am_peak", "midday"))))
+            decoded = subprocess.run(
+                ["tippecanoe-decode", str(tileset_path)], capture_output=True, check=True, text=True
+            ).stdout
+
+        layer = json.loads(json.loads(decoded)["properties"]["json"])["vector_layers"][0]
+        self.assertEqual(layer["id"], pmtiles.DWELL_LAYER_NAME)
+        self.assertEqual(set(layer["fields"]), set(pmtiles.DWELL_TILE_PROPERTIES) - {"day_type"})
+        self.assertEqual(self._time_bands(decoded), {"am_peak", "midday"})
 
     @staticmethod
     def _time_bands(decoded: str) -> set[str]:

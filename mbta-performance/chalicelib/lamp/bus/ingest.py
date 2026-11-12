@@ -7,7 +7,7 @@ Pipeline:
     -> per-traversal segment times
     -> aggregated per (route, direction, stop pair, date, time band)
     -> GeoParquet with road-following LineString geometry (for analysts)
-    -> PMTiles built from the same result, opt-in (for the live map)
+    -> PMTiles built from the same result, opt-in (for the live map), plus dwell points
 """
 
 import logging
@@ -26,11 +26,12 @@ from .constants import (
 )
 from .daily_metrics import write_daily_route_metrics
 from .day_type import day_type_for
+from .dwells import aggregate_dwells
 from .geoparquet import write_geoparquet
 from .leaderboard import build_leaderboard
 from .patterns import build_pattern_geometry
 from .remote_parquet import ServiceDateNotFoundError, read_service_date
-from .s3_writer import upload_leaderboard, upload_pmtiles, upload_speed_segments
+from .s3_writer import upload_dwell_pmtiles, upload_leaderboard, upload_pmtiles, upload_speed_segments
 from .segments import (
     aggregate_segments,
     attach_shape_distance,
@@ -127,8 +128,10 @@ def generate_speed_segments(
     `write_pmtiles` additionally builds a PMTiles tileset from the same result and publishes
     it alongside the GeoParquet, under the same S3 prefix -- this is what the live map
     actually reads. The tiles also carry a pooled row for every stop pair several routes
-    share (shared_segments.py), which the GeoParquet and leaderboard don't. Also opt-in and
-    independent of `upload`, and requires tippecanoe on PATH (see pmtiles.py).
+    share (shared_segments.py), which the GeoParquet and leaderboard don't. It also publishes
+    the dwell points (dwells.py), since the segments' running speeds leave out the time at
+    each stop. Also opt-in and independent of `upload`, and requires tippecanoe on PATH (see
+    pmtiles.py).
 
     `write_leaderboard` additionally ranks segments slowest-first within each time band
     (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles --
@@ -160,6 +163,7 @@ def generate_speed_segments(
         upload_speed_segments(result, service_date)
     if write_pmtiles:
         upload_pmtiles(add_shared_segments(result, traversals), service_date)
+        upload_dwell_pmtiles(aggregate_dwells(traversals, result), service_date)
     if write_leaderboard:
         upload_leaderboard(build_leaderboard(result), service_date)
     return result

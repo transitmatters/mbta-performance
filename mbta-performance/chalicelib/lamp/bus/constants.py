@@ -65,7 +65,7 @@ TIME_BANDS = (
 ALL_DAY_BAND = "all_day"
 
 # A segment traversal is discarded outright if its arrival-to-arrival speed is above this, from
-# GPS noise or mis-snapped stops. A moving speed above it nulls only the moving time. See
+# GPS noise or mis-snapped stops. A running speed above it nulls only the running time. See
 # segments.build_traversals.
 MAX_PLAUSIBLE_SPEED_MPH = 65.0
 
@@ -75,10 +75,24 @@ MAX_PLAUSIBLE_SPEED_MPH = 65.0
 BUSINESS_DAY = "business_day"
 WEEKEND_OR_HOLIDAY = "weekend_or_holiday"
 
-# Percentiles reported per (segment, date, band). Moving time gets fewer: its fast tail is mostly
-# the short segments whose moving clock runs short (see "The two speeds" in the README).
+# Percentiles reported per (segment, date, band), for both the running and the total clock.
 PERCENTILES = (10, 50, 90)
-MOVING_PERCENTILES = (50, 90)
+
+# LAMP's bus departure and arrival times aren't taken at the stop itself, so departure from one
+# stop to arrival at the next -- the running time -- covers only part of the segment. On
+# 2026-11-04 (322k traversals) running time fit 0.168 s/m x (length - 91m): it hits zero on a
+# 91m segment. Over the full length, that read a median 28 mph on 200-250m segments and 40 mph
+# on 100-150m ones. Over the length less this zone, those come to 16.7 and 7-12 mph, and every
+# length band from 125m up falls between 12 and 17 mph. Separate fits put the zone at 76m
+# mid-trip, 70m on a trip's first segment and 41m on its last, so this is an average, not a
+# measured fact, and it reads those first and last segments slow, which is why the leaderboard
+# leaves them off (leaderboard.build_leaderboard). See "Running speed" in the README.
+STOP_ZONE_M = 90
+
+# Below this, a segment's running length is too little of it to give a speed: on 2026-11-04,
+# 100-125m segments still read a median 7 mph after the correction, and under 100m it goes
+# negative. 3.6% of that day's traversals. Their segments carry no running speed.
+MIN_RUNNING_SPEED_SEGMENT_M = 125
 
 # A segment is a terminal section if at least this share of its trips start or end on it. See
 # segments._with_terminal_sections.
@@ -116,6 +130,16 @@ MONTHLY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={mont
 ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/segments_all_day.pmtiles"
 WEEKLY_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/segments_all_day.pmtiles"
 MONTHLY_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/segments_all_day.pmtiles"
+
+# Dwell at each stop, as points for the map, beside each segments.pmtiles above -- see dwells.py.
+# Split by band and all_day the same way, and for the same reason: an all_day point sits exactly
+# on a band point.
+DWELL_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/dwells.pmtiles"
+DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/dwells_all_day.pmtiles"
+WEEKLY_DWELL_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/dwells.pmtiles"
+WEEKLY_DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/dwells_all_day.pmtiles"
+MONTHLY_DWELL_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/dwells.pmtiles"
+MONTHLY_DWELL_ALL_DAY_PMTILES_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/dwells_all_day.pmtiles"
 
 # Bus stops and rapid transit stations as a context layer under the speed map -- see
 # reference_tiles.py. One fixed key rather than one per date: stops only move when the GTFS
