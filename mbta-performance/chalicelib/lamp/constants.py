@@ -1,3 +1,8 @@
+# (connect, read) seconds for requests to performancedata.mbta.com. The read timeout is the longest
+# wait for the next bytes, not for the whole file. Without one, a hung connection runs until the
+# Lambda timeout and the run reports a timeout instead of the real error.
+LAMP_REQUEST_TIMEOUT = (10, 30)
+
 # LAMP columns to fetch from parquet files
 LAMP_COLUMNS = [
     "service_date",
