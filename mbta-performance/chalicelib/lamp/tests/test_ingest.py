@@ -6,6 +6,7 @@ from unittest import mock
 
 import pandas as pd
 
+from ... import gtfs
 from .. import constants, ingest
 
 # The sample file attached here is 10k events sampled from Feb 7th, 2024.
@@ -115,6 +116,62 @@ class TestIngest(unittest.TestCase):
         self.assertTrue(null_id_events.empty)
         self.assertEqual(pq_df_after.shape, (17078, 20))
         self.assertEqual(set(pq_df_after["service_date"].unique()), {"2024-02-07"})
+
+    def test_ingest_pq_file_without_gtfs_matches_keeps_events(self):
+        """When none of the day's trips are in the GTFS feed, the events are still uploaded, without
+        scheduled travel times. This used to raise KeyError: 'trip_id' and fail the run."""
+        pq_df = pd.read_parquet(
+            io.BytesIO(self.data),
+            columns=constants.LAMP_COLUMNS,
+            engine="pyarrow",
+            dtype_backend="numpy_nullable",
+        )
+
+        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=gtfs._empty_stop_times()):
+            result = ingest.ingest_pq_file(pq_df, date(2024, 2, 7))
+
+        self.assertEqual(result.shape, (17078, 20))  # same events as with GTFS (test_ingest_pq_file)
+        self.assertListEqual(list(result.columns), constants.S3_COLUMNS)
+        self.assertTrue(result["scheduled_tt"].isna().all())
+        self.assertEqual(result["scheduled_tt"].dtype, "Int64")
+        # LAMP's own headways don't depend on GTFS
+        self.assertTrue(result["scheduled_headway"].notna().any())
+
+    def test_fallback_scheduled_tt_with_a_half_second_median(self):
+        """The fallback median over an even number of GTFS trips can land on a half second, which
+        the Int64 scheduled_tt column rejected: "cannot safely cast non-equivalent float64 to int64"."""
+        # One trip, starting 7:02:30am at 70001
+        lamp = self._make_minimal_lamp_df(
+            service_date_int=20240213,
+            trip_stop_pairs=[("t1", "70001", "O-001"), ("t1", "70003", "O-001"), ("t1", "70005", "O-001")],
+        )
+        # t1 matches s1, which skips 70005, so 70005 falls back to the median of s2 (60s) and s3 (61s)
+        rows = [
+            ("s1", "70001", 25200),
+            ("s1", "70003", 25320),
+            ("s2", "70001", 26400),
+            ("s2", "70005", 26460),
+            ("s3", "70001", 26500),
+            ("s3", "70005", 26561),
+        ]
+        stop_times = pd.DataFrame(
+            {
+                "trip_id": [r[0] for r in rows],
+                "stop_id": [r[1] for r in rows],
+                "arrival_time": [r[2] for r in rows],
+                "stop_sequence": [1] * len(rows),
+                "checkpoint_id": [None] * len(rows),
+                "route_id": ["Orange"] * len(rows),
+                "direction_id": [0] * len(rows),
+            }
+        ).astype(gtfs.STOP_TIMES_DTYPES)
+
+        with mock.patch("chalicelib.lamp.ingest.fetch_stop_times_from_gtfs", return_value=stop_times):
+            result = ingest.ingest_pq_file(lamp, date(2024, 2, 13))
+
+        scheduled_tt = result.set_index(["stop_id", "event_type"])["scheduled_tt"]
+        self.assertEqual(scheduled_tt[("70003", "ARR")], 120)
+        self.assertEqual(scheduled_tt[("70005", "ARR")], 60)  # 60.5, rounded half to even
 
     def test__average_scheduled_headways(self):
         pq_df_before = pd.read_parquet(

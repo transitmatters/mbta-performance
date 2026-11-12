@@ -50,6 +50,7 @@ Things to expect:
 
 - Ferry first checks that the ArcGIS Hub's copy of the CSV is newer than the MBTA's last change to the data. If it isn't, the command has the Hub regenerate it and waits, for up to 30 minutes. The CSV is saved to `data/input/ferry.csv`.
 - GTFS archives for scheduled headways are downloaded into `data/gtfs_archives/` and cached there. There is one archive per feed version, at roughly 100 MB unzipped each. If you process the whole ferry history without `--start-date`, it downloads hundreds of them (50+ GB) and takes hours.
+- A day that GTFS can't cover (no archive for the date, or no trips matching the events) is still written, just without scheduled headways or travel times, and the day is printed. If a bus file fails to process, the other files still run, then the command lists the failures and stops before `--upload`.
 - A year of processed rapid transit and bus data is several GB. `data/` is gitignored.
 - `backfill.main` also accepts `--start-date/--end-date` to process only some months of a year.
 - `--start-date/--end-date` always cover whole months. A mid-month date is widened to the 1st or to the month's last day, because each output file holds a whole month, and uploading it replaces that month in S3.

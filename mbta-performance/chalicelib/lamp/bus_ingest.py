@@ -157,7 +157,8 @@ def _recalculate_bus_fields_from_gtfs(
     if missing_tt_mask.any():
         logger.debug(f"Attempting fallback scheduled_tt matching for {missing_tt_mask.sum()} events")
         gtfs_stops["time_bucket"] = (gtfs_stops["arrival_time"] // 1800).astype(int)
-        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median()
+        # Rounded to the second, as in rail's ingest.py: a half-second median won't fit Int64.
+        bucketed_median_tt = gtfs_stops.groupby(RTE_DIR_STOP + ["time_bucket"])["scheduled_tt"].median().round()
 
         event_seconds = (
             pq_df.loc[missing_tt_mask, "event_time"] - pd.Timestamp(service_date).tz_localize(EASTERN_TIME)

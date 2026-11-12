@@ -1,5 +1,6 @@
 import argparse
 import pathlib
+import traceback
 from datetime import date
 
 from ..constants import BUS_ARCGIS_IDS
@@ -18,11 +19,15 @@ def backfill_bus_data(years: list = None, routes: list = None, output_dir: str =
         routes: List of route IDs to process (default: common bus routes)
         output_dir: Output directory for processed data
         nozip: Whether to skip gzipping files
+
+    Raises RuntimeError after processing everything else if any file failed, so the caller
+    doesn't go on to upload.
     """
     if years is None:
         years = [int(y) for y in BUS_ARCGIS_IDS.keys()]
 
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+    failed = []
 
     for year in years:
         year_dir = f"data/input/bus/{year}"
@@ -43,10 +48,14 @@ def backfill_bus_data(years: list = None, routes: list = None, output_dir: str =
             print(f"  Processing {csv_file.name}...")
             try:
                 process_bus_events(str(csv_file), output_dir, routes, nozip)
-            except Exception as e:
-                print(f"    Error processing {csv_file.name}: {e}")
-                continue
+            except Exception:
+                # Keep going, so one run reports every bad file
+                print(f"    Error processing {csv_file.name}:")
+                traceback.print_exc()
+                failed.append(str(csv_file))
 
+    if failed:
+        raise RuntimeError(f"{len(failed)} bus file(s) failed to process; fix them before uploading: {failed}")
     print("Bus data processing completed!")
 
 
