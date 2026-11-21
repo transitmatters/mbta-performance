@@ -200,6 +200,48 @@ class TestUploadWeeklyMonthly(unittest.TestCase):
         )
 
 
+class TestUploadDwellPmtiles(unittest.TestCase):
+    def _upload(self, upload_function, *key_args):
+        with (
+            mock.patch.object(s3_writer, "build_dwell_pmtiles_bytes", side_effect=_fake_build),
+            mock.patch.object(s3_writer, "build_pmtiles_bytes", side_effect=AssertionError("built as segments")),
+            mock.patch.object(s3_writer.s3, "upload_pmtiles") as upload,
+        ):
+            keys = upload_function(_segments(("am_peak", "all_day")), *key_args)
+        self.assertEqual(
+            [(call.args[1], call.args[2]) for call in upload.call_args_list],
+            list(zip(keys, [b"PMTiles:am_peak", b"PMTiles:all_day"])),
+        )
+        return keys
+
+    def test_daily_dwells_go_beside_the_segments(self):
+        self.assertEqual(
+            self._upload(s3_writer.upload_dwell_pmtiles, date(2026, 9, 3)),
+            (
+                "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/dwells.pmtiles",
+                "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/dwells_all_day.pmtiles",
+            ),
+        )
+
+    def test_weekly_dwells_go_beside_the_segments(self):
+        self.assertEqual(
+            self._upload(s3_writer.upload_weekly_dwell_pmtiles, 2026, 6),
+            (
+                "BusSpeedSegments/weekly/Year=2026/Week=6/dwells.pmtiles",
+                "BusSpeedSegments/weekly/Year=2026/Week=6/dwells_all_day.pmtiles",
+            ),
+        )
+
+    def test_monthly_dwells_go_beside_the_segments(self):
+        self.assertEqual(
+            self._upload(s3_writer.upload_monthly_dwell_pmtiles, 2026, 3),
+            (
+                "BusSpeedSegments/monthly/Year=2026/Month=3/dwells.pmtiles",
+                "BusSpeedSegments/monthly/Year=2026/Month=3/dwells_all_day.pmtiles",
+            ),
+        )
+
+
 class TestLeaderboardKeys(unittest.TestCase):
     def test_daily_key_is_month_and_day_not_zero_padded(self):
         self.assertEqual(

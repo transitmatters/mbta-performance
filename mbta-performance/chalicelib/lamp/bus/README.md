@@ -59,8 +59,8 @@ rewrites can briefly cause) fails the period instead of being skipped as a date 
 If LAMP is out for longer than that window, rebuild the periods by hand with `--year` and
 `--week` or `--month` once it has caught up.
 
-Each extra build runs on basement-dweller and costs 4 PUTs: about 45 more PUTs a month, a
-fraction of a cent. Measured without tiles on 2026-11-11, one week took ~1.5 minutes (1.7GB
+Each extra build runs on basement-dweller and costs 6 PUTs with the dwell layer: about 70 more
+PUTs a month, a fraction of a cent. Measured without tiles on 2026-11-11, one week took ~1.5 minutes (1.7GB
 peak with the current week built first in the same process). A whole month took ~5 minutes,
 with a 5.5GB peak after building the new month's first two days, against the ~8GB a full month
 peaks at in production with tiles. Both fit the jobs' memory limits.
@@ -76,10 +76,12 @@ peaks at in production with tiles. Both fit the jobs' memory limits.
 2. **Locate every stop along its route pattern's shape** (`gtfs_geo.py`, `patterns.py`).
 3. **Interpolate stop times LAMP did not observe** (`segments.py`).
 4. **Build per-traversal times, then aggregate** to percentiles per time band, plus a
-   whole-day `all_day` band.
+   whole-day `all_day` band. Segments are timed on the street only (see "Running speed"), and
+   the time at each stop is aggregated separately as dwell (`dwells.py`).
 5. **Write GeoParquet** with road-following `LineString` geometry (`geoparquet.py`).
 6. **Optionally build PMTiles** from the same result, for the live map (`pmtiles.py`),
-   plus a pooled row for each stop pair several routes share (`shared_segments.py`).
+   plus a pooled row for each stop pair several routes share (`shared_segments.py`), and
+   dwell points (`dwells.py`).
 
 ## Time bands
 
@@ -144,14 +146,20 @@ s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/segments
 one `tippecanoe` invocation, writing every segment into a single vector layer named
 `segments` (matching `modules/busspeedmap/constants.ts`'s `PMTILES_SOURCE_LAYER` in the
 dashboard repo). Only the columns the map actually reads (`TILE_PROPERTIES`: route, direction,
-`from_stop_id`, stop names, time band, `p50_speed_mph`, traversal counts, `segment_length_m`,
-`p50_total_time_seconds`, `median_dwell_seconds`, `p10_speed_mph`, `p90_speed_mph`,
-`terminal_section` and `shared_routes`) are handed to tippecanoe, so a column like
-`moving_speed_mph` can never end up on the map by accident (see "The two speeds" for why it
-mustn't) -- see `modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching
-frontend type. They're rounded to what the dashboard displays first (speed to 0.1 mph, length
-and time to whole metres and seconds, dwell to 5s, the speed range to two significant figures),
-which keeps the archive smaller than full-precision floats would.
+stop names, time band, `p50_running_speed_mph`, traversal counts, `segment_length_m`,
+`running_length_m`, `p50_running_time_seconds`, `p10_running_speed_mph`,
+`p90_running_speed_mph`, `terminal_section` and `shared_routes`) are handed to tippecanoe, so
+the arrival-to-arrival and dwell columns can never end up on a segment by accident -- see
+`modules/busspeedmap/types.ts`'s `BusSpeedSegmentProperties` for the matching frontend type.
+They're rounded to what the dashboard displays first (speed to 0.1 mph, length and time to whole
+metres and seconds, the speed range to two significant figures), which keeps the archive smaller
+than full-precision floats would.
+
+**The map's speeds are running speeds** (see "Running speed" below), named `running_` rather than
+reusing `p50_speed_mph`: tiles built before 2026-11 carry that name for arrival to arrival, so
+the map can't mix the two clocks across old and new archives without knowing. A segment under
+`MIN_RUNNING_SPEED_SEGMENT_M` has no running speed at all, which tippecanoe leaves off the
+feature; the map should draw it as no data.
 
 **`all_day` rows are a separate archive, `segments_all_day.pmtiles`;** `segments.pmtiles`
 holds only the six time bands. Both use the same `segments` layer and the same properties
@@ -197,35 +205,55 @@ more S3 a year, and about 10% more tile transfer for whatever part of the map is
 Pooling takes 2s for a day, 4s for a week and 12s for a month. The GeoParquet and the
 leaderboard stay one row per route -- `"749,751"` isn't a route.
 
-**`median_dwell_seconds` and `from_stop_id` are for the map's hover popups.** The segment popup
-says how much of its time was spent at the first stop. The stop popup lists each route's dwell,
-by finding the segments that leave it: stop tiles aren't tied to a date, and names can't match
-them, since one can cover both sides of a street or stops miles apart. The median is over the
-dwells that were observed (`segments.observed_dwell_seconds`), the same ones `total_dwell` sums
-in "Daily route metrics": a trip's first stop (its wait is layover, see below) and an
-interpolated stop are left out, since both are zero. Where none was observed, as on a segment
-every trip starts on, it's null and left off the feature, and the map shows no dwell. On
-2026-11-10, counting those zeros pulled down 24% of rows' medians, by 2.5s at the median, and
-left 2,842 rows at 0 that are now null. A median above a few minutes looks like a bus holding mid-trip, like the midday
-trips that wait 20-odd minutes on Ave Louis Pasteur; only 42 of October 2026's 117,565 rows are
-over 3 minutes.
+**Dwell is a layer of points of its own** (`dwells.py`), since the segments leave it out:
+
+```
+s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/dwells.pmtiles
+s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=9/Day=3/dwells_all_day.pmtiles
+```
+
+and the same beside each weekly and monthly `segments.pmtiles`, split by band and `all_day` the
+same way. One point per (route, direction, stop, time band), and `day_type` on a week or month,
+in a layer named `dwells` (`DWELL_TILE_PROPERTIES`: route, direction, `stop_id`, `stop_name`, time
+band, `n_dwells`, `median_dwell_seconds` and `p90_dwell_seconds`). Each sits where the stop falls
+on the route's shape -- the start of the segment leaving it -- so it lands on the route's line, not
+across the street at the pole. `stop_id` matches the reference layer's bus stops.
+
+Only dwells LAMP observed count (`segments.has_observed_dwell`): a trip's first stop is layover,
+an interpolated stop has none, and a trip's last stop has no departure. They're the same dwells
+`total_dwell` sums in "Daily route metrics", and the ones the GeoParquet's per-segment
+`median_dwell_seconds` is over, which is null on a segment with none, as one every trip starts
+on. On 2026-11-10, counting those zeros pulled down 24% of segment rows' medians, by 2.5s at the
+median. A median above a few minutes looks like a bus holding mid-trip, like the midday trips
+that wait 20-odd minutes on Ave Louis Pasteur. Points run from zoom 11, where the reference
+layer's bus stops start, to 14, and every one is kept at every zoom (`--drop-rate 1`):
+tippecanoe's default point thinning left 2026-11-04's zoom 11 with 3.5k of its 54k band points.
 
 Dwell is rounded to 5s because stop times don't look any finer: medians pile up around 5.5s
 and 11s, which looks like the spacing of the vehicle positions behind them.
 
-**`p10_speed_mph` and `p90_speed_mph` are the range around the median in the segment popup**,
-as "8 in 10 trips ran 2.6-7.5 mph". A section that's always slow and one a few trips hold up can
+On 2026-11-04 that's 50k band points and 10k all-day ones, 1.9MB and 1.0MB. Nothing else in
+the archives changed size much: taking dwell and `from_stop_id` off the segments made the band
+and all-day archives 1% and 9% smaller (and the band archive now keeps 57k features at zooms
+6-8, against 7k), while the GeoParquet grew 12% with the running columns. About 2.9MB a day more
+in all: roughly 1GB more S3 a year, $0.02/month after a year, and 6 more PUTs a day across the
+daily, weekly and monthly jobs.
+
+**`p10_running_speed_mph` and `p90_running_speed_mph` are the range around the median in the
+segment popup**, as "8 in 10 trips ran 2.6-7.5 mph". A section that's always slow and one a few trips hold up can
 share a median; and where even the fastest trips are slow, it's the street, not the traffic.
-Both are timed arrival to arrival, like `p50_speed_mph`. They're only written for rows with 10 or
+Both are running speeds, like `p50_running_speed_mph`. They're only written for rows with 10 or
 more trips, since "in 10" means nothing with fewer: that leaves them off 76% of a day's band
-rows, and takes its densest zoom 9 tile from 861KB to 771KB. Most sections are consistently
+rows, and took its densest zoom 9 tile from 861KB to 771KB when they were added. Most sections are consistently
 slow rather than held up: across segments under 5 mph on 2026-10-28, p90 time was 1.5 times p50
 at the median, about the same as for every other segment.
 
 **`terminal_section` marks the first and last segments of most trips**: `"first"` where most
 trips over a segment start on it, `"last"` where most end on it, and null, so left off the
 feature, everywhere else. The map dashes them from zoom 13, and the segment popup says which it is. Only
-the very end of a trip reads differently, by median speed per traversal:
+the very end of a trip reads differently, by median arrival-to-arrival speed per traversal (on
+running speed, on 2026-11-04, first segments ran 11.1 mph and last ones 10.0, against 15.3 for
+the rest):
 
 | | Last segment | The one before | Second segment | First segment |
 | --- | --- | --- | --- | --- |
@@ -235,7 +263,8 @@ the very end of a trip reads differently, by median speed per traversal:
 
 The first segment is quicker because its layover isn't dwell (see below). The last ones are 3% of
 segments but 35-50% of those under 3 mph, so they're much of what looks oddly slow on the map.
-The flag costs 0.3% of an archive.
+The flag costs 0.3% of an archive. The leaderboard leaves terminal sections off (see
+"Slowest-segments leaderboard").
 
 These columns grow the densest tile at a zoom 13-14% for dwell and `from_stop_id`, then 11% on a
 day and 22% on a week for the speed range, so `MAXIMUM_TILE_BYTES` rises to 825KB; at 750KB, a
@@ -389,7 +418,7 @@ s3://tm-mbta-performance/BusSpeedSegments/weekly/Year=2026/Week=6/leaderboard.js
 s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=2/leaderboard.json
 ```
 
-Segments are ranked slowest-first (by `p50_speed_mph`) **within each time band**, not blended
+Segments are ranked slowest-first (by `p50_running_speed_mph`) **within each time band**, not blended
 across them -- a segment that's slow at 7am rush and one that's slow at midnight aren't
 comparable, the same reasoning behind splitting by time band and `day_type` everywhere else
 in this pipeline. The result is a dict keyed by `time_band`, including `all_day`, e.g.
@@ -401,15 +430,17 @@ how it's absent from the PMTiles properties for the same reason. A band with no 
 above `LEADERBOARD_MIN_TRAVERSALS` has no key.
 
 Each entry carries only what a leaderboard row needs to display -- `route_id`, `direction_id`,
-`from_stop_name`, `to_stop_name`, `p50_speed_mph`, `n_traversals`, `n_interpolated`, and
-`segment_length_m` and `p50_total_time_seconds`, the distance and median travel time
-`p50_speed_mph` is computed from (`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of
-explicit allowlist as `pmtiles.TILE_PROPERTIES`, so geometry and the p90/moving-speed columns
-never leak into a public file by accident. Each slice is capped at `LEADERBOARD_SIZE` (500)
-entries: this is a display list, not an analytical export, so it's kept well below the ~10.8k
-distinct segments/day rather than dumping the whole aggregated table. It's still deep because
-the dashboard's route and Frequent Bus filters narrow a slice client-side, and at 100 a
-filtered view came out with only a handful of rows.
+`from_stop_name`, `to_stop_name`, `p50_running_speed_mph`, `n_traversals`, `n_interpolated`,
+`segment_length_m`, `running_length_m`, `p50_running_time_seconds`
+(`leaderboard.LEADERBOARD_COLUMNS`) -- the same kind of explicit allowlist as
+`pmtiles.TILE_PROPERTIES`, so geometry and the p90, arrival-to-arrival and dwell columns never
+leak into a public file by accident. Segments are ranked by running speed, the same speed the
+map shows; one too short to have a running speed, or with no usable running time, isn't
+ranked. Each slice is capped at `LEADERBOARD_SIZE` (500) entries: this is a display list, not
+an analytical export, so it's kept well below the ~10.8k distinct segments/day rather than
+dumping the whole aggregated table. It's still deep because the dashboard's route and Frequent
+Bus filters narrow a slice client-side, and at 100 a filtered view came out with only a handful
+of rows.
 
 **Segments below `LEADERBOARD_MIN_TRAVERSALS` (20) traversals in a slice are dropped before
 ranking** -- higher than the map's `MIN_TRAVERSALS_HINT` (3), and deliberately a separate
@@ -423,6 +454,16 @@ run a handful of trips through a given segment in a 2-hour window -- but the wee
 rollups pool traversals across many days and comfortably clear it (checked against the
 in-progress 2026-W38 rollup: business-day AM peak alone had 24-42 segments still qualifying
 at thresholds of 20-30).
+
+**Terminal sections are left off** -- the first and last segments of most trips (see
+`terminal_section` under "PMTiles"). Their running speed is the least sure of any: the stop
+zone fits 70m on a trip's first segment and 41m on its last, against the 90m `STOP_ZONE_M`
+takes off every segment (see "Running speed"), so they read slow. At 90m against 41m, a last
+segment reads a median 12% slower, and a tenth of them 28% or more. On 2026-11-10's all_day
+rows, terminal sections were 6.6% of the rows that would otherwise be ranked but 23 of the
+slowest 100 (15 last, 8 first). Taking 41m off last segments alone would have left 10 of them;
+the arrival-to-arrival ranking this replaced had 11 last and none first. The map keeps them,
+dashed.
 
 Writing is opt-in (`--write-leaderboard`, or `write_leaderboard=True`) and independent of
 `--upload`/`--write-pmtiles`/`--write-to-dynamo`. `generate_yesterday_speed_segments()` writes
@@ -533,52 +574,73 @@ median 112m from the GTFS stop, p99 1.5km. Geometry comes from GTFS, never from 
 event rows than GTFS scheduled stops. The gap is ~7% of rows carrying a *null* timestamp,
 72% of which are bracketed by real observations. There are no phantom stops to infer.
 
-## The two speeds
+## Running speed
 
-Dwell time on MBTA buses is about as large as running time (both median ~21s), so these
-differ by more than a factor of two. Both are emitted:
+Two clocks are emitted, and the map and leaderboard use the first:
 
 | Column | Meaning |
 | --- | --- |
-| `p50_moving_speed_mph` | Departure from A to arrival at B. Reproduces LAMP's own `travel_time_seconds` exactly, but it isn't a true running speed: see below. |
-| `p50_speed_mph` | Arrival to arrival, so it includes dwell at A. What a rider on board experiences. **This is the headline number.** |
+| `p50_running_speed_mph` | Departure from A to arrival at B (`p50_running_time_seconds`, LAMP's own `travel_time_seconds` exactly), over `running_length_m`: the segment less `STOP_ZONE_M`. The bus on the street, with no time at either stop. **What the map shows.** |
+| `p50_speed_mph` | Arrival to arrival (`p50_total_time_seconds`), so it includes the dwell at A, over the whole segment. What a rider on board experiences. In the GeoParquet, and behind the route-level `DeliveredTripMetricsBus` speeds. |
 
-Moving speed reads too high, and impossibly high on short segments, which is why it's kept off
-the map. On 2026-10-28, segments of 100-150m had a median moving time of 6s, or 41 mph, and 63%
-of them read over 35 mph; moving time falls to zero at a segment of about 86m. That suggests LAMP
-stamps arrival and departure some way out from the stop rather than at it, though we haven't
-confirmed how. Arrival to arrival doesn't have the problem, since both ends are stamped the same
-way and the span between them is still the whole segment. Dwell does, so it's best read as time
-around the stop, not time with the doors open.
+The time at the stop goes on the dwell layer instead (see "PMTiles").
 
-**So a traversal is kept or dropped on arrival to arrival.** It's dropped if that time is zero or
-less, or works out faster than `MAX_PLAUSIBLE_SPEED_MPH` (65 mph): 1.4% of traversals on
-2026-11-10. Judged on the moving clock, as it was until #130, 22-32% of traversals under 200m
-were dropped, mostly the fastest, and about a quarter of those segments read more than 1 mph
-slow. There's no lower bound: the slowest traversals are buses holding mid-trip, for up to an
-hour, often on segments where most trips do (route 109 from stop 7417 runs at a median 0.64
-mph), and a floor hid the slowest of them.
+**Why the length less `STOP_ZONE_M` (90m).** LAMP's bus arrival and departure times aren't taken
+at the stop, so the running clock only covers part of each segment. On 2026-11-04 (322k
+traversals) running time fit 0.168 s/m x (length - 91m): it hits zero on a 91m segment. Over the
+full length, that read impossibly fast on short segments:
 
-Where the moving clock reads zero or less, or faster than 65 mph, the traversal is kept with a
-null moving time: 10% of traversals on 2026-11-10. `p50_moving_speed_mph` and
-`p90_moving_speed_mph` come from the rest, so from fewer traversals than `n_traversals`, and
-are null on a row where none are left. That was 1.5% of rows, nearly all with 1-3 traversals.
+| Segment length | Share of traversals | Running, full length | Running, length - 90m | Arrival to arrival |
+| --- | --- | --- | --- | --- |
+| up to 100m | 1% | 34 mph | negative | 10.3 mph |
+| 100-150m | 8% | 40 mph | 7.2 mph to 125m, 12.4 mph above | 10.1 mph |
+| 200-250m | 19% | 28 mph | 16.7 mph | 11.2 mph |
+| 300-400m | 20% | 22 mph | 16.4 mph | 11.6 mph |
+| 500-750m | 6% | 15 mph | 13.1 mph | 11.5 mph |
+
+Medians, per traversal. 90m is an average, not a measured fact: fits per kind of segment put it at
+76m mid-trip, 70m on a trip's first segment and 41m on its last, and we haven't confirmed how LAMP
+stamps the times. So first and last segments read slow, and the leaderboard leaves them off
+(see "Slowest-segments leaderboard"). Dwell is the other side of the same zone, so it's best read
+as time around the stop -- slowing, standing and pulling out -- not time with the doors open.
+
+Segments under `MIN_RUNNING_SPEED_SEGMENT_M` (125m) get no running speed: 100-125m still read a
+median 7 mph after the correction, and under 100m it goes negative. On 2026-11-04 that's 3.6% of
+traversals and 6.5% of all-day rows. Everything else about them -- counts, arrival-to-arrival
+times, dwell at their first stop -- is still published.
+
+**A traversal is kept or dropped on arrival to arrival**, the one clock that spans the whole
+segment. It's dropped if that time is zero or less, or works out faster than
+`MAX_PLAUSIBLE_SPEED_MPH` (65 mph): 1.4% of traversals on 2026-11-10. Judged on the running
+clock over the full length, as it was until #130, 22-32% of traversals under 200m were
+dropped, mostly the fastest, and about a quarter of those segments read more than 1 mph slow.
+There's no lower bound: the slowest traversals are buses holding mid-trip, for up to an hour,
+often on segments where most trips do (route 109 from stop 7417 runs at a median 0.64 mph),
+and a floor hid the slowest of them.
+
+Where the running clock reads zero or less, or faster than 65 mph over `running_length_m`, the
+traversal is kept with a null running time. On a segment too short to have a running length,
+only zero or less counts. The running percentiles come from the rest, so from fewer traversals
+than `n_traversals`, and are null on a row where none are left. Judged over the full segment
+on 2026-11-10, that nulled 10% of traversals and left 1.5% of rows, nearly all with 1-3
+traversals, with no running time; over the running length it's fewer.
 
 Dwell at a trip's *first* stop is excluded: the bus sits at the terminal awaiting its
-scheduled departure, often 10+ minutes, and charging that to the first segment made
-terminal segments read as 0.5mph. This matches how `chalicelib.benchmarks` treats the dwell
-at an origin stop for rail.
+scheduled departure, often 10+ minutes. This matches how `chalicelib.benchmarks` treats the
+dwell at an origin stop for rail.
 
-Sanity check on 2026-09-03, traversal-weighted p50: 12.69mph at pm peak rising to 17.34mph
-late night, 14.26mph overall — consistent with a system whose buses average ~13mph.
+Sanity check on 2026-11-04, all-day rows weighted by traversals: 15.8 mph running against 13.3
+mph arrival to arrival; median row 16.2 mph, 10th and 90th percentiles 7.9 and 25.0 mph.
+Measured before #130's change to how traversals are kept or dropped, which nudges both up
+slightly: arrival to arrival on 2026-09-03 went from 13.90 to 14.26 mph overall.
 
 ## Interpolation
 
 A stop with no observed time that is bracketed by observed stops gets a pass time
 interpolated **by distance along the shape**: the bus is assumed to hold constant speed
 across the gap. Because the bus was never recorded stopping there, it is given no dwell.
-Leading and trailing gaps cannot be bracketed and are left null. Interpolated values are
-included in the percentiles; `n_interpolated` per row lets a consumer filter them out.
+Leading and trailing gaps cannot be bracketed and are left null. An interpolated stop's
+dwell isn't on the dwell layer. Interpolated values are included in the percentiles; `n_interpolated` per row lets a consumer filter them out.
 
 ## Coverage
 

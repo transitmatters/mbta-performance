@@ -30,21 +30,23 @@ from .constants import LEADERBOARD_MIN_TRAVERSALS, LEADERBOARD_SIZE
 logger = logging.getLogger(__name__)
 
 # Deliberately narrow, matching pmtiles.py's TILE_PROPERTIES allowlist: only what a
-# leaderboard entry needs to display, selected explicitly so a column like p90_speed_mph or
-# moving_speed_mph can't end up in the published file by accident. time_band/day_type are not
-# repeated per entry here -- they're already the dict keys the entry sits under.
-# segment_length_m and p50_total_time_seconds are the two numbers p50_speed_mph is computed
-# from, shown beside it as the segment's distance and median travel time.
+# leaderboard entry needs to display, selected explicitly so a column like p90_running_speed_mph
+# or median_dwell_seconds can't end up in the published file by accident. time_band/day_type are
+# not repeated per entry here -- they're already the dict keys the entry sits under.
+# Ranked by running speed, the same speed the map shows (see pmtiles.TILE_PROPERTIES), with the
+# same running_ names. running_length_m and p50_running_time_seconds are the two numbers
+# p50_running_speed_mph is computed from, shown beside it; segment_length_m is the whole segment.
 LEADERBOARD_COLUMNS = [
     "route_id",
     "direction_id",
     "from_stop_name",
     "to_stop_name",
-    "p50_speed_mph",
+    "p50_running_speed_mph",
     "n_traversals",
     "n_interpolated",
     "segment_length_m",
-    "p50_total_time_seconds",
+    "running_length_m",
+    "p50_running_time_seconds",
 ]
 
 
@@ -57,11 +59,12 @@ def _ranked_slice(rows: pd.DataFrame) -> list[dict]:
     whole metres and seconds, finer than the dashboard displays them and fewer bytes per row,
     as nullable integers, so a NaN is written as null rather than failing the whole upload.
     """
-    ranked = rows.sort_values("p50_speed_mph").head(LEADERBOARD_SIZE)
+    ranked = rows.sort_values("p50_running_speed_mph").head(LEADERBOARD_SIZE)
     ranked = ranked[LEADERBOARD_COLUMNS].assign(
-        p50_speed_mph=lambda df: df.p50_speed_mph.round(1),
+        p50_running_speed_mph=lambda df: df.p50_running_speed_mph.round(1),
         segment_length_m=lambda df: df.segment_length_m.round().astype("Int64"),
-        p50_total_time_seconds=lambda df: df.p50_total_time_seconds.round().astype("Int64"),
+        running_length_m=lambda df: df.running_length_m.round().astype("Int64"),
+        p50_running_time_seconds=lambda df: df.p50_running_time_seconds.round().astype("Int64"),
     )
     return json.loads(ranked.to_json(orient="records", double_precision=1))
 
@@ -82,7 +85,16 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
     on a map among thousands, and verified against real data, the low end is dominated by
     3-6-traversal noise up through that lower bar. A single day often can't clear this for
     every band -- some may come back sparse or empty -- but the weekly/monthly rollups pool
-    enough traversals to comfortably clear it.
+    enough traversals to comfortably clear it. Segments too short to have a running speed
+    (constants.MIN_RUNNING_SPEED_SEGMENT_M) are dropped too.
+
+    So are terminal sections, the first and last segments of most trips (see
+    segments._with_terminal_sections). Their running speed is the least sure of any: the stop
+    zone fits 70m on a trip's first segment and 41m on its last, against the 90m taken off every
+    segment (constants.STOP_ZONE_M), so they read slow. At 90m against 41m, a last segment
+    reads a median 12% slower, and a tenth of them 28% or more. On 2026-11-10's all_day rows
+    they were 6.6% of the rows that would otherwise be ranked, but 23 of the slowest 100 (15
+    last, 8 first). The map keeps them, dashed.
 
     Returns a dict keyed by time_band, e.g. {"am_peak": [...]}. When `aggregated` carries a
     `day_type` column (the weekly/monthly rollups from trends.py -- a single day is already
@@ -91,7 +103,9 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
     matching the "only columns actually present" convention pmtiles.py's TILE_PROPERTIES
     already follows for the same column.
     """
-    filtered = aggregated[aggregated.n_traversals >= LEADERBOARD_MIN_TRAVERSALS]
+    enough_traversals = aggregated.n_traversals >= LEADERBOARD_MIN_TRAVERSALS
+    terminal = aggregated.terminal_section.notna()
+    filtered = aggregated[enough_traversals & aggregated.p50_running_speed_mph.notna() & ~terminal]
 
     if "day_type" in filtered.columns:
         result = {
@@ -106,6 +120,7 @@ def build_leaderboard(aggregated: pd.DataFrame) -> dict:
 
     logger.info(
         f"Built leaderboard from {len(filtered)} of {len(aggregated)} rows "
-        f"(dropped below {LEADERBOARD_MIN_TRAVERSALS} traversals)"
+        f"(dropped below {LEADERBOARD_MIN_TRAVERSALS} traversals, with no running speed, "
+        f"or {int((enough_traversals & terminal).sum())} terminal sections that cleared that bar)"
     )
     return result

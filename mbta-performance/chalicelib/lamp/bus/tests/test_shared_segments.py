@@ -17,7 +17,7 @@ def _traversal(route_id: str, total_time: float, **overrides) -> dict:
         "service_date": date(2026, 10, 28),
         "depart_seconds": 8 * 3600,
         "total_time_seconds": total_time,
-        "moving_time_seconds": total_time * 0.8,
+        "running_time_seconds": total_time * 0.8,
         "dwell_seconds": total_time * 0.2,
         "is_interpolated": False,
         "from_interpolated": False,
@@ -227,6 +227,8 @@ class TestIngestPoolsOnlyTheTiles(unittest.TestCase):
             mock.patch.object(ingest, "build_traversals_from_events", return_value=(traversals, geometry)),
             mock.patch.object(ingest, "upload_speed_segments") as upload_segments,
             mock.patch.object(ingest, "upload_pmtiles") as upload_pmtiles,
+            mock.patch.object(ingest, "aggregate_dwells") as aggregate_dwells,
+            mock.patch.object(ingest, "upload_dwell_pmtiles"),
             mock.patch.object(ingest, "upload_leaderboard"),
             mock.patch.object(ingest, "build_leaderboard") as build_leaderboard,
         ):
@@ -235,3 +237,4 @@ class TestIngestPoolsOnlyTheTiles(unittest.TestCase):
         self.assertEqual(set(upload_pmtiles.call_args[0][0].route_id), {"749", "751", "749,751"})
         self.assertEqual(set(upload_segments.call_args[0][0].route_id), {"749", "751"})
         self.assertEqual(set(build_leaderboard.call_args[0][0].route_id), {"749", "751"})
+        self.assertEqual(set(aggregate_dwells.call_args[0][1].route_id), {"749", "751"})

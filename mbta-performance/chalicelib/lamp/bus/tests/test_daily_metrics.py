@@ -504,7 +504,7 @@ class TestIngestPassesDayType(unittest.TestCase):
             route_pattern_id=traversals.route_id + "-0",
             from_stop_id="s1",
             to_stop_id="s2",
-            moving_time_seconds=traversals.total_time_seconds,
+            running_time_seconds=traversals.total_time_seconds,
             dwell_seconds=0.0,
             is_trip_start=False,
             is_trip_end=False,
