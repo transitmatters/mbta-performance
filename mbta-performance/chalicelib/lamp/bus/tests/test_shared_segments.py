@@ -252,6 +252,8 @@ class TestIngestPoolsOnlyTheTiles(unittest.TestCase):
             mock.patch.object(ingest, "upload_dwell_pmtiles"),
             mock.patch.object(ingest, "upload_leaderboard"),
             mock.patch.object(ingest, "build_leaderboard") as build_leaderboard,
+            mock.patch.object(ingest, "upload_route_delays"),
+            mock.patch.object(ingest, "build_route_delays") as build_route_delays,
         ):
             ingest.generate_speed_segments(date(2026, 10, 28), upload=True, write_pmtiles=True, write_leaderboard=True)
 
@@ -259,3 +261,5 @@ class TestIngestPoolsOnlyTheTiles(unittest.TestCase):
         self.assertEqual(set(upload_segments.call_args[0][0].route_id), {"749", "751"})
         self.assertEqual(set(build_leaderboard.call_args[0][0].route_id), {"749", "751"})
         self.assertEqual(set(aggregate_dwells.call_args[0][1].route_id), {"749", "751"})
+        # Trip by trip, from the traversals, so a pooled row can't reach them either.
+        self.assertIs(build_route_delays.call_args[0][0], traversals)

@@ -476,7 +476,8 @@ the arrival-to-arrival ranking this replaced had 11 last and none first. The map
 dashed.
 
 Writing is opt-in (`--write-leaderboard`, or `write_leaderboard=True`) and independent of
-`--upload`/`--write-pmtiles`/`--write-to-dynamo`. `generate_yesterday_speed_segments()` writes
+`--upload`/`--write-pmtiles`/`--write-to-dynamo`. It also writes `route_delays.json` beside the
+leaderboard (see "Route delays"). `generate_yesterday_speed_segments()` writes
 it by default; the weekly/monthly generators and `trends_backfill.py` take the same flag but
 default it to off, matching `--write-pmtiles`'s existing opt-in convention there.
 
@@ -725,6 +726,54 @@ buses waiting for a berth rather than traffic.
 
 Free flow adds under a second to a week's aggregation and 3s to a month's. For what it costs the
 tiles, see "PMTiles".
+
+### Route delays
+
+`route_delays.py` adds up what a whole trip loses, for the dashboard's route figures
+([t-performance-dash#1493](https://github.com/transitmatters/t-performance-dash/issues/1493)). It's
+published beside each leaderboard, keyed the same way (by `time_band`, and by `day_type` first on the
+weekly and monthly files):
+
+```
+s3://tm-mbta-performance/BusSpeedSegments/daily/Year=2026/Month=11/Day=4/route_delays.json
+s3://tm-mbta-performance/BusSpeedSegments/weekly/Year=2026/Week=45/route_delays.json
+s3://tm-mbta-performance/BusSpeedSegments/monthly/Year=2026/Month=10/route_delays.json
+```
+
+Each entry is one route direction: `route_id`, `direction_id`, `n_trips`, and the median trip's
+`p50_running_time_seconds` and `free_flow_running_time_seconds`, in whole seconds. Minutes lost is
+the one less the other.
+
+**Trip by trip, not a sum of segment rows.** A route direction's segments can come from several
+patterns (a branch, a short turn), so their sum is no one trip, and a sum of medians isn't the
+median trip. Each trip's running time and free flow are summed over the segments it ran that have
+a free flow, so both cover the same stretch. A trip takes the band of its first departure.
+
+**Which trips count.** Only a trip with a free flow over at least `MIN_ROUTE_DELAY_COVERAGE` (90%)
+of its length. Trips are mostly all or nothing: on 2026-W45, 71% of weekday peak trips cleared 90%
+and 80% cleared half. The rest were mostly on routes with no quiet-hour service. It isn't 100%
+because a trip often has a traversal or two with no usable running time, and only 34% had every
+segment. A route direction needs `MIN_ROUTE_DELAY_TRIPS` (5) such trips in a band for an entry.
+On 2026-W45 that gave 172 route directions in the weekday PM peak, of the 292 that ran then.
+
+**The difference of medians.** Most route directions run one pattern most of the time, so their
+trips share a free flow and the difference is the median trip's delay too. On 2026-W45 the two came
+within 7s at the median and 28s at the 90th percentile.
+
+Results for 2026-W45 weekdays, PM peak:
+
+| Route direction | Running time | Free flow | Lost |
+| --- | --- | --- | --- |
+| 450 inbound | 54.0 min | 29.9 min | 24.1 min |
+| 435 inbound | 53.7 min | 29.8 min | 23.9 min |
+| 109 outbound | 48.4 min | 24.6 min | 23.8 min |
+| 28 outbound | 36.6 min | 20.5 min | 16.1 min |
+| 1 inbound | 27.1 min | 16.0 min | 11.1 min |
+
+Written with the leaderboard (`write_leaderboard`), from traversals already in memory: no new job,
+flag or schedule. A day's file is about 45KB of JSON (3KB gzipped), a week's 290KB (21KB) and a
+month's 360KB (27KB). That's one more PUT per leaderboard written, a few a day, and well under a
+cent a month in requests and storage. It adds about a second to a week's run.
 
 ## Interpolation
 

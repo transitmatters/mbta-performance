@@ -23,8 +23,10 @@ from .constants import (
     MONTHLY_DWELL_PMTILES_KEY_TEMPLATE,
     MONTHLY_LEADERBOARD_KEY_TEMPLATE,
     MONTHLY_PMTILES_KEY_TEMPLATE,
+    MONTHLY_ROUTE_DELAYS_KEY_TEMPLATE,
     MONTHLY_S3_KEY_TEMPLATE,
     PMTILES_KEY_TEMPLATE,
+    ROUTE_DELAYS_KEY_TEMPLATE,
     S3_BUCKET,
     S3_KEY_TEMPLATE,
     WEEKLY_ALL_DAY_PMTILES_KEY_TEMPLATE,
@@ -32,6 +34,7 @@ from .constants import (
     WEEKLY_DWELL_PMTILES_KEY_TEMPLATE,
     WEEKLY_LEADERBOARD_KEY_TEMPLATE,
     WEEKLY_PMTILES_KEY_TEMPLATE,
+    WEEKLY_ROUTE_DELAYS_KEY_TEMPLATE,
     WEEKLY_S3_KEY_TEMPLATE,
 )
 from .geoparquet import build_geoparquet_bytes
@@ -122,6 +125,21 @@ def monthly_leaderboard_key_for(year: int, month: int) -> str:
     return MONTHLY_LEADERBOARD_KEY_TEMPLATE.format(year=year, month=month)
 
 
+def route_delays_key_for(service_date: date) -> str:
+    """Build the object key for a service date's route delays (route_delays.py)."""
+    return ROUTE_DELAYS_KEY_TEMPLATE.format(YYYY=service_date.year, _M=service_date.month, _D=service_date.day)
+
+
+def weekly_route_delays_key_for(year: int, week: int) -> str:
+    """Build the object key for an ISO (year, week)'s route delays."""
+    return WEEKLY_ROUTE_DELAYS_KEY_TEMPLATE.format(year=year, week=week)
+
+
+def monthly_route_delays_key_for(year: int, month: int) -> str:
+    """Build the object key for a (year, month)'s route delays."""
+    return MONTHLY_ROUTE_DELAYS_KEY_TEMPLATE.format(year=year, month=month)
+
+
 def _upload_geoparquet(segments: pd.DataFrame, key: str) -> str:
     data = build_geoparquet_bytes(segments)
     logger.info(f"Uploading {len(segments)} segment rows ({len(data) / 1048576:.2f}MB) to s3://{S3_BUCKET}/{key}")
@@ -140,9 +158,9 @@ def _upload_pmtiles(segments: pd.DataFrame, key: str, all_day_key: str, dwells: 
     return key, all_day_key
 
 
-def _upload_leaderboard(leaderboard: dict, key: str) -> str:
-    data = json.dumps(leaderboard).encode("utf-8")
-    logger.info(f"Uploading leaderboard ({len(data)} bytes before gzip) to s3://{S3_BUCKET}/{key}")
+def _upload_json(payload: dict, key: str, name: str) -> str:
+    data = json.dumps(payload).encode("utf-8")
+    logger.info(f"Uploading {name} ({len(data)} bytes before gzip) to s3://{S3_BUCKET}/{key}")
     s3.upload_json(S3_BUCKET, key, data)
     return key
 
@@ -221,7 +239,7 @@ def upload_leaderboard(leaderboard: dict, service_date: date) -> str:
 
     Returns the key written. Re-running a date overwrites it in place.
     """
-    return _upload_leaderboard(leaderboard, leaderboard_key_for(service_date))
+    return _upload_json(leaderboard, leaderboard_key_for(service_date), "leaderboard")
 
 
 def upload_weekly_leaderboard(leaderboard: dict, year: int, week: int) -> str:
@@ -229,7 +247,7 @@ def upload_weekly_leaderboard(leaderboard: dict, year: int, week: int) -> str:
 
     Returns the key written. Re-running a week overwrites it in place.
     """
-    return _upload_leaderboard(leaderboard, weekly_leaderboard_key_for(year, week))
+    return _upload_json(leaderboard, weekly_leaderboard_key_for(year, week), "leaderboard")
 
 
 def upload_monthly_leaderboard(leaderboard: dict, year: int, month: int) -> str:
@@ -237,4 +255,22 @@ def upload_monthly_leaderboard(leaderboard: dict, year: int, month: int) -> str:
 
     Returns the key written. Re-running a month overwrites it in place.
     """
-    return _upload_leaderboard(leaderboard, monthly_leaderboard_key_for(year, month))
+    return _upload_json(leaderboard, monthly_leaderboard_key_for(year, month), "leaderboard")
+
+
+def upload_route_delays(route_delays: dict, service_date: date) -> str:
+    """Serialise a day's route delays (route_delays.py) and publish them beside its leaderboard.
+
+    Returns the key written. Re-running a date overwrites it in place.
+    """
+    return _upload_json(route_delays, route_delays_key_for(service_date), "route delays")
+
+
+def upload_weekly_route_delays(route_delays: dict, year: int, week: int) -> str:
+    """Serialise a week's route delays and publish them. Returns the key written."""
+    return _upload_json(route_delays, weekly_route_delays_key_for(year, week), "route delays")
+
+
+def upload_monthly_route_delays(route_delays: dict, year: int, month: int) -> str:
+    """Serialise a month's route delays and publish them. Returns the key written."""
+    return _upload_json(route_delays, monthly_route_delays_key_for(year, month), "route delays")

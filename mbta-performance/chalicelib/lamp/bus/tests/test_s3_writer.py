@@ -290,6 +290,38 @@ class TestUploadLeaderboard(unittest.TestCase):
         self.assertEqual(upload.call_args[0][1], key)
 
 
+class TestRouteDelays(unittest.TestCase):
+    _route_delays = {"pm_peak": [{"route_id": "1", "direction_id": 0, "n_trips": 5}]}
+
+    def test_keys_sit_beside_the_leaderboard(self):
+        self.assertEqual(
+            s3_writer.route_delays_key_for(date(2026, 9, 3)),
+            "BusSpeedSegments/daily/Year=2026/Month=9/Day=3/route_delays.json",
+        )
+        self.assertEqual(
+            s3_writer.weekly_route_delays_key_for(2026, 6), "BusSpeedSegments/weekly/Year=2026/Week=6/route_delays.json"
+        )
+        self.assertEqual(
+            s3_writer.monthly_route_delays_key_for(2026, 3),
+            "BusSpeedSegments/monthly/Year=2026/Month=3/route_delays.json",
+        )
+
+    def test_uploads_json_bytes_to_each_period_key(self):
+        uploads = (
+            (lambda: s3_writer.upload_route_delays(self._route_delays, date(2026, 9, 3)), "Day=3/route_delays.json"),
+            (lambda: s3_writer.upload_weekly_route_delays(self._route_delays, 2026, 6), "Week=6/route_delays.json"),
+            (lambda: s3_writer.upload_monthly_route_delays(self._route_delays, 2026, 3), "Month=3/route_delays.json"),
+        )
+        for upload_one, key_end in uploads:
+            with self.subTest(key_end), mock.patch.object(s3_writer.s3, "upload_json") as upload:
+                key = upload_one()
+
+                self.assertTrue(key.endswith(key_end))
+                bucket, uploaded_key, data = upload.call_args[0]
+                self.assertEqual((bucket, uploaded_key), ("tm-mbta-performance", key))
+                self.assertEqual(json.loads(data), self._route_delays)
+
+
 class TestUploadIsOptIn(unittest.TestCase):
     def test_generate_does_not_upload_unless_asked(self):
         from .. import ingest
@@ -299,6 +331,7 @@ class TestUploadIsOptIn(unittest.TestCase):
             mock.patch.object(ingest, "upload_speed_segments") as upload,
             mock.patch.object(ingest, "upload_pmtiles") as upload_pmtiles,
             mock.patch.object(ingest, "upload_leaderboard") as upload_leaderboard,
+            mock.patch.object(ingest, "upload_route_delays") as upload_route_delays,
             mock.patch.object(ingest, "build_pattern_geometry"),
         ):
             read.return_value = pd.DataFrame()
@@ -308,3 +341,4 @@ class TestUploadIsOptIn(unittest.TestCase):
         upload.assert_not_called()
         upload_pmtiles.assert_not_called()
         upload_leaderboard.assert_not_called()
+        upload_route_delays.assert_not_called()
