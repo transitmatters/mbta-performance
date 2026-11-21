@@ -36,14 +36,17 @@ from .geoparquet import write_geoparquet
 from .ingest import build_traversals_for_date
 from .leaderboard import build_leaderboard
 from .periods import dates_in_range, month_key_for, month_range, recent_period_keys, week_key_for, week_range
+from .route_delays import build_route_delays
 from .s3_writer import (
     upload_monthly_dwell_pmtiles,
     upload_monthly_leaderboard,
     upload_monthly_pmtiles,
+    upload_monthly_route_delays,
     upload_monthly_speed_segments,
     upload_weekly_dwell_pmtiles,
     upload_weekly_leaderboard,
     upload_weekly_pmtiles,
+    upload_weekly_route_delays,
     upload_weekly_speed_segments,
 )
 from .segments import SEGMENT_KEY, aggregate_segments, select_segment_geometry
@@ -151,8 +154,9 @@ def generate_weekly_speed_segments(
     erroring, so this can be run for the current in-progress week to get a partial-week trend.
 
     `write_leaderboard` ranks segments slowest-first within each (day_type, time_band) slice
-    (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles. Also
-    opt-in and independent of `upload`/`write_pmtiles`.
+    (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles, with
+    each route direction's trip running time against free flow beside it (route_delays.py).
+    Also opt-in and independent of `upload`/`write_pmtiles`.
 
     `require_newest_date` raises, before anything is published, if the week's newest date
     (yesterday, while the week is still in progress) has no usable data. Older dates without
@@ -176,6 +180,7 @@ def generate_weekly_speed_segments(
         upload_weekly_dwell_pmtiles(aggregate_dwells(traversals, result, PERIOD_GROUP_COLUMNS), year, week)
     if write_leaderboard:
         upload_weekly_leaderboard(build_leaderboard(result), year, week)
+        upload_weekly_route_delays(build_route_delays(traversals), year, week)
     return result
 
 
@@ -211,6 +216,7 @@ def generate_monthly_speed_segments(
         upload_monthly_dwell_pmtiles(aggregate_dwells(traversals, result, PERIOD_GROUP_COLUMNS), year, month)
     if write_leaderboard:
         upload_monthly_leaderboard(build_leaderboard(result), year, month)
+        upload_monthly_route_delays(build_route_delays(traversals), year, month)
     return result
 
 

@@ -31,7 +31,14 @@ from .geoparquet import write_geoparquet
 from .leaderboard import build_leaderboard
 from .patterns import build_pattern_geometry
 from .remote_parquet import ServiceDateNotFoundError, read_service_date
-from .s3_writer import upload_dwell_pmtiles, upload_leaderboard, upload_pmtiles, upload_speed_segments
+from .route_delays import build_route_delays
+from .s3_writer import (
+    upload_dwell_pmtiles,
+    upload_leaderboard,
+    upload_pmtiles,
+    upload_route_delays,
+    upload_speed_segments,
+)
 from .segments import (
     aggregate_segments,
     attach_shape_distance,
@@ -134,7 +141,8 @@ def generate_speed_segments(
     pmtiles.py).
 
     `write_leaderboard` additionally ranks segments slowest-first within each time band
-    (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles --
+    (leaderboard.py) and publishes the result as JSON alongside the GeoParquet/PMTiles, with
+    each route direction's trip running time against free flow beside it (route_delays.py) --
     also opt-in and independent of `upload`.
     """
     logger.info(f"Generating bus speed segments for {service_date}")
@@ -166,6 +174,7 @@ def generate_speed_segments(
         upload_dwell_pmtiles(aggregate_dwells(traversals, result), service_date)
     if write_leaderboard:
         upload_leaderboard(build_leaderboard(result), service_date)
+        upload_route_delays(build_route_delays(traversals), service_date)
     return result
 
 

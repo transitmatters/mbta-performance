@@ -232,6 +232,7 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
             mock.patch.object(trends, "aggregate_dwells", return_value="dwells") as aggregate_dwells,
             mock.patch.object(trends, "upload_weekly_dwell_pmtiles") as upload_dwells,
             mock.patch.object(trends, "upload_weekly_leaderboard") as upload_leaderboard,
+            mock.patch.object(trends, "upload_weekly_route_delays") as upload_route_delays,
         ):
             trends.generate_weekly_speed_segments(2026, 2)
 
@@ -240,12 +241,14 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
         aggregate_dwells.assert_not_called()
         upload_dwells.assert_not_called()
         upload_leaderboard.assert_not_called()
+        upload_route_delays.assert_not_called()
 
     def test_upload_and_pmtiles_flags_are_forwarded(self):
+        traversals = pd.DataFrame()
         with (
             mock.patch.object(trends, "get_current_service_date", return_value=date(2026, 1, 10)),
             mock.patch.object(
-                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), pd.DataFrame())
+                trends, "_build_period_result", return_value=(pd.DataFrame({"n_traversals": [1]}), traversals)
             ),
             mock.patch.object(trends, "upload_weekly_speed_segments") as upload_segments,
             mock.patch.object(trends, "upload_weekly_pmtiles") as upload_pmtiles,
@@ -253,6 +256,8 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
             mock.patch.object(trends, "upload_weekly_dwell_pmtiles") as upload_dwells,
             mock.patch.object(trends, "upload_weekly_leaderboard") as upload_leaderboard,
             mock.patch.object(trends, "build_leaderboard", return_value={"am_peak": []}) as build_leaderboard,
+            mock.patch.object(trends, "upload_weekly_route_delays") as upload_route_delays,
+            mock.patch.object(trends, "build_route_delays", return_value={"pm_peak": []}) as build_route_delays,
             mock.patch.object(trends, "add_shared_segments", return_value="with shared") as add_shared,
         ):
             trends.generate_weekly_speed_segments(2026, 2, upload=True, write_pmtiles=True, write_leaderboard=True)
@@ -269,6 +274,10 @@ class TestGenerateWeeklySpeedSegments(unittest.TestCase):
         build_leaderboard.assert_called_once()
         self.assertIsInstance(build_leaderboard.call_args[0][0], pd.DataFrame)
         upload_leaderboard.assert_called_once_with({"am_peak": []}, 2026, 2)
+        # Route delays come from the traversals, trip by trip, not from the segment rows.
+        build_route_delays.assert_called_once()
+        self.assertIs(build_route_delays.call_args[0][0], traversals)
+        upload_route_delays.assert_called_once_with({"pm_peak": []}, 2026, 2)
 
     def test_require_newest_date_is_forwarded(self):
         with (
@@ -314,6 +323,8 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
             mock.patch.object(trends, "upload_monthly_dwell_pmtiles") as upload_dwells,
             mock.patch.object(trends, "upload_monthly_leaderboard") as upload_leaderboard,
             mock.patch.object(trends, "build_leaderboard", return_value={"am_peak": []}),
+            mock.patch.object(trends, "upload_monthly_route_delays") as upload_route_delays,
+            mock.patch.object(trends, "build_route_delays", return_value={"pm_peak": []}),
             mock.patch.object(trends, "add_shared_segments", return_value="with shared"),
         ):
             trends.generate_monthly_speed_segments(2026, 1, upload=True, write_pmtiles=True, write_leaderboard=True)
@@ -323,6 +334,7 @@ class TestGenerateMonthlySpeedSegments(unittest.TestCase):
         aggregate_dwells.assert_called_once_with(mock.ANY, mock.ANY, trends.PERIOD_GROUP_COLUMNS)
         upload_dwells.assert_called_once_with("dwells", 2026, 1)
         upload_leaderboard.assert_called_once_with({"am_peak": []}, 2026, 1)
+        upload_route_delays.assert_called_once_with({"pm_peak": []}, 2026, 1)
 
     def test_raises_for_a_month_with_no_available_dates_yet(self):
         with mock.patch.object(trends, "get_current_service_date", return_value=date(2025, 12, 20)):

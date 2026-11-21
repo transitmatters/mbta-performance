@@ -103,6 +103,17 @@ FREE_FLOW_WINDOWS = ((0, 6 * 3600), (22 * 3600, 32 * 3600))
 # has none, and so no delay, rather than one taken some other way.
 MIN_FREE_FLOW_TRAVERSALS = 10
 
+# A trip counts toward its route's delay (route_delays.py) only if the segments with a free flow
+# make up at least this share of its length. Trips are mostly all or nothing: on 2026-W45, 71% of
+# weekday peak trips cleared 0.9 and 80% cleared 0.5, and the rest were mostly on routes with no
+# quiet-hour service at all. Below 1, as a trip often has a traversal or two with no usable
+# running time (segments.build_traversals): 34% of them had every segment.
+MIN_ROUTE_DELAY_COVERAGE = 0.9
+
+# The fewest such trips a route direction needs in a band for an entry in route_delays.json. A
+# day's PM peak has a median 14 per route direction, and a tenth have 8 or fewer.
+MIN_ROUTE_DELAY_TRIPS = 5
+
 # A segment is a terminal section if at least this share of its trips start or end on it. See
 # segments._with_terminal_sections.
 TERMINAL_SECTION_SHARE = 0.5
@@ -162,6 +173,12 @@ REFERENCE_PMTILES_KEY = "BusSpeedSegments/reference/stops.pmtiles"
 LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/leaderboard.json"
 WEEKLY_LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/leaderboard.json"
 MONTHLY_LEADERBOARD_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/leaderboard.json"
+
+# Beside each leaderboard: each route direction's median trip running time and free flow, by time
+# band (route_delays.py). Fetched whole by the dashboard, like the leaderboard.
+ROUTE_DELAYS_KEY_TEMPLATE = "BusSpeedSegments/daily/Year={YYYY}/Month={_M}/Day={_D}/route_delays.json"
+WEEKLY_ROUTE_DELAYS_KEY_TEMPLATE = "BusSpeedSegments/weekly/Year={year}/Week={week}/route_delays.json"
+MONTHLY_ROUTE_DELAYS_KEY_TEMPLATE = "BusSpeedSegments/monthly/Year={year}/Month={month}/route_delays.json"
 
 # Entries kept per (day_type, time_band) slice of the leaderboard. This is a display list, not
 # an analytical export -- the full ranked table already exists as GeoParquet/PMTiles -- so it's
