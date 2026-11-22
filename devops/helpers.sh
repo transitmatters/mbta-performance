@@ -227,8 +227,8 @@ function check_unzipped_size {
     local zipfile="${1:-cfn/layer-deployment.zip}"
     local appzip="${2:-cfn/deployment.zip}"
     local maximumsize=262144000
-    # Datadog-Extension-ARM:101 (mbta-performance/.chalice/config.json); update when bumping the extension
-    local extensionsize=10220593
+    # Datadog-Extension-ARM:104 (mbta-performance/.chalice/config.json); update when bumping the extension
+    local extensionsize=10483291
 
     layersize=$(unzip -l "$zipfile" | tail -1 | awk '{print $1}')
     appsize=$(unzip -l "$appzip" | tail -1 | awk '{print $1}')
