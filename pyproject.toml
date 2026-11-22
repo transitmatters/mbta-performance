@@ -9,7 +9,7 @@ dependencies = [
     "requests>=2.32.3,<3",
     "boto3~=1.43",
     "pandas~=3.0",
-    "datadog_lambda==8.129.0",
+    "datadog_lambda==8.130.0",
     "pyarrow~=26.0",
     "mbta-gtfs-sqlite~=1.2.0",
     "tzdata>=2026.1",
