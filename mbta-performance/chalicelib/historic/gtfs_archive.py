@@ -6,7 +6,13 @@ import shutil
 import urllib.request
 
 from ..date import to_dateint
-from ..routes import trunk_route_id
+from ..routes import branch_route_id
+from ..schedule import (
+    RTE_DIR_STOP,
+    add_scheduled_travel_times,
+    gtfs_scheduled_headways,
+    smooth_scheduled_headways,
+)
 
 # Set GTFS_DATA_DIR to share downloaded archives between repos when running locally
 MAIN_DIR = pathlib.Path(os.environ.get("GTFS_DATA_DIR", "./data")).expanduser() / "gtfs_archives"
@@ -149,135 +155,72 @@ def _without_schedule(days_events: pd.DataFrame, service_date: pd.Timestamp, rea
     return days_events.assign(**BLANK_SCHEDULE)
 
 
-def add_gtfs_headways(events_df: pd.DataFrame):
+def scheduled_stop_times(trips: pd.DataFrame, stops: pd.DataFrame, route_ids: pd.Series) -> pd.DataFrame:
+    """The day's scheduled stop times on these routes, in the form chalicelib/schedule.py takes.
+
+    arrival_time becomes seconds after midnight, and rows are sorted by it.
     """
-    This will calculate scheduled headway and traveltime information
-    from gtfs for the routes we care about, and then match our actual
-    events to the scheduled values. This matching is done based on
-    time-of-day, so is not an excact match. Luckily, pandas helps us out
-    with merge_asof.
-    https://pandas.pydata.org/docs/reference/api/pandas.merge_asof.html
+    trip_info = trips.loc[trips.route_id.isin(route_ids), ["trip_id", "route_id", "direction_id"]]
+    stop_times = stops[["trip_id", "stop_id", "arrival_time"]].merge(trip_info, on="trip_id")
+    stop_times["arrival_time"] = stop_times["arrival_time"].dt.total_seconds()
+    stop_times = stop_times.dropna(subset=["route_id", "direction_id", "stop_id", "arrival_time"])
+    return stop_times.sort_values("arrival_time", kind="stable").reset_index(drop=True)
 
-    Days GTFS can't cover keep their events, with blank scheduled values.
+
+def add_gtfs_headways(events_df: pd.DataFrame) -> pd.DataFrame:
+    """Add scheduled_headway and scheduled_tt to historic events, from that day's GTFS archive.
+
+    These are built the same way as the LAMP pipelines' (see chalicelib/schedule.py). The ArcGIS data
+    has no scheduled headways of its own, so each event's comes from GTFS before being smoothed.
+    Days GTFS can't cover keep their events, with blank scheduled values, as do events with no match.
     """
-
-    # defining these columns in particular becasue we use them everywhere
-    RTE_DIR_STOP = ["route_id", "direction_id", "stop_id"]
-    # scheduled headways are per trunk, so trunk stops count every Green Line branch
-    TRUNK_DIR_STOP = ["trunk_route_id", "direction_id", "stop_id"]
-
     if events_df.empty:
         return events_df.assign(**BLANK_SCHEDULE)
 
     results = []
 
-    # wa have to do this day-by-day because gtfs changes so often
+    # GTFS changes so often that each day needs its own archive
     for service_date, days_events in events_df.groupby("service_date"):
-        all_trips, all_stops = read_gtfs(service_date.date())
-
-        # Skip this date if GTFS data is incomplete
+        day = service_date.date()
+        all_trips, all_stops = read_gtfs(day)
         if all_trips is None or all_stops is None:
             results.append(_without_schedule(days_events, service_date, "No complete GTFS archive"))
             continue
 
-        # filter out the trips of interest
-        relevant_trips = all_trips[all_trips.route_id.isin(days_events.route_id)]
-
-        # take only the stops from those trips (adding route and dir info)
-        trip_info = relevant_trips[["trip_id", "route_id", "direction_id"]]
-        gtfs_stops = all_stops.merge(trip_info, on="trip_id", how="right")
-        gtfs_stops["trunk_route_id"] = trunk_route_id(gtfs_stops.route_id)
-
-        # calculate gtfs headways. Two branches can be scheduled at a shared stop at the same second, so
-        # count each time once; otherwise the tied row gets a 0s headway, and the backward merge_asof
-        # below gives that 0 to every event until the next scheduled arrival
-        gtfs_stops = gtfs_stops.sort_values(by="arrival_time")
-        scheduled_arrivals = gtfs_stops[TRUNK_DIR_STOP + ["arrival_time"]].dropna().drop_duplicates()
-        headways = scheduled_arrivals.groupby(TRUNK_DIR_STOP).arrival_time.diff()
-        scheduled_arrivals = scheduled_arrivals.assign(scheduled_headway=headways.dt.seconds)
-
-        # calculate gtfs traveltimes
-        trip_start_times = gtfs_stops.groupby("trip_id").arrival_time.transform("min")
-        gtfs_stops["scheduled_tt"] = (gtfs_stops.arrival_time - trip_start_times).dt.seconds
-
-        # Filter out rows with null values in merge keys to prevent merge_asof errors
-        days_events_clean = days_events.dropna(subset=RTE_DIR_STOP)
-        gtfs_stops_clean = gtfs_stops.dropna(subset=RTE_DIR_STOP)
-
-        if days_events_clean.empty or gtfs_stops_clean.empty:
+        gtfs_stops = scheduled_stop_times(all_trips, all_stops, days_events.route_id)
+        if gtfs_stops.empty:
             results.append(_without_schedule(days_events, service_date, "No GTFS trips match the events"))
             continue
 
-        # assign each actual timepoint a scheduled headway
-        # merge_asof 'backward' matches the previous scheduled value of 'arrival_time'
-        days_events_clean = days_events_clean.copy()  # Create a copy to avoid SettingWithCopyWarning
-        days_events_clean["arrival_time"] = days_events_clean.event_time - service_date
-        days_events_clean["trunk_route_id"] = trunk_route_id(days_events_clean.route_id)
+        # A loop trip can stop somewhere twice (route 120 inbound at Maverick, 5 minutes apart). Number each
+        # trip's visits to a stop in time order on both sides, so the nth visit gets the nth scheduled travel
+        # time, and a visit past the scheduled ones (a repeated row) the last.
+        events = days_events.reset_index(drop=True)
+        visit_keys = ["trip_id", "stop_id"] + (["event_type"] if "event_type" in events.columns else [])
+        in_time_order = events.sort_values("event_time", kind="stable")
+        events["visit"] = in_time_order.groupby(visit_keys, dropna=False).cumcount()
+        gtfs_stops["visit"] = gtfs_stops.groupby(["trip_id", "stop_id"]).cumcount()
 
-        # Additional null check after creating arrival_time
-        days_events_clean = days_events_clean.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
-        gtfs_stops_clean = gtfs_stops_clean.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
+        # Match Red Line trips by branch. Every other event is its own route's branch: some ADDED Green Line
+        # trip_ids run on two branches, and branch_route_id would give the whole trip its first one.
+        events["branch_route_id"] = branch_route_id(events).where(events["route_id"] == "Red", events["route_id"])
+        gtfs_stops["branch_route_id"] = branch_route_id(gtfs_stops).array
 
-        if days_events_clean.empty or gtfs_stops_clean.empty:
-            results.append(_without_schedule(days_events, service_date, "No event or GTFS times"))
-            continue
-
-        final = pd.merge_asof(
-            days_events_clean.sort_values(by="arrival_time"),
-            scheduled_arrivals,
-            on="arrival_time",
-            direction="backward",
-            by=TRUNK_DIR_STOP,
-        ).drop(columns=["trunk_route_id"])
-
-        # assign each actual trip a scheduled trip_id, based on when it started the route
-        route_starts = days_events_clean.loc[days_events_clean.groupby("trip_id").event_time.idxmin()]
-        route_starts = route_starts[RTE_DIR_STOP + ["trip_id", "arrival_time"]]
-
-        # Additional null check for route_starts
-        route_starts = route_starts.dropna(subset=RTE_DIR_STOP + ["arrival_time"])
-        if route_starts.empty:
-            results.append(_without_schedule(days_events, service_date, "No trip start times"))
-            continue
-
-        trip_id_map = pd.merge_asof(
-            route_starts.sort_values(by="arrival_time"),
-            gtfs_stops_clean[RTE_DIR_STOP + ["arrival_time", "trip_id"]],
-            on="arrival_time",
-            direction="nearest",
-            by=RTE_DIR_STOP,
-            suffixes=["", "_scheduled"],
+        events["scheduled_headway"] = gtfs_scheduled_headways(events, gtfs_stops, day).array
+        events = add_scheduled_travel_times(
+            events,
+            gtfs_stops,
+            day,
+            match_on=(*RTE_DIR_STOP, "branch_route_id"),
+            stop_on=("stop_id", "visit"),
+            extra_visits_take_last=True,
         )
-        # Remove duplicates to ensure unique index for mapping
-        trip_id_map = trip_id_map.drop_duplicates(subset="trip_id")
-        trip_id_map = trip_id_map.set_index("trip_id").trip_id_scheduled
+        events = smooth_scheduled_headways(events, day)
 
-        # use the scheduled trip matching to get the scheduled traveltime
-        final["scheduled_trip_id"] = final.trip_id.map(trip_id_map)
-
-        # A loop trip can stop somewhere twice (route 120 inbound at Maverick, 5 minutes apart), which would match
-        # each event there to both scheduled visits. Number the visits in time order on both sides, so the nth
-        # visit gets the nth scheduled travel time.
-        visit_keys = ["trip_id", "stop_id"] + (["event_type"] if "event_type" in final.columns else [])
-        final["visit"] = final.groupby(visit_keys, dropna=False).cumcount()
-        final["event"] = range(len(final))
-        scheduled_tts = gtfs_stops_clean[RTE_DIR_STOP + ["trip_id", "scheduled_tt"]].copy()
-        scheduled_tts["scheduled_visit"] = scheduled_tts.groupby(["trip_id", "stop_id"]).cumcount()
-
-        final = pd.merge(
-            final,
-            scheduled_tts,
-            how="left",
-            left_on=RTE_DIR_STOP + ["scheduled_trip_id"],
-            right_on=RTE_DIR_STOP + ["trip_id"],
-            suffixes=["", "_gtfs"],
+        results.append(
+            events.drop(columns=["branch_route_id", "scheduled_trip_id", "visit"]).sort_values(
+                "event_time", kind="stable"
+            )
         )
-        # Visits beyond the scheduled ones (a repeated row) take the last scheduled visit, as before
-        last_visit = final.groupby("event").scheduled_visit.transform("max")
-        final = final[final.scheduled_visit.isna() | (final.scheduled_visit == final.visit.clip(upper=last_visit))]
-        final = final.drop(columns=["visit", "event", "scheduled_visit"]).reset_index(drop=True)
-
-        # finally, put all the days together
-        results.append(final)
 
     return pd.concat(results)
