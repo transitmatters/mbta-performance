@@ -7,7 +7,13 @@ import pandas as pd
 from shapely.geometry import LineString
 
 from .. import geoparquet, gtfs_geo, segments
-from ..constants import ALL_DAY_BAND, MIN_RUNNING_SPEED_SEGMENT_M, STOP_ZONE_M, TIME_BANDS
+from ..constants import (
+    ALL_DAY_BAND,
+    MIN_FREE_FLOW_TRAVERSALS,
+    MIN_RUNNING_SPEED_SEGMENT_M,
+    STOP_ZONE_M,
+    TIME_BANDS,
+)
 
 
 class TestProjection(unittest.TestCase):
@@ -669,7 +675,10 @@ class TestAllDayBand(unittest.TestCase):
         aggregated = segments.aggregate_segments(self._traversals())
 
         all_day = aggregated[aggregated.time_band == ALL_DAY_BAND]
-        self.assertFalse(all_day.drop(columns=["time_band", "terminal_section"]).isna().any().any())
+        # No traversal here departed in the quiet hours, so there's no free flow (see TestFreeFlow).
+        no_free_flow = ["free_flow_running_time_seconds", "free_flow_traversals", "p50_delay_seconds"]
+        self.assertFalse(all_day.drop(columns=["time_band", "terminal_section", *no_free_flow]).isna().any().any())
+        self.assertTrue(all_day[no_free_flow].isna().all().all())
         self.assertEqual(set(aggregated.time_band), {"am_peak", "midday", ALL_DAY_BAND})
 
     def test_a_traversal_outside_every_band_is_in_neither_the_bands_nor_all_day(self):
@@ -698,6 +707,122 @@ class TestAllDayBand(unittest.TestCase):
         self.assertNotIn(ALL_DAY_BAND, [name for name, _, _ in TIME_BANDS])
         departures = pd.Series(np.arange(0, 32 * 3600, 900))
         self.assertNotIn(ALL_DAY_BAND, set(segments.assign_time_band(departures)))
+
+
+class TestFreeFlow(unittest.TestCase):
+    """Each segment's free-flow running time, and the delay against it (see FREE_FLOW_WINDOWS)."""
+
+    def _traversal(self, depart_hour: float, running_time: float, **overrides) -> dict:
+        return {
+            "route_id": "1",
+            "direction_id": 0,
+            "from_stop_id": "s1",
+            "to_stop_id": "s2",
+            "service_date": date(2026, 11, 4),
+            "depart_seconds": depart_hour * 3600,
+            "total_time_seconds": running_time + 20.0,
+            "running_time_seconds": running_time,
+            "dwell_seconds": 20.0,
+            "is_interpolated": False,
+            "from_interpolated": False,
+            "is_trip_start": False,
+            "is_trip_end": False,
+            "segment_length_m": 500.0,
+            **overrides,
+        }
+
+    def _quiet(self, count: int = MIN_FREE_FLOW_TRAVERSALS, **overrides) -> list[dict]:
+        """Quiet-hour traversals at 5 AM and 11 PM, running 40-58s: a median of 49 for the default 10."""
+        return [self._traversal(5 if index % 2 else 23, 40.0 + 2 * index, **overrides) for index in range(count)]
+
+    def _row(self, aggregated: pd.DataFrame, time_band: str) -> pd.Series:
+        return aggregated[aggregated.time_band == time_band].iloc[0]
+
+    def test_free_flow_is_the_median_quiet_hour_running_time(self):
+        traversals = pd.DataFrame(self._quiet() + [self._traversal(17, time) for time in (80.0, 90.0, 100.0)])
+
+        aggregated = segments.aggregate_segments(traversals)
+
+        pm_peak = self._row(aggregated, "pm_peak")
+        self.assertAlmostEqual(pm_peak.free_flow_running_time_seconds, 49.0)
+        self.assertEqual(pm_peak.free_flow_traversals, MIN_FREE_FLOW_TRAVERSALS)
+        self.assertAlmostEqual(pm_peak.p50_delay_seconds, 90.0 - 49.0)
+        # Every row of the segment, all_day too, is measured against the same free flow.
+        self.assertEqual(set(aggregated.free_flow_running_time_seconds), {49.0})
+        all_day = self._row(aggregated, ALL_DAY_BAND)
+        self.assertAlmostEqual(all_day.p50_delay_seconds, all_day.p50_running_time_seconds - 49.0)
+
+    def test_quiet_hours_are_before_6am_and_from_10pm(self):
+        edges = [
+            self._traversal(hour, 10.0)
+            for hour in (5.99, 22.0, 25.0, 31.99)
+            for _ in range(MIN_FREE_FLOW_TRAVERSALS // 4 + 1)
+        ]
+        outside = [self._traversal(hour, 1000.0) for hour in (6.0, 12.0, 21.99) for _ in range(20)]
+
+        aggregated = segments.aggregate_segments(pd.DataFrame(edges + outside))
+
+        self.assertEqual(self._row(aggregated, "midday").free_flow_running_time_seconds, 10.0)
+        self.assertEqual(self._row(aggregated, "midday").free_flow_traversals, len(edges))
+
+    def test_too_few_quiet_traversals_leave_no_free_flow_or_delay(self):
+        traversals = pd.DataFrame(
+            self._quiet(MIN_FREE_FLOW_TRAVERSALS - 1) + [self._traversal(17, time) for time in (80.0, 90.0)]
+        )
+
+        aggregated = segments.aggregate_segments(traversals)
+
+        for column in ("free_flow_running_time_seconds", "free_flow_traversals", "p50_delay_seconds"):
+            self.assertTrue(aggregated[column].isna().all(), msg=column)
+        self.assertTrue(aggregated.p50_running_time_seconds.notna().all())
+
+    def test_quiet_traversals_without_a_running_time_do_not_count(self):
+        traversals = pd.DataFrame(
+            self._quiet() + [self._traversal(5, np.nan)] * 5 + [self._traversal(17, time) for time in (80.0, 90.0)]
+        )
+
+        row = self._row(segments.aggregate_segments(traversals), "pm_peak")
+
+        self.assertEqual(row.free_flow_traversals, MIN_FREE_FLOW_TRAVERSALS)
+        self.assertAlmostEqual(row.free_flow_running_time_seconds, 49.0)
+
+    def test_pools_every_day_type_and_date(self):
+        # Half the quiet trips on a weekday and half on a Saturday: neither has enough alone.
+        half = MIN_FREE_FLOW_TRAVERSALS // 2
+        quiet = self._quiet()
+        for traversal in quiet[:half]:
+            traversal.update(day_type="business_day")
+        for traversal in quiet[half:]:
+            traversal.update(day_type="weekend_or_holiday", service_date=date(2026, 11, 7))
+        traversals = pd.DataFrame(
+            quiet
+            + [self._traversal(17, 90.0, day_type="business_day")]
+            + [self._traversal(13, 70.0, day_type="weekend_or_holiday", service_date=date(2026, 11, 7))]
+        )
+
+        aggregated = segments.aggregate_segments(traversals, extra_group_columns=("day_type",))
+
+        self.assertEqual(set(aggregated.free_flow_running_time_seconds), {49.0})
+        self.assertEqual(set(aggregated.free_flow_traversals), {MIN_FREE_FLOW_TRAVERSALS})
+
+    def test_delay_is_signed(self):
+        # The early morning can run faster than free flow; a route's summed delay counts that.
+        traversals = pd.DataFrame(self._quiet() + [self._traversal(6.5, time) for time in (30.0, 35.0)])
+
+        early_am = self._row(segments.aggregate_segments(traversals), "early_am")
+
+        self.assertLess(early_am.p50_delay_seconds, 0)
+
+    def test_each_segment_has_its_own_free_flow(self):
+        other = {"to_stop_id": "s3", "from_stop_id": "s2"}
+        traversals = pd.DataFrame(
+            self._quiet() + [self._traversal(23, 100.0, **other) for _ in range(MIN_FREE_FLOW_TRAVERSALS)]
+        )
+
+        aggregated = segments.aggregate_segments(traversals).set_index("from_stop_id")
+
+        self.assertEqual(set(aggregated.loc["s1"].free_flow_running_time_seconds), {49.0})
+        self.assertEqual(set(aggregated.loc["s2"].free_flow_running_time_seconds), {100.0})
 
 
 class TestTimeBands(unittest.TestCase):
