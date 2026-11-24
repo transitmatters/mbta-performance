@@ -1,4 +1,5 @@
 # ARCGIS_IDS for each year, rapid transit data
+# The MBTA has removed 2016-2019 from the ArcGIS Hub; those downloads fall back to our archive (see source_archive.py)
 ARCGIS_IDS = {
     "2016": "3e892be850fe4cc4a15d6450de4bd318",
     "2017": "cde60045db904ad299922f4f8759dcad",
@@ -14,8 +15,10 @@ ARCGIS_IDS = {
 }
 
 # ARCGIS_IDS for each year, bus data
-# 2018 & 2019 data is no longer available from the ArcGIS Hub
+# The MBTA removed 2018 & 2019 from the ArcGIS Hub, so they come from our archive (see source_archive.py)
 BUS_ARCGIS_IDS = {
+    "2018": None,
+    "2019": None,
     "2020": "4c1293151c6c4a069d49e6b85ee68ea4",
     "2021": "2d415555f63b431597721151a7e07a3e",
     "2022": "ef464a75666349f481353f16514c06d0",

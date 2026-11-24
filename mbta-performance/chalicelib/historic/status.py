@@ -9,11 +9,9 @@ import argparse
 import calendar
 import os
 import re
-from datetime import datetime
-
-import requests
 
 from .. import s3
+from .arcgis import upstream_modified
 from .constants import ARCGIS_IDS, BUS_ARCGIS_IDS, FERRY_ARCGIS_ID, HISTORIC_S3_BUCKET, MODE_FOLDERS
 
 # Long-lived stops checked in S3 to find the latest month without listing every object in the bucket.
@@ -23,8 +21,6 @@ SENTINEL_STOPS = {
     "bus": ["1-0-110", "1-1-64", "28-0-64000"],
     "ferry": ["Boat-F1|0|Boat-Hingham", "Boat-F4|0|Boat-Charlestown"],
 }
-
-ARCGIS_ITEM_URL = "https://www.arcgis.com/sharing/rest/content/items/{item_id}?f=json"
 
 YEAR_RE = re.compile(r"Year=(\d{4})/?$")
 MONTH_RE = re.compile(r"Month=(\d{1,2})/?$")
@@ -77,16 +73,6 @@ def upstream_item_ids():
         "bus": BUS_ARCGIS_IDS[latest_bus_year],
         "ferry": FERRY_ARCGIS_ID,
     }
-
-
-def upstream_modified(item_id: str):
-    """(title, modified datetime) for an ArcGIS item, or (None, None) if it can't be fetched."""
-    try:
-        response = requests.get(ARCGIS_ITEM_URL.format(item_id=item_id), timeout=15)
-        item = response.json()
-        return item.get("title"), datetime.fromtimestamp(item["modified"] / 1000)
-    except Exception:
-        return None, None
 
 
 def month_end(ym):

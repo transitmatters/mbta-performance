@@ -6,7 +6,9 @@ from zipfile import ZipFile
 
 import requests
 
+from .arcgis import upstream_modified
 from .constants import ARCGIS_IDS, BUS_ARCGIS_IDS
+from .source_archive import InvalidSourceFile, archive_source_file, restore_source_file, validate_source_file
 
 
 def prep_local_dir():
@@ -16,18 +18,44 @@ def prep_local_dir():
     pathlib.Path("data/output").mkdir(exist_ok=True)
 
 
+ARCGIS_DATA_URL = "https://www.arcgis.com/sharing/rest/content/items/{item_id}/data"
+
+
+def download_arcgis_item(mode: str, year: str, item_id: str, path: str) -> str:
+    """
+    Download a year's zip from ArcGIS to path, and keep a copy in our S3 archive. If ArcGIS doesn't have the item
+    (item_id is None, the request fails, or the file isn't valid), use the archived copy instead.
+    """
+    if item_id is None:
+        print(f"ArcGIS no longer has {mode} {year}")
+    else:
+        url = ARCGIS_DATA_URL.format(item_id=item_id)
+        response = requests.get(url, allow_redirects=True)
+        if response.status_code == 200:
+            with open(path, "wb") as f:
+                f.write(response.content)
+            try:
+                validate_source_file(path)
+            except InvalidSourceFile as e:
+                print(f"The {mode} {year} file from {url} isn't valid: {e}")
+            else:
+                _, modified = upstream_modified(item_id)
+                archive_source_file(path, mode, year, item_id=item_id, source_date=modified)
+                return os.path.abspath(path)
+        else:
+            print(f"Failed to fetch {mode} {year} from {url}. Status code: {response.status_code}")
+
+    try:
+        restore_source_file(path, mode, year)
+    except FileNotFoundError as e:
+        raise ValueError(f"Failed to fetch {mode} {year} data from ArcGIS, and {e}") from e
+    return os.path.abspath(path)
+
+
 def download_historic_data(year: str):
     if year not in ARCGIS_IDS.keys():
         raise ValueError(f"Year {year} dataset is not available. Supported years are {list(ARCGIS_IDS.keys())}")
-
-    url = f"https://www.arcgis.com/sharing/rest/content/items/{ARCGIS_IDS[year]}/data"
-    response = requests.get(url, allow_redirects=True)
-    if response.status_code != 200:
-        raise ValueError(f"Failed to fetch historic data from {url}. Status code: {response.status_code}")
-
-    with open(f"data/input/{year}.zip", "wb") as f:
-        f.write(response.content)
-    return os.path.abspath(f"data/input/{year}.zip")
+    return download_arcgis_item("rapid", year, ARCGIS_IDS[year], f"data/input/{year}.zip")
 
 
 def unzip_historic_data(zip_file: str, output_dir: str):
@@ -62,18 +90,10 @@ def list_files_in_dir(dir: str):
 
 
 def download_bus_data(year: str):
-    """Download bus data for a specific year from ArcGIS."""
+    """Download bus data for a specific year from ArcGIS, or our archive of it."""
     if year not in BUS_ARCGIS_IDS.keys():
         raise ValueError(f"Year {year} bus dataset is not available. Supported years are {list(BUS_ARCGIS_IDS.keys())}")
-
-    url = f"https://www.arcgis.com/sharing/rest/content/items/{BUS_ARCGIS_IDS[year]}/data"
-    response = requests.get(url, allow_redirects=True)
-    if response.status_code != 200:
-        raise ValueError(f"Failed to fetch bus data from {url}. Status code: {response.status_code}")
-
-    with open(f"data/input/bus/{year}.zip", "wb") as f:
-        f.write(response.content)
-    return os.path.abspath(f"data/input/bus/{year}.zip")
+    return download_arcgis_item("bus", year, BUS_ARCGIS_IDS[year], f"data/input/bus/{year}.zip")
 
 
 def process_bus_file_names(year: str, year_dir: str):
