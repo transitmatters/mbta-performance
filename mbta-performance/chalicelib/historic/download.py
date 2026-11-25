@@ -158,6 +158,10 @@ def clean_unicode_bom(file_path: str):
     if content.startswith(b"\xef\xbb\xbf"):
         content = content[3:]
 
+    # 2020-Q3.csv also has the BOM spelled out as the text "<U+FEFF>" at the start of the first row of each month,
+    # which breaks parsing service_date.
+    content = content.replace(b"<U+FEFF>", b"")
+
     with open(file_path, "wb") as f:
         f.write(content)
 
