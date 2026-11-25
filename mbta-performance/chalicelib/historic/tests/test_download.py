@@ -255,6 +255,30 @@ class TestDownload(unittest.TestCase):
             content = f.read()
         self.assertEqual(content, b"test content")
 
+    def test_clean_unicode_bom_literal_text(self):
+        """Test removal of the BOM written out as text, as in 2020-Q3.csv."""
+        test_file = pathlib.Path(self.temp_dir) / "test.csv"
+
+        with open(test_file, "wb") as f:
+            f.write(
+                b'"service_date","route_id"\n'
+                b'"<U+FEFF>2020-07-01 00:00:00.000","01"\n'
+                b'"2020-07-01 00:00:00.000","01"\n'
+                b'"<U+FEFF>2020-08-01 00:00:00.000","01"\n'
+            )
+
+        download.clean_unicode_bom(str(test_file))
+
+        with open(test_file, "rb") as f:
+            content = f.read()
+        self.assertEqual(
+            content,
+            b'"service_date","route_id"\n'
+            b'"2020-07-01 00:00:00.000","01"\n'
+            b'"2020-07-01 00:00:00.000","01"\n'
+            b'"2020-08-01 00:00:00.000","01"\n',
+        )
+
     def test_clean_unicode_bom_without_bom(self):
         """Test clean_unicode_bom with file that has no BOM."""
         test_file = pathlib.Path(self.temp_dir) / "test.csv"
