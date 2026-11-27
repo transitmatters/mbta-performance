@@ -3,10 +3,11 @@ import pathlib
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime
 from unittest import mock
 
 from .. import download
-from ..constants import ARCGIS_IDS
+from ..constants import ARCGIS_IDS, BUS_ARCGIS_IDS
 
 
 class TestDownload(unittest.TestCase):
@@ -29,23 +30,31 @@ class TestDownload(unittest.TestCase):
             self.assertEqual(mock_mkdir.call_count, 4)
 
     def test_download_historic_data_success(self):
-        """Test successful download of historic data."""
+        """A download is saved, then archived with the item's ID and modified date."""
         year = "2024"
         mock_content = b"mock zip content"
         mock_response = mock.Mock(status_code=200, content=mock_content)
+        modified = datetime(2025, 3, 1)
 
-        with mock.patch("requests.get", return_value=mock_response):
-            with mock.patch("builtins.open", mock.mock_open()) as mock_file:
-                with mock.patch("os.path.abspath", return_value=f"{self.temp_dir}/{year}.zip"):
-                    _ = download.download_historic_data(year)
+        with (
+            mock.patch("requests.get", return_value=mock_response) as mock_get,
+            mock.patch("builtins.open", mock.mock_open()) as mock_file,
+            mock.patch("os.path.abspath", return_value=f"{self.temp_dir}/{year}.zip"),
+            mock.patch.object(download, "validate_source_file"),
+            mock.patch.object(download, "upstream_modified", return_value=("title", modified)),
+            mock.patch.object(download, "archive_source_file") as mock_archive,
+            mock.patch.object(download, "restore_source_file") as mock_restore,
+        ):
+            download.download_historic_data(year)
 
-                    # Verify the file was written
-                    mock_file.assert_called_once_with(f"data/input/{year}.zip", "wb")
-                    mock_file().write.assert_called_once_with(mock_content)
-
-                    # Verify the correct URL was called
-                    expected_url = f"https://www.arcgis.com/sharing/rest/content/items/{ARCGIS_IDS[year]}/data"
-                    mock.call(expected_url)
+        mock_file.assert_called_once_with(f"data/input/{year}.zip", "wb")
+        mock_file().write.assert_called_once_with(mock_content)
+        expected_url = f"https://www.arcgis.com/sharing/rest/content/items/{ARCGIS_IDS[year]}/data"
+        mock_get.assert_called_once_with(expected_url, allow_redirects=True)
+        mock_archive.assert_called_once_with(
+            f"data/input/{year}.zip", "rapid", year, item_id=ARCGIS_IDS[year], source_date=modified
+        )
+        mock_restore.assert_not_called()
 
     def test_download_historic_data_invalid_year(self):
         """Test that invalid year raises ValueError."""
@@ -53,15 +62,49 @@ class TestDownload(unittest.TestCase):
             download.download_historic_data("1999")
         self.assertIn("Year 1999 dataset is not available", str(context.exception))
 
-    def test_download_historic_data_failure(self):
-        """Test download failure handling."""
-        year = "2024"
-        mock_response = mock.Mock(status_code=404)
+    def test_download_historic_data_failure_uses_archive(self):
+        """When ArcGIS no longer has the item, the archived copy is used instead."""
+        year = "2016"
 
-        with mock.patch("requests.get", return_value=mock_response):
+        with (
+            mock.patch("requests.get", return_value=mock.Mock(status_code=400)),
+            mock.patch.object(download, "archive_source_file") as mock_archive,
+            mock.patch.object(download, "restore_source_file") as mock_restore,
+        ):
+            result = download.download_historic_data(year)
+
+        mock_restore.assert_called_once_with(f"data/input/{year}.zip", "rapid", year)
+        mock_archive.assert_not_called()
+        self.assertEqual(result, os.path.abspath(f"data/input/{year}.zip"))
+
+    def test_download_historic_data_invalid_file_uses_archive(self):
+        """A 200 that isn't a valid zip (an error page, say) isn't archived, and the archived copy is used."""
+        year = "2026"
+
+        with (
+            mock.patch("requests.get", return_value=mock.Mock(status_code=200, content=b"<html>error</html>")),
+            mock.patch("builtins.open", mock.mock_open()),
+            mock.patch.object(
+                download, "validate_source_file", side_effect=download.InvalidSourceFile("isn't a valid zip")
+            ),
+            mock.patch.object(download, "archive_source_file") as mock_archive,
+            mock.patch.object(download, "restore_source_file") as mock_restore,
+        ):
+            download.download_historic_data(year)
+
+        mock_archive.assert_not_called()
+        mock_restore.assert_called_once_with(f"data/input/{year}.zip", "rapid", year)
+
+    def test_download_historic_data_failure_without_archive(self):
+        year = "2024"
+
+        with (
+            mock.patch("requests.get", return_value=mock.Mock(status_code=404)),
+            mock.patch.object(download, "restore_source_file", side_effect=FileNotFoundError("there's no copy")),
+        ):
             with self.assertRaises(ValueError) as context:
                 download.download_historic_data(year)
-            self.assertIn("Failed to fetch historic data", str(context.exception))
+        self.assertIn("Failed to fetch rapid 2024 data from ArcGIS, and there's no copy", str(context.exception))
 
     def test_unzip_historic_data(self):
         """Test unzipping of historic data."""
@@ -142,14 +185,21 @@ class TestDownload(unittest.TestCase):
         mock_content = b"mock bus zip content"
         mock_response = mock.Mock(status_code=200, content=mock_content)
 
-        with mock.patch("requests.get", return_value=mock_response):
-            with mock.patch("builtins.open", mock.mock_open()) as mock_file:
-                with mock.patch("os.path.abspath", return_value=f"{self.temp_dir}/{year}.zip"):
-                    _ = download.download_bus_data(year)
+        with (
+            mock.patch("requests.get", return_value=mock_response),
+            mock.patch("builtins.open", mock.mock_open()) as mock_file,
+            mock.patch("os.path.abspath", return_value=f"{self.temp_dir}/{year}.zip"),
+            mock.patch.object(download, "validate_source_file"),
+            mock.patch.object(download, "upstream_modified", return_value=(None, None)),
+            mock.patch.object(download, "archive_source_file") as mock_archive,
+        ):
+            download.download_bus_data(year)
 
-                    # Verify the file was written
-                    mock_file.assert_called_once_with(f"data/input/bus/{year}.zip", "wb")
-                    mock_file().write.assert_called_once_with(mock_content)
+        mock_file.assert_called_once_with(f"data/input/bus/{year}.zip", "wb")
+        mock_file().write.assert_called_once_with(mock_content)
+        mock_archive.assert_called_once_with(
+            f"data/input/bus/{year}.zip", "bus", year, item_id=BUS_ARCGIS_IDS[year], source_date=None
+        )
 
     def test_download_bus_data_invalid_year(self):
         """Test that invalid year raises ValueError for bus data."""
@@ -157,15 +207,27 @@ class TestDownload(unittest.TestCase):
             download.download_bus_data("2000")
         self.assertIn("Year 2000 bus dataset is not available", str(context.exception))
 
-    def test_download_bus_data_failure(self):
-        """Test bus data download failure handling."""
+    def test_download_bus_data_failure_uses_archive(self):
         year = "2024"
-        mock_response = mock.Mock(status_code=500)
 
-        with mock.patch("requests.get", return_value=mock_response):
-            with self.assertRaises(ValueError) as context:
-                download.download_bus_data(year)
-            self.assertIn("Failed to fetch bus data", str(context.exception))
+        with (
+            mock.patch("requests.get", return_value=mock.Mock(status_code=500)),
+            mock.patch.object(download, "restore_source_file") as mock_restore,
+        ):
+            download.download_bus_data(year)
+
+        mock_restore.assert_called_once_with(f"data/input/bus/{year}.zip", "bus", year)
+
+    def test_download_bus_data_removed_year_comes_from_archive(self):
+        """Years the MBTA removed from ArcGIS have no item ID, so ArcGIS isn't asked at all."""
+        with (
+            mock.patch("requests.get") as mock_get,
+            mock.patch.object(download, "restore_source_file") as mock_restore,
+        ):
+            download.download_bus_data("2018")
+
+        mock_get.assert_not_called()
+        mock_restore.assert_called_once_with("data/input/bus/2018.zip", "bus", "2018")
 
     def test_process_bus_file_names_2021_plus(self):
         """Test processing of bus file names for years 2021 and later."""

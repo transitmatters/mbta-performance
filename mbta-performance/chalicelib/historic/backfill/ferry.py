@@ -1,8 +1,29 @@
 import argparse
 from datetime import datetime
+
+import requests
+
+from ..arcgis import FERRY_CSV_PATH, download_latest_ferry_data, ferry_update_cache
+from ..constants import FERRY_ARCGIS_ID
 from ..process import process_ferry, whole_months
-from ..arcgis import download_latest_ferry_data, ferry_update_cache
+from ..source_archive import InvalidSourceFile, archive_source_file, restore_source_file, validate_source_file
 from ..upload import upload_monthly_outputs
+
+
+def fetch_ferry_csv() -> str:
+    """Download the ferry CSV and archive it in S3. If ArcGIS can't serve a valid one, use the archived copy instead."""
+    try:
+        data_edited = ferry_update_cache()
+        csv_file = download_latest_ferry_data()
+        validate_source_file(csv_file)
+    except (requests.RequestException, InvalidSourceFile) as e:
+        print(f"Failed to fetch the ferry data from ArcGIS: {e}")
+        try:
+            return restore_source_file(FERRY_CSV_PATH, "ferry")
+        except FileNotFoundError as missing:
+            raise ValueError(f"Failed to fetch the ferry data from ArcGIS, and {missing}") from e
+    archive_source_file(csv_file, "ferry", item_id=FERRY_ARCGIS_ID, source_date=data_edited)
+    return csv_file
 
 
 def backfill_ferry_data(start_date=None, end_date=None):
@@ -14,9 +35,7 @@ def backfill_ferry_data(start_date=None, end_date=None):
     if end_date:
         print(f"End date: {end_date}")
 
-    ferry_update_cache()
-    # download the data
-    csv_file = download_latest_ferry_data()
+    csv_file = fetch_ferry_csv()
 
     process_ferry(csv_file, "data/output", start_date=start_date, end_date=end_date)
     print("Finished Processing Ferry Data")
